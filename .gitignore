@@ -1,0 +1,29 @@
+# Node
+node_modules/
+
+# Next.js
+.next/
+
+# Java
+target/
+*.class
+
+# Logs
+logs/
+*.log
+
+# Environment
+.env
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+
+# Docker
+docker-data/
+
+# Kubernetes
+kubeconfig.yaml
