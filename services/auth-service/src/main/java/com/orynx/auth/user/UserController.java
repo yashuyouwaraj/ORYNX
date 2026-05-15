@@ -5,6 +5,7 @@ import com.orynx.auth.user.dto.RegisterRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
+import com.orynx.auth.user.dto.LoginRequest;
 
 @RestController
 @RequestMapping("/api/v1/users")
@@ -24,6 +25,17 @@ public class UserController {
                 .success(true)
                 .message("User registered successfully")
                 .data(user)
+                .build();
+    }
+
+    @PostMapping("/login")
+    public ApiResponse<String> login(@Valid @RequestBody LoginRequest request){
+        String token = userService.login(request);
+
+        return ApiResponse.<String>builder()
+                .success(true)
+                .message("Login successful")
+                .data(token)
                 .build();
     }
 }
