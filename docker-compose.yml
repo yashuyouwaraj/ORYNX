@@ -3,7 +3,7 @@ version: '3.9'
 services:
 
   postgres:
-    image: postgres:16
+    image: postgres:17
     container_name: orynx-postgres
     restart: unless-stopped
     environment:
@@ -35,7 +35,7 @@ services:
 
       KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
 
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
 
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
 
@@ -52,3 +52,25 @@ services:
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
 
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: true
+
+  auth-service:
+    build:
+      context: ./services/auth-service
+
+    container_name: orynx-auth-service
+
+    restart: unless-stopped
+
+    ports:
+      - "8081:8081"
+
+    depends_on:
+      - postgres
+      - kafka
+
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/orynx
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092

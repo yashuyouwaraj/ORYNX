@@ -8,9 +8,11 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import com.orynx.auth.user.dto.RegisterRequest;
+import lombok.extern.slf4j.Slf4j;
 
 import lombok.RequiredArgsConstructor;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class UserService {
@@ -36,6 +38,10 @@ public class UserService {
 
         kafkaProducer.publishUserRegisteredEvent(event);
 
+        log.info(
+                "Registering user with email: {}",
+                request.getEmail()
+        );
         return savedUser;
     }
 
@@ -52,6 +58,11 @@ public class UserService {
         if(!matches){
             throw new RuntimeException("Invalid credentials");
         }
+
+        log.info(
+                "Login attempt for email: {}",
+                request.getEmail()
+        );
 
         return jwtService.generateToken(user.getEmail());
     }

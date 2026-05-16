@@ -1,5 +1,6 @@
 package com.orynx.auth.user;
 
+import com.orynx.auth.common.constants.ApiConstants;
 import com.orynx.auth.common.response.ApiResponse;
 import com.orynx.auth.user.dto.RegisterRequest;
 import jakarta.validation.Valid;
@@ -9,7 +10,7 @@ import com.orynx.auth.user.dto.LoginRequest;
 import org.springframework.security.access.prepost.PreAuthorize;
 
 @RestController
-@RequestMapping("/api/v1/users")
+@RequestMapping(ApiConstants.USERS)
 @RequiredArgsConstructor
 public class UserController {
 
