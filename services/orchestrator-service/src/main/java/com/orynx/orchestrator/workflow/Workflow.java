@@ -19,5 +19,6 @@ public class Workflow {
 
     private String goal;
 
-    private String status;
+    @Enumerated(EnumType.STRING)
+    private WorkflowStatus status;
 }
