@@ -56,24 +56,24 @@ services:
 
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: true
 
-  auth-service:
-    build:
-      context: ./services/auth-service
+  # auth-service:
+  #   build:
+  #     context: ./services/auth-service
 
-    container_name: orynx-auth-service
+  #   container_name: orynx-auth-service
 
-    restart: unless-stopped
+  #   restart: unless-stopped
 
-    ports:
-      - "8081:8081"
+  #   ports:
+  #     - "8081:8081"
 
-    depends_on:
-      - postgres
-      - kafka
+  #   depends_on:
+  #     - postgres
+  #     - kafka
 
-    environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/orynx
-      SPRING_DATASOURCE_USERNAME: postgres
-      SPRING_DATASOURCE_PASSWORD: postgres
+  #   environment:
+  #     SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/orynx
+  #     SPRING_DATASOURCE_USERNAME: postgres
+  #     SPRING_DATASOURCE_PASSWORD: postgres
 
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  #     SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
