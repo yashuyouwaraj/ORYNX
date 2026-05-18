@@ -1,9 +1,14 @@
 import type { Workflow } from "@/types/workflow";
 
-import type { GraphNode } from "@/types/graph";
+import type { GraphNode, GraphConnection } from "@/types/graph";
 
-export const mapWorkflowsToGraph = (workflows: Workflow[]): GraphNode[] => {
-  return workflows.map((workflow, index) => ({
+export const mapWorkflowsToGraph = (
+  workflows: Workflow[],
+): {
+  nodes: GraphNode[];
+  connections: GraphConnection[];
+} => {
+  const nodes: GraphNode[] = workflows.map((workflow, index) => ({
     id: workflow.id,
 
     name: workflow.name,
@@ -14,4 +19,19 @@ export const mapWorkflowsToGraph = (workflows: Workflow[]): GraphNode[] => {
 
     y: 100 + Math.floor(index / 3) * 220,
   }));
+
+  const connections: GraphConnection[] = []
+
+  for(let i =0 ; i< workflows.length-1; i++){
+    connections.push({
+      source: workflows[i].id,
+
+      target: workflows[i+1].id,
+    })
+  }
+
+  return {
+    nodes,
+    connections
+  };
 };
