@@ -1,19 +1,18 @@
 "use client";
 
-import { useEffect, useState }
-from "react";
+import { useEffect, useState } from "react";
 
-import {
-  connectWebSocket
-} from "@/services/websocket";
+import WorkflowGraph from "@/components/WorkflowGraph";
 
-import {
-  getWorkflows
-} from "@/services/api";
+import { mapWorkflowsToGraph } from "@/utils/graphMapper";
+
+import { connectWebSocket } from "@/services/websocket";
+
+import { getWorkflows } from "@/services/api";
 
 import type {
   Workflow,
-  WorkflowEvent
+  WorkflowEvent,
 } from "@/types/workflow";
 
 export default function Home() {
@@ -54,7 +53,7 @@ export default function Home() {
         setWorkflows((prev) => {
 
           const exists = prev.find(
-            workflow =>
+            (workflow) =>
               workflow.id === event.workflowId
           );
 
@@ -65,18 +64,18 @@ export default function Home() {
                 id: event.workflowId,
                 name: event.workflowName,
                 goal: "Realtime Workflow",
-                status: event.status
+                status: event.status,
               },
-              ...prev
+              ...prev,
             ];
           }
 
-          return prev.map(workflow =>
+          return prev.map((workflow) =>
 
             workflow.id === event.workflowId
               ? {
                   ...workflow,
-                  status: event.status
+                  status: event.status,
                 }
               : workflow
           );
@@ -86,6 +85,9 @@ export default function Home() {
     return disconnect;
 
   }, []);
+
+  const graphNodes =
+    mapWorkflowsToGraph(workflows);
 
   return (
 
@@ -112,38 +114,12 @@ export default function Home() {
         <div className="lg:col-span-2">
 
           <h2 className="mb-6 text-2xl font-semibold">
-            Workflow Timeline
+            Orchestration Graph
           </h2>
 
-          <div className="space-y-4">
-
-            {workflows.map(workflow => (
-
-              <div
-                key={workflow.id}
-                className="rounded-2xl border border-zinc-800 bg-zinc-900 p-6 transition-all hover:border-cyan-500"
-              >
-
-                <div className="flex items-center justify-between">
-
-                  <h3 className="text-xl font-semibold">
-                    {workflow.name}
-                  </h3>
-
-                  <span className="text-sm text-cyan-400">
-                    {workflow.status}
-                  </span>
-
-                </div>
-
-                <p className="mt-3 text-zinc-400">
-                  {workflow.goal}
-                </p>
-
-              </div>
-            ))}
-
-          </div>
+          <WorkflowGraph
+            nodes={graphNodes}
+          />
 
         </div>
 
