@@ -5,6 +5,8 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
+
 @RestController
 @RequestMapping("/api/v1/workflows")
 @RequiredArgsConstructor
@@ -19,5 +21,10 @@ public class WorkflowController {
     @PatchMapping("/{id}/start")
     public Workflow startWorkflow(@PathVariable Long id){
         return workflowService.startWorkflow(id);
+    }
+
+    @GetMapping
+    public List<Workflow> getAllWorkflows(){
+        return workflowService.getAllWorkflows();
     }
 }

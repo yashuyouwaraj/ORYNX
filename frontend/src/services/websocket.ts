@@ -5,6 +5,9 @@ import SockJS from "sockjs-client";
 
 import type { WorkflowEvent } from "@/types/workflow";
 
+const WS_BASE_URL =
+  process.env.NEXT_PUBLIC_WS_BASE_URL ?? "http://localhost:8082";
+
 let stompClient: Client | null = null;
 
 export const connectWebSocket = (
@@ -12,7 +15,7 @@ export const connectWebSocket = (
 ) => {
   const client = new Client({
     webSocketFactory: () =>
-      new SockJS("http://localhost:8082/ws") as unknown as IStompSocket,
+      new SockJS(`${WS_BASE_URL}/ws`) as unknown as IStompSocket,
     reconnectDelay: 5000,
     debug: () => undefined,
     onConnect: () => {

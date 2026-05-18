@@ -1,62 +1,183 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState }
+from "react";
 
-import { connectWebSocket } from "@/services/websocket";
-import type { WorkflowEvent } from "@/types/workflow";
+import {
+  connectWebSocket
+} from "@/services/websocket";
+
+import {
+  getWorkflows
+} from "@/services/api";
+
+import type {
+  Workflow,
+  WorkflowEvent
+} from "@/types/workflow";
 
 export default function Home() {
 
-  const [events, setEvents] = useState<
-    WorkflowEvent[]
-  >([]);
+  const [workflows, setWorkflows] =
+    useState<Workflow[]>([]);
+
+  const [activityFeed, setActivityFeed] =
+    useState<WorkflowEvent[]>([]);
 
   useEffect(() => {
 
-    const disconnect = connectWebSocket((event) => {
+    const loadWorkflows = async () => {
 
-      setEvents((prev) => [
-        event,
-        ...prev
-      ]);
-    });
+      try {
+
+        const data =
+          await getWorkflows();
+
+        setWorkflows(data);
+
+      } catch (error) {
+
+        console.error(error);
+      }
+    };
+
+    void loadWorkflows();
+
+    const disconnect =
+      connectWebSocket((event) => {
+
+        setActivityFeed((prev) => [
+          event,
+          ...prev
+        ]);
+
+        setWorkflows((prev) => {
+
+          const exists = prev.find(
+            workflow =>
+              workflow.id === event.workflowId
+          );
+
+          if (!exists) {
+
+            return [
+              {
+                id: event.workflowId,
+                name: event.workflowName,
+                goal: "Realtime Workflow",
+                status: event.status
+              },
+              ...prev
+            ];
+          }
+
+          return prev.map(workflow =>
+
+            workflow.id === event.workflowId
+              ? {
+                  ...workflow,
+                  status: event.status
+                }
+              : workflow
+          );
+        });
+      });
 
     return disconnect;
+
   }, []);
 
   return (
 
     <main className="min-h-screen bg-black p-10 text-white">
 
-      <h1 className="mb-10 text-4xl font-bold">
-        ORYNX Orchestration Dashboard
-      </h1>
+      <div className="mb-10 flex items-center justify-between">
 
-      <div className="grid gap-4">
+        <div>
 
-        {events.map((event, index) => (
+          <h1 className="text-5xl font-bold">
+            ORYNX
+          </h1>
 
-          <div
-            key={index}
-            className="rounded-xl border border-gray-700 bg-zinc-900 p-5"
-          >
+          <p className="mt-2 text-zinc-400">
+            Distributed Orchestration Platform
+          </p>
 
-            <h2 className="text-xl font-semibold">
-              {event.workflowName}
-            </h2>
+        </div>
 
-            <p className="mt-2">
-              Workflow ID:
-              {event.workflowId}
-            </p>
+      </div>
 
-            <p className="mt-2 text-cyan-400">
-              Status:
-              {event.status}
-            </p>
+      <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
+
+        <div className="lg:col-span-2">
+
+          <h2 className="mb-6 text-2xl font-semibold">
+            Workflow Timeline
+          </h2>
+
+          <div className="space-y-4">
+
+            {workflows.map(workflow => (
+
+              <div
+                key={workflow.id}
+                className="rounded-2xl border border-zinc-800 bg-zinc-900 p-6 transition-all hover:border-cyan-500"
+              >
+
+                <div className="flex items-center justify-between">
+
+                  <h3 className="text-xl font-semibold">
+                    {workflow.name}
+                  </h3>
+
+                  <span className="text-sm text-cyan-400">
+                    {workflow.status}
+                  </span>
+
+                </div>
+
+                <p className="mt-3 text-zinc-400">
+                  {workflow.goal}
+                </p>
+
+              </div>
+            ))}
 
           </div>
-        ))}
+
+        </div>
+
+        <div>
+
+          <h2 className="mb-6 text-2xl font-semibold">
+            Live Activity
+          </h2>
+
+          <div className="space-y-3">
+
+            {activityFeed.map(
+              (event, index) => (
+
+                <div
+                  key={index}
+                  className="rounded-xl border border-zinc-800 bg-zinc-900 p-4"
+                >
+
+                  <p className="text-sm text-cyan-400">
+                    {event.status}
+                  </p>
+
+                  <p className="mt-1">
+                    {event.workflowName}
+                  </p>
+
+                </div>
+              )
+            )}
+
+          </div>
+
+        </div>
 
       </div>
 
