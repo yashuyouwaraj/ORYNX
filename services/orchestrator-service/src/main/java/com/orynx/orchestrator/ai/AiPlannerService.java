@@ -78,7 +78,6 @@ public class AiPlannerService {
                                     Map.of(
                                             "role",
                                             "user",
-
                                             "content",
                                             prompt
                                     )
