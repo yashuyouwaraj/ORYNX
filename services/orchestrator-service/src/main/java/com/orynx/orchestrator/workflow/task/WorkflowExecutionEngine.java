@@ -1,5 +1,6 @@
 package com.orynx.orchestrator.workflow.task;
 
+import com.orynx.orchestrator.workflow.task.dto.TaskExecutionEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -11,6 +12,7 @@ import java.util.List;
 @Slf4j
 public class WorkflowExecutionEngine {
     private final WorkflowTaskRepository workflowTaskRepository;
+    private final TaskEventProducer taskEventProducer;
 
     public void executeWorkflow(Long workflowId){
         List<WorkflowTask> tasks = workflowTaskRepository.findByWorkflowIdOrderByExecutionOrder(workflowId);
@@ -27,6 +29,15 @@ public class WorkflowExecutionEngine {
 
             workflowTaskRepository.save(task);
 
+            taskEventProducer.publishTaskEvent(
+                    TaskExecutionEvent.builder()
+                            .workflowId(workflowId)
+                            .taskId(task.getId())
+                            .taskName(task.getName())
+                            .status("RUNNING")
+                            .build()
+            );
+
             try{
                 Thread.sleep(2000);
             } catch (InterruptedException e){
@@ -36,6 +47,18 @@ public class WorkflowExecutionEngine {
             task.setStatus(TaskStatus.COMPLETED);
 
             workflowTaskRepository.save(task);
+
+            taskEventProducer.publishTaskEvent(
+
+                    TaskExecutionEvent.builder()
+                            .workflowId(
+                                    workflowId
+                            )
+                            .taskId(task.getId())
+                            .taskName(task.getName())
+                            .status("COMPLETED")
+                            .build()
+            );
 
             log.info("Completed task: {}",task.getName());
         }

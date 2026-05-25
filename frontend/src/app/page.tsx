@@ -13,14 +13,9 @@ import { getWorkflows } from "@/services/api";
 import type { Workflow, WorkflowEvent } from "@/types/workflow";
 
 export default function Home() {
-  const [mounted, setMounted] = useState(false);
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
 
   const [activityFeed, setActivityFeed] = useState<WorkflowEvent[]>([]);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
 
   useEffect(() => {
     const loadWorkflows = async () => {
@@ -70,10 +65,6 @@ export default function Home() {
   }, []);
 
   const { nodes, connections } = mapWorkflowsToGraph(workflows);
-
-  if (!mounted) {
-    return null;
-  }
 
   return (
     <main className="min-h-screen bg-black p-10 text-white">

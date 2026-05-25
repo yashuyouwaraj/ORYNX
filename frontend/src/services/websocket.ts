@@ -3,6 +3,7 @@
 import { Client, type IMessage, type IStompSocket } from "@stomp/stompjs";
 import SockJS from "sockjs-client";
 
+import type { TaskExecutionEvent } from "@/types/task-event";
 import type { WorkflowEvent } from "@/types/workflow";
 
 const WS_BASE_URL =
@@ -25,6 +26,12 @@ export const connectWebSocket = (
         const body = JSON.parse(message.body) as WorkflowEvent;
 
         onMessageReceived(body);
+      });
+
+      client.subscribe("/topic/tasks", (message: IMessage) => {
+        const body = JSON.parse(message.body) as TaskExecutionEvent;
+
+        console.log("Task Event:", body);
       });
     },
     onStompError: (frame) => {
