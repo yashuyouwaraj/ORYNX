@@ -1,7 +1,7 @@
 export interface GraphNode {
   id: number;
-  name: string;
-  status: string;
+  label: string;
+  status?: string;
   x: number;
   y: number;
 }

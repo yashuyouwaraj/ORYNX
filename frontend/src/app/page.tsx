@@ -10,96 +10,282 @@ import { connectWebSocket } from "@/services/websocket";
 
 import { getWorkflows } from "@/services/api";
 
-import type { Workflow, WorkflowEvent } from "@/types/workflow";
+import { useTaskStore } from "@/store/task-store";
+
+import type {
+  Workflow,
+  WorkflowEvent,
+} from "@/types/workflow";
+
+const getStatusTone = (status?: string) => {
+  switch (status) {
+    case "RUNNING":
+      return "text-cyan-300";
+
+    case "COMPLETED":
+      return "text-emerald-300";
+
+    case "FAILED":
+      return "text-rose-300";
+
+    default:
+      return "text-amber-300";
+  }
+};
 
 export default function Home() {
-  const [workflows, setWorkflows] = useState<Workflow[]>([]);
 
-  const [activityFeed, setActivityFeed] = useState<WorkflowEvent[]>([]);
+  const [workflows, setWorkflows] =
+    useState<Workflow[]>([]);
+
+  const [activityFeed, setActivityFeed] =
+    useState<WorkflowEvent[]>([]);
+
+  const updateTaskStatus =
+    useTaskStore(
+      (state) =>
+        state.updateTaskStatus,
+    );
+
+  const taskStatuses =
+    useTaskStore(
+      (state) =>
+        state.taskStatuses,
+    );
 
   useEffect(() => {
+
     const loadWorkflows = async () => {
+
       try {
-        const data = await getWorkflows();
+
+        const data =
+          await getWorkflows();
 
         setWorkflows(data);
+
       } catch (error) {
+
         console.error(error);
       }
     };
 
     void loadWorkflows();
 
-    const disconnect = connectWebSocket((event) => {
-      setActivityFeed((prev) => [event, ...prev]);
+    const disconnect =
+      connectWebSocket(
 
-      setWorkflows((prev) => {
-        const exists = prev.find(
-          (workflow) => workflow.id === event.workflowId,
-        );
+        // Workflow Events
+        (event) => {
 
-        if (!exists) {
-          return [
-            {
-              id: event.workflowId,
-              name: event.workflowName,
-              goal: "Realtime Workflow",
-              status: event.status,
-            },
-            ...prev,
-          ];
-        }
+          setActivityFeed(
+            (prev) => [
+              event,
+              ...prev,
+            ],
+          );
 
-        return prev.map((workflow) =>
-          workflow.id === event.workflowId
-            ? {
-                ...workflow,
-                status: event.status,
-              }
-            : workflow,
-        );
-      });
-    });
+          setWorkflows((prev) => {
+
+            const exists =
+              prev.find(
+                (workflow) =>
+                  workflow.id ===
+                  event.workflowId,
+              );
+
+            if (!exists) {
+
+              return [
+                {
+                  id: event.workflowId,
+                  name:
+                    event.workflowName,
+                  goal:
+                    "Realtime Workflow",
+                  status:
+                    event.status,
+                },
+
+                ...prev,
+              ];
+            }
+
+            return prev.map(
+              (workflow) =>
+
+                workflow.id ===
+                event.workflowId
+
+                  ? {
+                      ...workflow,
+                      status:
+                        event.status,
+                    }
+
+                  : workflow,
+            );
+          });
+        },
+
+        // Task Events
+        (taskEvent) => {
+
+          updateTaskStatus(
+            taskEvent.taskId,
+            taskEvent.status,
+          );
+        },
+      );
 
     return disconnect;
-  }, []);
 
-  const { nodes, connections } = mapWorkflowsToGraph(workflows);
+  }, [updateTaskStatus]);
+
+  const { nodes, connections } =
+    mapWorkflowsToGraph(
+      workflows,
+      taskStatuses,
+    );
+
+  const runningCount =
+    workflows.filter(
+      (workflow) =>
+        workflow.status === "RUNNING",
+    ).length;
+
+  const completedCount =
+    workflows.filter(
+      (workflow) =>
+        workflow.status === "COMPLETED",
+    ).length;
+
+  const failedCount =
+    workflows.filter(
+      (workflow) =>
+        workflow.status === "FAILED",
+    ).length;
 
   return (
-    <main className="min-h-screen bg-black p-10 text-white">
-      <div className="mb-10 flex items-center justify-between">
-        <div>
-          <h1 className="text-5xl font-bold">ORYNX</h1>
-
-          <p className="mt-2 text-zinc-400">
-            Distributed Orchestration Platform
-          </p>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
-        <div className="lg:col-span-2">
-          <h2 className="mb-6 text-2xl font-semibold">Orchestration Graph</h2>
-
-          <WorkflowGraph nodes={nodes} connections={connections} />
-        </div>
-
-        <div>
-          <h2 className="mb-6 text-2xl font-semibold">Live Activity</h2>
-
-          <div className="space-y-3">
-            {activityFeed.map((event, index) => (
-              <div
-                key={index}
-                className="rounded-xl border border-zinc-800 bg-zinc-900 p-4"
-              >
-                <p className="text-sm text-cyan-400">{event.status}</p>
-
-                <p className="mt-1">{event.workflowName}</p>
+    <main className="min-h-screen bg-[#080808] text-zinc-100">
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-8 px-5 py-6 sm:px-8 lg:px-10">
+        <header className="flex flex-col gap-6 border-b border-zinc-800 pb-6 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <div className="mb-3 flex items-center gap-3">
+              <div className="grid h-9 w-9 place-items-center rounded-lg border border-cyan-300/30 bg-cyan-300/10 text-sm font-bold text-cyan-200">
+                OX
               </div>
-            ))}
+              <span className="rounded-full border border-zinc-800 bg-zinc-900 px-3 py-1 text-xs font-medium uppercase tracking-wide text-zinc-400">
+                Live Control Plane
+              </span>
+            </div>
+
+            <h1 className="text-3xl font-semibold tracking-normal text-white sm:text-4xl">
+              ORYNX
+            </h1>
+
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-400">
+              Distributed orchestration, workflow state, and execution activity in one operational view.
+            </p>
           </div>
+
+          <div className="grid grid-cols-3 gap-3 sm:min-w-[420px]">
+            <div className="rounded-lg border border-zinc-800 bg-[#111111] p-4">
+              <p className="text-xs uppercase tracking-wide text-zinc-500">Running</p>
+              <p className="mt-2 text-2xl font-semibold text-cyan-200">{runningCount}</p>
+            </div>
+
+            <div className="rounded-lg border border-zinc-800 bg-[#111111] p-4">
+              <p className="text-xs uppercase tracking-wide text-zinc-500">Complete</p>
+              <p className="mt-2 text-2xl font-semibold text-emerald-200">{completedCount}</p>
+            </div>
+
+            <div className="rounded-lg border border-zinc-800 bg-[#111111] p-4">
+              <p className="text-xs uppercase tracking-wide text-zinc-500">Failed</p>
+              <p className="mt-2 text-2xl font-semibold text-rose-200">{failedCount}</p>
+            </div>
+          </div>
+        </header>
+
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <section className="min-w-0">
+            <div className="mb-4 flex items-center justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold text-white">
+                  Orchestration Graph
+                </h2>
+                <p className="mt-1 text-sm text-zinc-500">
+                  {nodes.length} workflows · {connections.length} dependencies
+                </p>
+              </div>
+
+              <div className="hidden items-center gap-2 rounded-lg border border-zinc-800 bg-[#111111] px-3 py-2 text-xs text-zinc-400 sm:flex">
+                <span className="h-2 w-2 rounded-full bg-cyan-300" />
+                Streaming updates
+              </div>
+            </div>
+
+            <WorkflowGraph
+              nodes={nodes}
+              connections={connections}
+            />
+          </section>
+
+          <aside className="min-w-0">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-semibold text-white">
+                  Live Activity
+                </h2>
+                <p className="mt-1 text-sm text-zinc-500">
+                  Recent workflow events
+                </p>
+              </div>
+
+              <span className="rounded-full border border-zinc-800 bg-[#111111] px-3 py-1 text-xs text-zinc-400">
+                {activityFeed.length}
+              </span>
+            </div>
+
+            <div className="h-[620px] overflow-hidden rounded-lg border border-zinc-800 bg-[#101010]">
+              {activityFeed.length === 0 ? (
+                <div className="flex h-full items-center justify-center px-8 text-center">
+                  <div>
+                    <div className="mx-auto mb-4 h-2 w-20 rounded-full bg-zinc-800" />
+                    <p className="font-medium text-zinc-200">Waiting for events</p>
+                    <p className="mt-2 text-sm leading-6 text-zinc-500">
+                      Workflow status updates will stream into this panel.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="max-h-full space-y-3 overflow-y-auto p-4">
+                  {activityFeed.map(
+                    (event, index) => (
+                      <div
+                        key={index}
+                        className="rounded-lg border border-zinc-800 bg-[#151515] p-4 transition hover:border-zinc-700"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <p className="min-w-0 truncate text-sm font-medium text-zinc-100">
+                            {event.workflowName}
+                          </p>
+
+                          <span className={`shrink-0 text-xs font-semibold uppercase tracking-wide ${getStatusTone(event.status)}`}>
+                            {event.status}
+                          </span>
+                        </div>
+
+                        <p className="mt-3 text-xs text-zinc-500">
+                          Workflow #{event.workflowId}
+                        </p>
+                      </div>
+                    ),
+                  )}
+                </div>
+              )}
+            </div>
+          </aside>
         </div>
       </div>
     </main>

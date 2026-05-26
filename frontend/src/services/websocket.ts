@@ -13,6 +13,7 @@ let stompClient: Client | null = null;
 
 export const connectWebSocket = (
   onMessageReceived: (message: WorkflowEvent) => void,
+  onTaskEvent: (event: TaskExecutionEvent) => void,
 ) => {
   const client = new Client({
     webSocketFactory: () =>
@@ -28,10 +29,10 @@ export const connectWebSocket = (
         onMessageReceived(body);
       });
 
-      client.subscribe("/topic/tasks", (message: IMessage) => {
+      client.subscribe("/topic/tasks", (message) => {
         const body = JSON.parse(message.body) as TaskExecutionEvent;
 
-        console.log("Task Event:", body);
+        onTaskEvent(body);
       });
     },
     onStompError: (frame) => {

@@ -2,36 +2,41 @@ import type { Workflow } from "@/types/workflow";
 
 import type { GraphNode, GraphConnection } from "@/types/graph";
 
+type TaskStatuses = Record<number, string>;
+
 export const mapWorkflowsToGraph = (
   workflows: Workflow[],
+  taskStatuses: TaskStatuses,
 ): {
   nodes: GraphNode[];
+
   connections: GraphConnection[];
 } => {
   const nodes: GraphNode[] = workflows.map((workflow, index) => ({
     id: workflow.id,
 
-    name: workflow.name,
+    label: workflow.name,
 
-    status: workflow.status,
+    status: taskStatuses[workflow.id] || workflow.status,
 
-    x: 100 + (index % 3) * 320,
+    x: 120 + (index % 3) * 320,
 
-    y: 100 + Math.floor(index / 3) * 220,
+    y: 120 + Math.floor(index / 3) * 220,
   }));
 
-  const connections: GraphConnection[] = []
+  const connections: GraphConnection[] = [];
 
-  for(let i =0 ; i< workflows.length-1; i++){
+  for (let i = 0; i < nodes.length - 1; i++) {
     connections.push({
-      source: workflows[i].id,
+      source: nodes[i].id,
 
-      target: workflows[i+1].id,
-    })
+      target: nodes[i + 1].id,
+    });
   }
 
   return {
     nodes,
-    connections
+
+    connections,
   };
 };
