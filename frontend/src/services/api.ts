@@ -22,3 +22,13 @@ export const getAnalytics = async()=>{
 
     return response.json()
 }
+
+export const getTimeline = async (workflowId: number)=>{
+    const response = await fetch(`${API_BASE_URL}/api/v1/timeline/${workflowId}`)
+
+    if(!response.ok){
+        throw new Error("Failed to fetch timeline");
+    }
+
+    return response.json()
+}
