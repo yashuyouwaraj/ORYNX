@@ -12,10 +12,7 @@ import { getWorkflows } from "@/services/api";
 
 import { useTaskStore } from "@/store/task-store";
 
-import type {
-  Workflow,
-  WorkflowEvent,
-} from "@/types/workflow";
+import type { Workflow, WorkflowEvent } from "@/types/workflow";
 
 const getStatusTone = (status?: string) => {
   switch (status) {
@@ -34,137 +31,86 @@ const getStatusTone = (status?: string) => {
 };
 
 export default function Home() {
+  const [workflows, setWorkflows] = useState<Workflow[]>([]);
 
-  const [workflows, setWorkflows] =
-    useState<Workflow[]>([]);
+  const [activityFeed, setActivityFeed] = useState<WorkflowEvent[]>([]);
 
-  const [activityFeed, setActivityFeed] =
-    useState<WorkflowEvent[]>([]);
+  const updateTaskStatus = useTaskStore((state) => state.updateTaskStatus);
 
-  const updateTaskStatus =
-    useTaskStore(
-      (state) =>
-        state.updateTaskStatus,
-    );
-
-  const taskStatuses =
-    useTaskStore(
-      (state) =>
-        state.taskStatuses,
-    );
+  const taskStatuses = useTaskStore((state) => state.taskStatuses);
 
   useEffect(() => {
-
     const loadWorkflows = async () => {
-
       try {
-
-        const data =
-          await getWorkflows();
+        const data = await getWorkflows();
 
         setWorkflows(data);
-
       } catch (error) {
-
         console.error(error);
       }
     };
 
     void loadWorkflows();
 
-    const disconnect =
-      connectWebSocket(
+    const disconnect = connectWebSocket(
+      // Workflow Events
+      (event) => {
+        setActivityFeed((prev) => [event, ...prev]);
 
-        // Workflow Events
-        (event) => {
+        setWorkflows((prev) => {
+          const exists = prev.find(
+            (workflow) => workflow.id === event.workflowId,
+          );
 
-          setActivityFeed(
-            (prev) => [
-              event,
+          if (!exists) {
+            return [
+              {
+                id: event.workflowId,
+
+                name: event.workflowName,
+
+                goal: event.goal ?? "AI Generated Workflow",
+
+                status: event.status,
+              },
+
               ...prev,
-            ],
+            ];
+          }
+
+          return prev.map((workflow) =>
+            workflow.id === event.workflowId
+              ? {
+                  ...workflow,
+                  status: event.status,
+                }
+              : workflow,
           );
+        });
+      },
 
-          setWorkflows((prev) => {
-
-            const exists =
-              prev.find(
-                (workflow) =>
-                  workflow.id ===
-                  event.workflowId,
-              );
-
-            if (!exists) {
-
-              return [
-                {
-                  id: event.workflowId,
-                  name:
-                    event.workflowName,
-                  goal:
-                    "Realtime Workflow",
-                  status:
-                    event.status,
-                },
-
-                ...prev,
-              ];
-            }
-
-            return prev.map(
-              (workflow) =>
-
-                workflow.id ===
-                event.workflowId
-
-                  ? {
-                      ...workflow,
-                      status:
-                        event.status,
-                    }
-
-                  : workflow,
-            );
-          });
-        },
-
-        // Task Events
-        (taskEvent) => {
-
-          updateTaskStatus(
-            taskEvent.taskId,
-            taskEvent.status,
-          );
-        },
-      );
-
-    return disconnect;
-
-  }, [updateTaskStatus]);
-
-  const { nodes, connections } =
-    mapWorkflowsToGraph(
-      workflows,
-      taskStatuses,
+      // Task Events
+      (taskEvent) => {
+        updateTaskStatus(taskEvent.taskId, taskEvent.status);
+      },
     );
 
-  const runningCount =
-    workflows.filter(
-      (workflow) =>
-        workflow.status === "RUNNING",
-    ).length;
+    return disconnect;
+  }, [updateTaskStatus]);
 
-  const completedCount =
-    workflows.filter(
-      (workflow) =>
-        workflow.status === "COMPLETED",
-    ).length;
+  const { nodes, connections } = mapWorkflowsToGraph(workflows, taskStatuses);
 
-  const failedCount =
-    workflows.filter(
-      (workflow) =>
-        workflow.status === "FAILED",
-    ).length;
+  const runningCount = workflows.filter(
+    (workflow) => workflow.status === "RUNNING",
+  ).length;
+
+  const completedCount = workflows.filter(
+    (workflow) => workflow.status === "COMPLETED",
+  ).length;
+
+  const failedCount = workflows.filter(
+    (workflow) => workflow.status === "FAILED",
+  ).length;
 
   return (
     <main className="min-h-screen bg-[#080808] text-zinc-100">
@@ -185,24 +131,37 @@ export default function Home() {
             </h1>
 
             <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-400">
-              Distributed orchestration, workflow state, and execution activity in one operational view.
+              Distributed orchestration, workflow state, and execution activity
+              in one operational view.
             </p>
           </div>
 
           <div className="grid grid-cols-3 gap-3 sm:min-w-[420px]">
             <div className="rounded-lg border border-zinc-800 bg-[#111111] p-4">
-              <p className="text-xs uppercase tracking-wide text-zinc-500">Running</p>
-              <p className="mt-2 text-2xl font-semibold text-cyan-200">{runningCount}</p>
+              <p className="text-xs uppercase tracking-wide text-zinc-500">
+                Running
+              </p>
+              <p className="mt-2 text-2xl font-semibold text-cyan-200">
+                {runningCount}
+              </p>
             </div>
 
             <div className="rounded-lg border border-zinc-800 bg-[#111111] p-4">
-              <p className="text-xs uppercase tracking-wide text-zinc-500">Complete</p>
-              <p className="mt-2 text-2xl font-semibold text-emerald-200">{completedCount}</p>
+              <p className="text-xs uppercase tracking-wide text-zinc-500">
+                Complete
+              </p>
+              <p className="mt-2 text-2xl font-semibold text-emerald-200">
+                {completedCount}
+              </p>
             </div>
 
             <div className="rounded-lg border border-zinc-800 bg-[#111111] p-4">
-              <p className="text-xs uppercase tracking-wide text-zinc-500">Failed</p>
-              <p className="mt-2 text-2xl font-semibold text-rose-200">{failedCount}</p>
+              <p className="text-xs uppercase tracking-wide text-zinc-500">
+                Failed
+              </p>
+              <p className="mt-2 text-2xl font-semibold text-rose-200">
+                {failedCount}
+              </p>
             </div>
           </div>
         </header>
@@ -225,10 +184,7 @@ export default function Home() {
               </div>
             </div>
 
-            <WorkflowGraph
-              nodes={nodes}
-              connections={connections}
-            />
+            <WorkflowGraph nodes={nodes} connections={connections} />
           </section>
 
           <aside className="min-w-0">
@@ -252,7 +208,9 @@ export default function Home() {
                 <div className="flex h-full items-center justify-center px-8 text-center">
                   <div>
                     <div className="mx-auto mb-4 h-2 w-20 rounded-full bg-zinc-800" />
-                    <p className="font-medium text-zinc-200">Waiting for events</p>
+                    <p className="font-medium text-zinc-200">
+                      Waiting for events
+                    </p>
                     <p className="mt-2 text-sm leading-6 text-zinc-500">
                       Workflow status updates will stream into this panel.
                     </p>
@@ -260,28 +218,28 @@ export default function Home() {
                 </div>
               ) : (
                 <div className="max-h-full space-y-3 overflow-y-auto p-4">
-                  {activityFeed.map(
-                    (event, index) => (
-                      <div
-                        key={index}
-                        className="rounded-lg border border-zinc-800 bg-[#151515] p-4 transition hover:border-zinc-700"
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <p className="min-w-0 truncate text-sm font-medium text-zinc-100">
-                            {event.workflowName}
-                          </p>
-
-                          <span className={`shrink-0 text-xs font-semibold uppercase tracking-wide ${getStatusTone(event.status)}`}>
-                            {event.status}
-                          </span>
-                        </div>
-
-                        <p className="mt-3 text-xs text-zinc-500">
-                          Workflow #{event.workflowId}
+                  {activityFeed.map((event, index) => (
+                    <div
+                      key={index}
+                      className="rounded-lg border border-zinc-800 bg-[#151515] p-4 transition hover:border-zinc-700"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <p className="min-w-0 truncate text-sm font-medium text-zinc-100">
+                          {event.workflowName}
                         </p>
+
+                        <span
+                          className={`shrink-0 text-xs font-semibold uppercase tracking-wide ${getStatusTone(event.status)}`}
+                        >
+                          {event.status}
+                        </span>
                       </div>
-                    ),
-                  )}
+
+                      <p className="mt-3 text-xs text-zinc-500">
+                        Workflow #{event.workflowId}
+                      </p>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>

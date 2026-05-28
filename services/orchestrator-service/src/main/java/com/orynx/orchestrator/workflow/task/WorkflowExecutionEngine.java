@@ -1,6 +1,7 @@
 package com.orynx.orchestrator.workflow.task;
 
 import com.orynx.orchestrator.workflow.task.dto.TaskExecutionEvent;
+import com.orynx.orchestrator.workflow.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -13,9 +14,13 @@ import java.util.List;
 public class WorkflowExecutionEngine {
     private final WorkflowTaskRepository workflowTaskRepository;
     private final TaskEventProducer taskEventProducer;
+    private final WorkflowRepository workflowRepository;
 
     public void executeWorkflow(Long workflowId){
         List<WorkflowTask> tasks = workflowTaskRepository.findByWorkflowIdOrderByExecutionOrder(workflowId);
+
+        Workflow workflow = workflowRepository.findById(workflowId)
+                .orElseThrow(()-> new RuntimeException("Workflow not found"));
 
         if (tasks.isEmpty()) {
             log.warn("No tasks found for workflow: {}", workflowId);
@@ -60,7 +65,16 @@ public class WorkflowExecutionEngine {
                             .build()
             );
 
+
+
+
             log.info("Completed task: {}",task.getName());
         }
+
+        workflow.setStatus(WorkflowStatus.COMPLETED);
+
+        workflowRepository.save(workflow);
+
+        log.info("Workflow completed: {}",workflow.getName());
     }
 }

@@ -13,5 +13,7 @@ export interface WorkflowEvent {
 
   workflowName: string;
 
+  goal?: string;
+
   status: string;
 }

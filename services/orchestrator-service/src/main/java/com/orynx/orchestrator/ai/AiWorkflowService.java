@@ -2,8 +2,10 @@ package com.orynx.orchestrator.ai;
 
 import com.orynx.orchestrator.ai.dto.AiWorkflowResponse;
 import com.orynx.orchestrator.workflow.Workflow;
+import com.orynx.orchestrator.workflow.WorkflowEventProducer;
 import com.orynx.orchestrator.workflow.WorkflowRepository;
 import com.orynx.orchestrator.workflow.WorkflowStatus;
+import com.orynx.orchestrator.workflow.dto.WorkflowRealtimeEvent;
 import com.orynx.orchestrator.workflow.task.TaskStatus;
 import com.orynx.orchestrator.workflow.task.WorkflowTask;
 import com.orynx.orchestrator.workflow.task.WorkflowTaskRepository;
@@ -18,6 +20,8 @@ public class AiWorkflowService {
     private final AiPlannerService aiPlannerService;
     private final WorkflowRepository workflowRepository;
     private final WorkflowTaskRepository workflowTaskRepository;
+    private final WorkflowEventProducer workflowEventProducer;
+
     public Workflow createdAiWorkflow(String goal){
         AiWorkflowResponse aiWorkflowResponse = aiPlannerService.generateWorkflowPlan(goal);
 
@@ -28,6 +32,13 @@ public class AiWorkflowService {
                 .build();
 
         Workflow savedWorkflow = workflowRepository.save(workflow);
+
+        workflowEventProducer.publishWorkflowEvent(WorkflowRealtimeEvent.builder()
+                        .workflowId(savedWorkflow.getId())
+                        .workflowName(savedWorkflow.getName())
+                        .goal(savedWorkflow.getGoal())
+                        .status(savedWorkflow.getStatus().name())
+                        .build());
 
         List<String> tasks = aiWorkflowResponse.getTasks();
 
