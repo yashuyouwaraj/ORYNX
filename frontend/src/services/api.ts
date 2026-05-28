@@ -12,3 +12,13 @@ export const getWorkflows = async (): Promise<Workflow[]> => {
 
     return response.json()
 }
+
+export const getAnalytics = async()=>{
+    const response = await fetch(`${API_BASE_URL}/api/v1/analytics`)
+
+    if(!response.ok){
+        throw new Error("Failed to fetch analytics");
+    }
+
+    return response.json()
+}

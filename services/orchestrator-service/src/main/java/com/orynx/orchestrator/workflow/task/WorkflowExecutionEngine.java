@@ -27,10 +27,13 @@ public class WorkflowExecutionEngine {
             return;
         }
 
+
+
         for (WorkflowTask task: tasks){
             log.info("Executing task: {}",task.getName());
 
             task.setStatus(TaskStatus.RUNNING);
+            task.setStartedAt(System.currentTimeMillis());
 
             workflowTaskRepository.save(task);
 
@@ -50,6 +53,7 @@ public class WorkflowExecutionEngine {
             }
 
             task.setStatus(TaskStatus.COMPLETED);
+            task.setCompletedAt(System.currentTimeMillis());
 
             workflowTaskRepository.save(task);
 

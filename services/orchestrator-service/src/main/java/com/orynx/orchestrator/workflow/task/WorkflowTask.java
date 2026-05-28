@@ -26,4 +26,8 @@ public class WorkflowTask {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "workflow_id")
     private Workflow workflow;
+
+    private Long startedAt;
+
+    private Long completedAt;
 }

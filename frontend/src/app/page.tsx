@@ -6,6 +6,10 @@ import WorkflowGraph from "@/components/WorkflowGraph";
 
 import { mapWorkflowsToGraph } from "@/utils/graphMapper";
 
+import type { Analytics } from "@/types/analytics";
+
+import { getAnalytics } from "@/services/api";
+
 import { connectWebSocket } from "@/services/websocket";
 
 import { getWorkflows } from "@/services/api";
@@ -35,6 +39,8 @@ export default function Home() {
 
   const [activityFeed, setActivityFeed] = useState<WorkflowEvent[]>([]);
 
+  const [analytics, setAnalytics] = useState<Analytics | null>(null);
+
   const updateTaskStatus = useTaskStore((state) => state.updateTaskStatus);
 
   const taskStatuses = useTaskStore((state) => state.taskStatuses);
@@ -43,6 +49,9 @@ export default function Home() {
     const loadWorkflows = async () => {
       try {
         const data = await getWorkflows();
+        const analyticsData = await getAnalytics();
+
+        setAnalytics(analyticsData);
 
         setWorkflows(data);
       } catch (error) {
@@ -135,40 +144,85 @@ export default function Home() {
               in one operational view.
             </p>
           </div>
-
-          <div className="grid grid-cols-3 gap-3 sm:min-w-[420px]">
-            <div className="rounded-lg border border-zinc-800 bg-[#111111] p-4">
-              <p className="text-xs uppercase tracking-wide text-zinc-500">
-                Running
-              </p>
-              <p className="mt-2 text-2xl font-semibold text-cyan-200">
-                {runningCount}
-              </p>
-            </div>
-
-            <div className="rounded-lg border border-zinc-800 bg-[#111111] p-4">
-              <p className="text-xs uppercase tracking-wide text-zinc-500">
-                Complete
-              </p>
-              <p className="mt-2 text-2xl font-semibold text-emerald-200">
-                {completedCount}
-              </p>
-            </div>
-
-            <div className="rounded-lg border border-zinc-800 bg-[#111111] p-4">
-              <p className="text-xs uppercase tracking-wide text-zinc-500">
-                Failed
-              </p>
-              <p className="mt-2 text-2xl font-semibold text-rose-200">
-                {failedCount}
-              </p>
-            </div>
-          </div>
         </header>
 
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
           <section className="min-w-0">
             <div className="mb-4 flex items-center justify-between gap-4">
+              <div
+                className="
+                    mb-10
+                    grid
+                    grid-cols-1
+                    gap-6
+                    md:grid-cols-4
+                  "
+              >
+                <div
+                  className="
+                    rounded-2xl
+                    border
+                    border-zinc-800
+                    bg-zinc-900
+                    p-6
+                  "
+                >
+                  <p className="text-zinc-400">Workflows</p>
+
+                  <h2 className="mt-2 text-4xl font-bold">
+                    {analytics?.totalWorkflows ?? 0}
+                  </h2>
+                </div>
+
+                <div
+                  className="
+                    rounded-2xl
+                    border
+                    border-zinc-800
+                    bg-zinc-900
+                    p-6
+                  "
+                >
+                  <p className="text-zinc-400">Completed</p>
+
+                  <h2 className="mt-2 text-4xl font-bold text-emerald-400">
+                    {analytics?.completedWorkflows ?? 0}
+                  </h2>
+                </div>
+
+                <div
+                  className="
+                    rounded-2xl
+                    border
+                    border-zinc-800
+                    bg-zinc-900
+                    p-6
+                  "
+                >
+                  <p className="text-zinc-400">Running</p>
+
+                  <h2 className="mt-2 text-4xl font-bold text-cyan-400">
+                    {analytics?.runningWorkflows ?? 0}
+                  </h2>
+                </div>
+
+                <div
+                  className="
+                        rounded-2xl
+                        border
+                        border-zinc-800
+                        bg-zinc-900
+                        p-6
+                      "
+                >
+                  <p className="text-zinc-400">Avg Execution</p>
+
+                  <h2 className="mt-2 text-4xl font-bold text-orange-400">
+                    {Math.floor((analytics?.averageExecutionTime ?? 0) / 1000)}s
+                  </h2>
+                </div>
+              </div>
+
               <div>
                 <h2 className="text-lg font-semibold text-white">
                   Orchestration Graph
