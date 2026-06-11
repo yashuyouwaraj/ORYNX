@@ -8,4 +8,12 @@ export interface Analytics {
   totalTasks: number;
 
   averageExecutionTime: number;
+
+  workflowSuccessRate: number;
+
+  workflowFailureRate: number;
+
+  executedTaskCount: number;
+
+  eventCount: number;
 }

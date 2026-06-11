@@ -18,4 +18,12 @@ public class WorkflowAnalyticsResponse {
     private Long totalTasks;
 
     private Double averageExecutionTime;
+
+    private Double workflowSuccessRate;
+
+    private Double workflowFailureRate;
+
+    private Long executedTaskCount;
+
+    private Long eventCount;
 }

@@ -40,6 +40,26 @@ const formatTimelineTime = (timestamp?: number) => {
   }).format(new Date(timestamp));
 };
 
+interface MetricCardProps {
+  title: string;
+  value: string | number;
+  valueClassName?: string;
+}
+
+function MetricCard({
+  title,
+  value,
+  valueClassName = "text-white",
+}: MetricCardProps) {
+  return (
+    <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
+      <p className="text-sm text-zinc-500">{title}</p>
+
+      <h2 className={`mt-3 text-4xl font-bold ${valueClassName}`}>{value}</h2>
+    </div>
+  );
+}
+
 export default function Home() {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [activityFeed, setActivityFeed] = useState<WorkflowEvent[]>([]);
@@ -148,35 +168,78 @@ export default function Home() {
           </div>
         </header>
 
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-4">
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
-            <p className="text-zinc-400">Workflows</p>
-            <h2 className="mt-2 text-4xl font-bold">
-              {analytics?.totalWorkflows ?? 0}
+        <section className="space-y-8">
+          <div>
+            <h2 className="text-lg font-semibold text-white">
+              Platform Metrics
             </h2>
+
+            <p className="mt-1 text-sm text-zinc-500">
+              Workflow execution statistics
+            </p>
+
+            <div className="mt-4 grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
+              <MetricCard
+                title="Workflows"
+                value={analytics?.totalWorkflows ?? 0}
+              />
+
+              <MetricCard
+                title="Completed"
+                value={analytics?.completedWorkflows ?? 0}
+                valueClassName="text-emerald-400"
+              />
+
+              <MetricCard
+                title="Running"
+                value={analytics?.runningWorkflows ?? 0}
+                valueClassName="text-cyan-400"
+              />
+
+              <MetricCard
+                title="Avg Execution"
+                value={`${Math.floor((analytics?.averageExecutionTime ?? 0) / 1000)}s`}
+                valueClassName="text-orange-400"
+              />
+            </div>
           </div>
 
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
-            <p className="text-zinc-400">Completed</p>
-            <h2 className="mt-2 text-4xl font-bold text-emerald-400">
-              {analytics?.completedWorkflows ?? 0}
+          <div>
+            <h2 className="text-lg font-semibold text-white">
+              Platform Health
             </h2>
-          </div>
 
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
-            <p className="text-zinc-400">Running</p>
-            <h2 className="mt-2 text-4xl font-bold text-cyan-400">
-              {analytics?.runningWorkflows ?? 0}
-            </h2>
-          </div>
+            <p className="mt-1 text-sm text-zinc-500">
+              Operational telemetry and execution health
+            </p>
 
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
-            <p className="text-zinc-400">Avg Execution</p>
-            <h2 className="mt-2 text-4xl font-bold text-orange-400">
-              {Math.floor((analytics?.averageExecutionTime ?? 0) / 1000)}s
-            </h2>
+            <div className="mt-4 grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
+              <MetricCard
+                title="Success Rate"
+                value={`${(analytics?.workflowSuccessRate ?? 0).toFixed(1)}%`}
+                valueClassName="text-emerald-400"
+              />
+
+              <MetricCard
+                title="Failure Rate"
+                value={`${(analytics?.workflowFailureRate ?? 0).toFixed(1)}%`}
+                valueClassName="text-rose-400"
+              />
+
+              <MetricCard
+                title="Executed Tasks"
+                value={analytics?.executedTaskCount ?? 0}
+                valueClassName="text-cyan-400"
+              />
+
+              <MetricCard
+                title="Event Volume"
+                value={analytics?.eventCount ?? 0}
+                valueClassName="text-orange-400"
+              />
+            </div>
           </div>
-        </div>
+        </section>
 
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
           <section className="min-w-0">
@@ -206,16 +269,14 @@ export default function Home() {
                 Execution Timeline
               </h2>
 
-              <div className="space-y-4">
+              <div className="max-h-[420px] overflow-y-auto space-y-4">
                 {timeline.map((event, index) => (
                   <div
                     key={index}
                     className="rounded-xl border border-zinc-800 bg-zinc-900 p-4"
                   >
                     <p className="text-cyan-400">{event.taskName}</p>
-                    <p className="mt-1 text-sm text-zinc-400">
-                      {event.status}
-                    </p>
+                    <p className="mt-1 text-sm text-zinc-400">{event.status}</p>
                     <p className="mt-2 text-xs text-zinc-500">
                       {formatTimelineTime(event.timestamp)}
                     </p>
@@ -239,7 +300,7 @@ export default function Home() {
               </span>
             </div>
 
-            <div className="h-[620px] overflow-hidden rounded-lg border border-zinc-800 bg-[#101010]">
+            <div className="h-[420px] overflow-hidden rounded-lg border border-zinc-800 bg-[#101010]">
               {activityFeed.length === 0 ? (
                 <div className="flex h-full items-center justify-center px-8 text-center">
                   <div>
