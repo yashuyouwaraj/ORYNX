@@ -3,13 +3,19 @@
 import { useEffect, useState } from "react";
 
 import WorkflowGraph from "@/components/WorkflowGraph";
-import { getAnalytics, getTimeline, getWorkflows } from "@/services/api";
+import {
+  getAnalytics,
+  getPerformance,
+  getTimeline,
+  getWorkflows,
+} from "@/services/api";
 import { connectWebSocket } from "@/services/websocket";
 import { useTaskStore } from "@/store/task-store";
 import type { Analytics } from "@/types/analytics";
 import type { TimelineEvent } from "@/types/timeline";
 import type { Workflow, WorkflowEvent } from "@/types/workflow";
 import { mapWorkflowsToGraph } from "@/utils/graphMapper";
+import { WorkflowPerformance } from "@/types/performance";
 
 const getStatusTone = (status?: string) => {
   switch (status) {
@@ -65,6 +71,7 @@ export default function Home() {
   const [activityFeed, setActivityFeed] = useState<WorkflowEvent[]>([]);
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
+  const [performance, setPerformance] = useState<WorkflowPerformance[]>([]);
 
   const updateTaskStatus = useTaskStore((state) => state.updateTaskStatus);
   const taskStatuses = useTaskStore((state) => state.taskStatuses);
@@ -74,9 +81,12 @@ export default function Home() {
       try {
         const workflowData = await getWorkflows();
         const analyticsData = await getAnalytics();
+        const performanceData = await getPerformance();
 
         setWorkflows(workflowData);
+        setPerformance(performanceData);
         setAnalytics(analyticsData);
+        
 
         if (workflowData.length > 0) {
           const latestWorkflow = workflowData[0];
@@ -125,9 +135,11 @@ export default function Home() {
         try {
           const analyticsData = await getAnalytics();
           const timelineData = await getTimeline(event.workflowId);
+          const performanceData = await getPerformance()
 
           setAnalytics(analyticsData);
           setTimeline(timelineData);
+          setPerformance(performanceData)
         } catch (error) {
           console.error(error);
         }
@@ -283,6 +295,58 @@ export default function Home() {
                   </div>
                 ))}
               </div>
+            </div>
+
+            <div className="mb-8">
+              <h2 className="mb-6 text-2xl font-semibold">
+                Performance Leaderboard
+              </h2>
+
+              {performance.length === 0 ? (
+                <p className="text-zinc-500">No completed workflows yet</p>
+              ) : (
+                <div className="space-y-3">
+                  {performance.map((workflow, index) => (
+                    <div
+                      key={index}
+                      className="
+                      rounded-xl
+                      border
+                      border-zinc-800
+                      bg-zinc-900
+                      p-4
+          "
+                    >
+                      <div
+                        className="
+                        flex
+                        items-center
+                        justify-between
+                      "
+                      >
+                        <p
+                          className="
+                        text-sm
+                        font-medium
+                        text-zinc-200
+                      "
+                        >
+                          {workflow.workflowName}
+                        </p>
+
+                        <span
+                          className="
+                        text-cyan-400
+                        font-semibold
+              "
+                        >
+                          {(workflow.durationMs / 1000).toFixed(2)}s
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="mb-4 flex items-center justify-between">

@@ -32,3 +32,13 @@ export const getTimeline = async (workflowId: number)=>{
 
     return response.json()
 }
+
+export const getPerformance = async ()=>{
+    const response = await fetch(`${API_BASE_URL}/api/v1/performance`)
+
+    if(!response.ok){
+        throw new Error("Failed to fetch performance");
+    }
+
+    return response.json()
+}

@@ -21,4 +21,8 @@ public class Workflow {
 
     @Enumerated(EnumType.STRING)
     private WorkflowStatus status;
+
+    private Long startedAt;
+
+    private Long completedAt;
 }

@@ -1,5 +1,6 @@
 package com.orynx.orchestrator.workflow.task;
 
+import com.orynx.orchestrator.workflow.dto.WorkflowRealtimeEvent;
 import com.orynx.orchestrator.workflow.task.dto.TaskExecutionEvent;
 import com.orynx.orchestrator.workflow.*;
 import lombok.RequiredArgsConstructor;
@@ -15,12 +16,16 @@ public class WorkflowExecutionEngine {
     private final WorkflowTaskRepository workflowTaskRepository;
     private final TaskEventProducer taskEventProducer;
     private final WorkflowRepository workflowRepository;
+    private final WorkflowEventProducer workflowEventProducer;
 
     public void executeWorkflow(Long workflowId){
         List<WorkflowTask> tasks = workflowTaskRepository.findByWorkflowIdOrderByExecutionOrder(workflowId);
 
         Workflow workflow = workflowRepository.findById(workflowId)
                 .orElseThrow(()-> new RuntimeException("Workflow not found"));
+
+        workflow.setStartedAt(System.currentTimeMillis());
+        workflowRepository.save(workflow);
 
         if (tasks.isEmpty()) {
             log.warn("No tasks found for workflow: {}", workflowId);
@@ -77,7 +82,18 @@ public class WorkflowExecutionEngine {
 
         workflow.setStatus(WorkflowStatus.COMPLETED);
 
+        workflow.setCompletedAt(System.currentTimeMillis());
+
         workflowRepository.save(workflow);
+
+        workflowEventProducer.publishWorkflowEvent(
+                WorkflowRealtimeEvent.builder()
+                        .workflowId(workflow.getId())
+                        .workflowName(workflow.getName())
+                        .goal(workflow.getGoal())
+                        .status("COMPLETED")
+                        .build()
+        );
 
         log.info("Workflow completed: {}",workflow.getName());
     }
