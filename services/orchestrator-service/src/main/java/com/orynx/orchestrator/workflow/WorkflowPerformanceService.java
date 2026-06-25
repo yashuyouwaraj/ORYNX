@@ -1,5 +1,6 @@
 package com.orynx.orchestrator.workflow;
 
+import com.orynx.orchestrator.workflow.dto.WorkflowHealthResponse;
 import com.orynx.orchestrator.workflow.dto.WorkflowPerformanceResponse;
 import com.orynx.orchestrator.workflow.dto.WorkflowPerformanceSummaryResponse;
 import lombok.RequiredArgsConstructor;
@@ -64,5 +65,48 @@ public class WorkflowPerformanceService {
                 .averageDuration(average)
                 .completedWorkflowCount((long) completed.size())
                 .build();
+    }
+    
+    public List<WorkflowHealthResponse> getWorkflowHealth(){
+        var completed = workflowRepository.findAll()
+                .stream()
+                .filter(workflow -> workflow.getStartedAt() !=null && workflow.getCompletedAt() !=null)
+                .toList();
+        
+        if(completed.isEmpty()){
+            return List.of();
+        }
+        
+        double average = completed.stream()
+                .mapToLong(workflow -> workflow.getCompletedAt() - workflow.getStartedAt())
+                .average()
+                .orElse(0);
+        
+        return completed.stream()
+                .map(workflow -> {
+                    long duration = workflow.getCompletedAt() -workflow.getStartedAt();
+                    
+                    String health;
+                    String reason;
+                    
+                    if(duration <=average){
+                        health="HEALTHY";
+                        reason="Execution is within expected duration";
+                    } else if (duration <= average*1.5) {
+                        health = "WARNING";
+                        reason = "Execution exceeded average duration.";
+                    } else {
+                        health = "CRITICAL";
+                        reason = "Execution significantly exceeded average duration.";
+                    }
+
+                    return WorkflowHealthResponse.builder()
+                            .workflowName(workflow.getName())
+                            .durationMs(duration)
+                            .health(health)
+                            .reason(reason)
+                            .build();
+                })
+                .toList();
     }
 }

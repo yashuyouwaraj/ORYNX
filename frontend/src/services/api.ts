@@ -52,3 +52,13 @@ export const getPerformanceSummary = async ()=>{
 
     return response.json()
 }
+
+export const getWorkflowHealth = async () => {
+    const response = await fetch(`${API_BASE_URL}/api/v1/performance/health`);
+
+    if(!response.ok){
+        throw new Error("Failed to fetch workflow health");
+    }
+
+    return response.json()
+}

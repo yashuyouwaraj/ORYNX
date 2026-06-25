@@ -1,5 +1,6 @@
 package com.orynx.orchestrator.workflow;
 
+import com.orynx.orchestrator.workflow.dto.WorkflowHealthResponse;
 import com.orynx.orchestrator.workflow.dto.WorkflowPerformanceResponse;
 import com.orynx.orchestrator.workflow.dto.WorkflowPerformanceSummaryResponse;
 import lombok.RequiredArgsConstructor;
@@ -23,6 +24,11 @@ public class WorkflowPerformanceController {
     @GetMapping("/summary")
     public WorkflowPerformanceSummaryResponse getPerformanceSummary(){
         return workflowPerformanceService.getPerformanceSummary();
+    }
+
+    @GetMapping("/health")
+    public List<WorkflowHealthResponse> getWorkflowHealth(){
+        return workflowPerformanceService.getWorkflowHealth();
     }
 }
 

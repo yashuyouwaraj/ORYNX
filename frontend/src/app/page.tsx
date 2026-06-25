@@ -9,6 +9,7 @@ import {
   getTimeline,
   getWorkflows,
   getPerformanceSummary,
+  getWorkflowHealth,
 } from "@/services/api";
 import { connectWebSocket } from "@/services/websocket";
 import { useTaskStore } from "@/store/task-store";
@@ -18,6 +19,7 @@ import type { Workflow, WorkflowEvent } from "@/types/workflow";
 import { mapWorkflowsToGraph } from "@/utils/graphMapper";
 import { WorkflowPerformance } from "@/types/performance";
 import type { PerformanceSummary } from "@/types/performance-summary";
+import type { WorkflowHealth } from "@/types/workflow-health";
 
 const getStatusTone = (status?: string) => {
   switch (status) {
@@ -68,6 +70,22 @@ function MetricCard({
   );
 }
 
+const getHealthColor = (health: string) => {
+  switch (health) {
+    case "HEALTHY":
+      return "text-emerald-400";
+
+    case "WARNING":
+      return "text-yellow-400";
+
+    case "CRITICAL":
+      return "text-red-400";
+
+    default:
+      return "text-zinc-400";
+  }
+};
+
 export default function Home() {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [activityFeed, setActivityFeed] = useState<WorkflowEvent[]>([]);
@@ -76,6 +94,7 @@ export default function Home() {
   const [performance, setPerformance] = useState<WorkflowPerformance[]>([]);
   const [performanceSummary, setPerformanceSummary] =
     useState<PerformanceSummary | null>(null);
+  const [workflowHealth, setWorkflowHealth] = useState<WorkflowHealth[]>([]);
 
   const updateTaskStatus = useTaskStore((state) => state.updateTaskStatus);
   const taskStatuses = useTaskStore((state) => state.taskStatuses);
@@ -87,7 +106,9 @@ export default function Home() {
         const analyticsData = await getAnalytics();
         const performanceData = await getPerformance();
         const summary = await getPerformanceSummary();
+        const healthData = await getWorkflowHealth();
 
+        setWorkflowHealth(healthData);
         setWorkflows(workflowData);
         setPerformance(performanceData);
         setAnalytics(analyticsData);
@@ -141,7 +162,9 @@ export default function Home() {
           const analyticsData = await getAnalytics();
           const timelineData = await getTimeline(event.workflowId);
           const performanceData = await getPerformance();
+          const healthData = await getWorkflowHealth();
 
+          setWorkflowHealth(healthData);
           setAnalytics(analyticsData);
           setTimeline(timelineData);
           setPerformance(performanceData);
@@ -427,6 +450,74 @@ export default function Home() {
                   ))}
                 </div>
               )}
+            </div>
+
+            <div className="mb-8">
+              <h2 className="mb-6 text-2xl font-semibold">Workflow Health</h2>
+
+              <div className="max-h-[260px] space-y-3 overflow-y-auto">
+                {workflowHealth.map((workflow, index) => (
+                  <div
+                    key={index}
+                    className="
+            rounded-xl
+            border
+            border-zinc-800
+            bg-zinc-900
+            p-4
+          "
+                  >
+                    <div
+                      className="
+              flex
+              items-center
+              justify-between
+            "
+                    >
+                      <p
+                        className="
+                truncate
+                text-sm
+                font-medium
+                text-zinc-100
+              "
+                      >
+                        {workflow.workflowName}
+                      </p>
+
+                      <span
+                        className={`
+                text-xs
+                font-bold
+                ${getHealthColor(workflow.health)}
+              `}
+                      >
+                        {workflow.health}
+                      </span>
+                    </div>
+
+                    <p
+                      className="
+              mt-2
+              text-xs
+              text-zinc-500
+            "
+                    >
+                      {workflow.reason}
+                    </p>
+
+                    <p
+                      className="
+              mt-2
+              text-xs
+              text-cyan-400
+            "
+                    >
+                      {(workflow.durationMs / 1000).toFixed(2)} s
+                    </p>
+                  </div>
+                ))}
+              </div>
             </div>
 
             <div className="mb-4 flex items-center justify-between">
