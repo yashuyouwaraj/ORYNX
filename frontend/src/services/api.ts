@@ -42,3 +42,13 @@ export const getPerformance = async ()=>{
 
     return response.json()
 }
+
+export const getPerformanceSummary = async ()=>{
+    const response = await fetch(`${API_BASE_URL}/api/v1/performance/summary`)
+
+    if(!response.ok){
+        throw new Error("Failed to fetch performance summary");
+    }
+
+    return response.json()
+}

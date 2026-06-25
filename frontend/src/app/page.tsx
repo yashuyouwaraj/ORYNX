@@ -8,6 +8,7 @@ import {
   getPerformance,
   getTimeline,
   getWorkflows,
+  getPerformanceSummary,
 } from "@/services/api";
 import { connectWebSocket } from "@/services/websocket";
 import { useTaskStore } from "@/store/task-store";
@@ -16,6 +17,7 @@ import type { TimelineEvent } from "@/types/timeline";
 import type { Workflow, WorkflowEvent } from "@/types/workflow";
 import { mapWorkflowsToGraph } from "@/utils/graphMapper";
 import { WorkflowPerformance } from "@/types/performance";
+import type { PerformanceSummary } from "@/types/performance-summary";
 
 const getStatusTone = (status?: string) => {
   switch (status) {
@@ -72,6 +74,8 @@ export default function Home() {
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const [performance, setPerformance] = useState<WorkflowPerformance[]>([]);
+  const [performanceSummary, setPerformanceSummary] =
+    useState<PerformanceSummary | null>(null);
 
   const updateTaskStatus = useTaskStore((state) => state.updateTaskStatus);
   const taskStatuses = useTaskStore((state) => state.taskStatuses);
@@ -82,11 +86,12 @@ export default function Home() {
         const workflowData = await getWorkflows();
         const analyticsData = await getAnalytics();
         const performanceData = await getPerformance();
+        const summary = await getPerformanceSummary();
 
         setWorkflows(workflowData);
         setPerformance(performanceData);
         setAnalytics(analyticsData);
-        
+        setPerformanceSummary(summary);
 
         if (workflowData.length > 0) {
           const latestWorkflow = workflowData[0];
@@ -135,11 +140,11 @@ export default function Home() {
         try {
           const analyticsData = await getAnalytics();
           const timelineData = await getTimeline(event.workflowId);
-          const performanceData = await getPerformance()
+          const performanceData = await getPerformance();
 
           setAnalytics(analyticsData);
           setTimeline(timelineData);
-          setPerformance(performanceData)
+          setPerformance(performanceData);
         } catch (error) {
           console.error(error);
         }
@@ -250,6 +255,81 @@ export default function Home() {
                 valueClassName="text-orange-400"
               />
             </div>
+
+            <section className="space-y-4">
+              <div>
+                <h2 className="text-lg font-semibold text-white">
+                  Performance Intelligence
+                </h2>
+
+                <p className="mt-1 text-sm text-zinc-500">
+                  Runtime execution insights
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
+                <MetricCard
+                  title="Fastest"
+                  value={
+                    performanceSummary
+                      ? `${(performanceSummary.fastestDuration / 1000).toFixed(
+                          2,
+                        )}s`
+                      : "-"
+                  }
+                  valueClassName="text-emerald-400"
+                />
+
+                <MetricCard
+                  title="Slowest"
+                  value={
+                    performanceSummary
+                      ? `${(performanceSummary.slowestDuration / 1000).toFixed(
+                          2,
+                        )}s`
+                      : "-"
+                  }
+                  valueClassName="text-rose-400"
+                />
+
+                <MetricCard
+                  title="Average"
+                  value={
+                    performanceSummary
+                      ? `${(performanceSummary.averageDuration / 1000).toFixed(
+                          2,
+                        )}s`
+                      : "-"
+                  }
+                  valueClassName="text-cyan-400"
+                />
+
+                <MetricCard
+                  title="Completed"
+                  value={performanceSummary?.completedWorkflowCount ?? 0}
+                  valueClassName="text-orange-400"
+                />
+              </div>
+              <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
+                <h3 className="text-lg font-semibold">Performance Summary</h3>
+
+                <div className="mt-4 space-y-2 text-sm">
+                  <p>
+                    ⚡ Fastest:{" "}
+                    <span className="text-emerald-400">
+                      {performanceSummary?.fastestWorkflow ?? "-"}
+                    </span>
+                  </p>
+
+                  <p>
+                    🐢 Slowest:{" "}
+                    <span className="text-rose-400">
+                      {performanceSummary?.slowestWorkflow ?? "-"}
+                    </span>
+                  </p>
+                </div>
+              </div>
+            </section>
           </div>
         </section>
 
