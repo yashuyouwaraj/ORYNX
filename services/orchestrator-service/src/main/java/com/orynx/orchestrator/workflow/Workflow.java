@@ -2,6 +2,9 @@ package com.orynx.orchestrator.workflow;
 
 import jakarta.persistence.*;
 import lombok.*;
+import jakarta.persistence.ManyToOne;
+import jakarta.persistence.FetchType;
+import jakarta.persistence.JoinColumn;
 
 import java.time.LocalDateTime;
 
@@ -28,6 +31,10 @@ public class Workflow {
 
     @Builder.Default
     private Boolean scheduled = false;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "depends_on_workflow_id")
+    private Workflow dependsOnWorkflow;
 
     private Long startedAt;
 

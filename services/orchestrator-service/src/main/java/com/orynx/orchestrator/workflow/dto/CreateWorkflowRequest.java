@@ -16,4 +16,6 @@ public class CreateWorkflowRequest {
     private String goal;
 
     private LocalDateTime scheduledAt;
+
+    private Long dependsOnWorkflowId;
 }
