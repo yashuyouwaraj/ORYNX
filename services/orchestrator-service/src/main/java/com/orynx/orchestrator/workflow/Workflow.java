@@ -3,6 +3,8 @@ package com.orynx.orchestrator.workflow;
 import jakarta.persistence.*;
 import lombok.*;
 
+import java.time.LocalDateTime;
+
 @Entity
 @Table(name = "workflows")
 @Getter
@@ -21,6 +23,11 @@ public class Workflow {
 
     @Enumerated(EnumType.STRING)
     private WorkflowStatus status;
+
+    private LocalDateTime scheduledAt;
+
+    @Builder.Default
+    private Boolean scheduled = false;
 
     private Long startedAt;
 

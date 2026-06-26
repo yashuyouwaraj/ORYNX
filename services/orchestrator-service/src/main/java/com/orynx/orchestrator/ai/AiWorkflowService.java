@@ -1,5 +1,6 @@
 package com.orynx.orchestrator.ai;
 
+import com.orynx.orchestrator.ai.dto.AiWorkflowRequest;
 import com.orynx.orchestrator.ai.dto.AiWorkflowResponse;
 import com.orynx.orchestrator.workflow.Workflow;
 import com.orynx.orchestrator.workflow.WorkflowEventProducer;
@@ -22,12 +23,18 @@ public class AiWorkflowService {
     private final WorkflowTaskRepository workflowTaskRepository;
     private final WorkflowEventProducer workflowEventProducer;
 
-    public Workflow createdAiWorkflow(String goal){
-        AiWorkflowResponse aiWorkflowResponse = aiPlannerService.generateWorkflowPlan(goal);
+    public Workflow createdAiWorkflow(AiWorkflowRequest request){
+        AiWorkflowResponse aiWorkflowResponse = aiPlannerService.generateWorkflowPlan(request.getGoal());
+
+        String workflowName = request.getName() != null && !request.getName().isBlank()
+                ? request.getName()
+                : aiWorkflowResponse.getWorkflowName();
 
         Workflow workflow = Workflow.builder()
-                .name(aiWorkflowResponse.getWorkflowName())
-                .goal(goal)
+                .name(workflowName)
+                .goal(request.getGoal())
+                .scheduledAt(request.getScheduledAt())
+                .scheduled(request.getScheduledAt() != null)
                 .status(WorkflowStatus.CREATED)
                 .build();
 

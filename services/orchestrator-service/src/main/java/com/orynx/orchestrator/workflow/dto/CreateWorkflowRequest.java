@@ -4,6 +4,8 @@ import jakarta.validation.constraints.NotBlank;
 import lombok.Getter;
 import lombok.Setter;
 
+import java.time.LocalDateTime;
+
 @Getter
 @Setter
 public class CreateWorkflowRequest {
@@ -12,4 +14,6 @@ public class CreateWorkflowRequest {
 
     @NotBlank
     private String goal;
+
+    private LocalDateTime scheduledAt;
 }

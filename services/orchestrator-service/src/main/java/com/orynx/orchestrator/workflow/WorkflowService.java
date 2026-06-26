@@ -30,6 +30,8 @@ public class WorkflowService {
 
         Workflow workflow  = Workflow.builder()
                 .name(request.getName())
+                .scheduledAt(request.getScheduledAt())
+                .scheduled(request.getScheduledAt() !=null)
                 .goal(request.getGoal())
                 .status(WorkflowStatus.CREATED)
                 .build();

@@ -24,6 +24,6 @@ public class AiWorkflowController {
 
     @PostMapping("/workflows")
     public Workflow createAiWorkflow(@Valid @RequestBody AiWorkflowRequest request){
-        return aiWorkflowService.createdAiWorkflow(request.getGoal());
+        return aiWorkflowService.createdAiWorkflow(request);
     }
 }

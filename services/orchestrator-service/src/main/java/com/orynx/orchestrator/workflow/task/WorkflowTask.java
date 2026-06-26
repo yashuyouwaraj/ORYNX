@@ -31,7 +31,20 @@ public class WorkflowTask {
 
     private Long completedAt;
 
+    @Builder.Default
     private Integer retryCount = 0;
 
+    @Builder.Default
     private Integer maxRetries = 3;
+
+    @PrePersist
+    @PostLoad
+    void initDefaults() {
+        if (retryCount == null) {
+            retryCount = 0;
+        }
+        if (maxRetries == null) {
+            maxRetries = 3;
+        }
+    }
 }
