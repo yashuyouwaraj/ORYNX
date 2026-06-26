@@ -30,4 +30,8 @@ public class WorkflowTask {
     private Long startedAt;
 
     private Long completedAt;
+
+    private Integer retryCount = 0;
+
+    private Integer maxRetries = 3;
 }
