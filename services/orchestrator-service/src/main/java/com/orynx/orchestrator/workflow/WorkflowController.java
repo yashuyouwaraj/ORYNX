@@ -1,0 +1,30 @@
+package com.orynx.orchestrator.workflow;
+
+import com.orynx.orchestrator.workflow.dto.CreateWorkflowRequest;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+
+@RestController
+@RequestMapping("/api/v1/workflows")
+@RequiredArgsConstructor
+public class WorkflowController {
+    private final WorkflowService workflowService;
+
+    @PostMapping
+    public Workflow createWorkflow(@Valid @RequestBody CreateWorkflowRequest request){
+        return workflowService.createWorkflow(request);
+    }
+
+    @PatchMapping("/{id}/start")
+    public Workflow startWorkflow(@PathVariable Long id){
+        return workflowService.startWorkflow(id);
+    }
+
+    @GetMapping
+    public List<Workflow> getAllWorkflows(){
+        return workflowService.getAllWorkflows();
+    }
+}
