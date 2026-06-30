@@ -1,8 +1,9 @@
-package com.orynx.orchestrator.ai;
+package com.orynx.planning.service;
+
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.orynx.orchestrator.ai.dto.AiWorkflowResponse;
+import com.orynx.planning.dto.AiWorkflowResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -28,6 +29,7 @@ public class AiPlannerService {
 
     private final ObjectMapper objectMapper =
             new ObjectMapper();
+    private final WebClient.Builder webclientBuilder;
 
     public AiWorkflowResponse
     generateWorkflowPlan(
@@ -37,15 +39,11 @@ public class AiPlannerService {
         try {
 
             WebClient client =
-                    WebClient.builder()
+                    webclientBuilder
                             .baseUrl(apiUrl)
                             .defaultHeader(
                                     HttpHeaders.AUTHORIZATION,
                                     "Bearer " + apiKey
-                            )
-                            .defaultHeader(
-                                    HttpHeaders.ACCEPT,
-                                    "application/json"
                             )
                             .codecs(configurer ->
                                     configurer.defaultCodecs()

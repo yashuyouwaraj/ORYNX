@@ -1,5 +1,6 @@
 package com.orynx.orchestrator.ai;
 
+import com.orynx.orchestrator.integration.planning.PlanningClient;
 import com.orynx.orchestrator.ai.dto.AiWorkflowRequest;
 import com.orynx.orchestrator.ai.dto.AiWorkflowResponse;
 import com.orynx.orchestrator.workflow.Workflow;
@@ -18,13 +19,13 @@ import java.util.List;
 @Service
 @RequiredArgsConstructor
 public class AiWorkflowService {
-    private final AiPlannerService aiPlannerService;
+    private final PlanningClient planningClient;
     private final WorkflowRepository workflowRepository;
     private final WorkflowTaskRepository workflowTaskRepository;
     private final WorkflowEventProducer workflowEventProducer;
 
     public Workflow createdAiWorkflow(AiWorkflowRequest request){
-        AiWorkflowResponse aiWorkflowResponse = aiPlannerService.generateWorkflowPlan(request.getGoal());
+        AiWorkflowResponse aiWorkflowResponse = planningClient.generateWorkflowPlan(request.getGoal());
 
         String workflowName = request.getName() != null && !request.getName().isBlank()
                 ? request.getName()
