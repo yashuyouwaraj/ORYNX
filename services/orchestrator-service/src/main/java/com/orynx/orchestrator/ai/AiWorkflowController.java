@@ -2,6 +2,7 @@ package com.orynx.orchestrator.ai;
 
 import com.orynx.orchestrator.ai.dto.AiWorkflowRequest;
 import com.orynx.orchestrator.ai.dto.AiWorkflowResponse;
+import com.orynx.orchestrator.integration.planning.PlanningClient;
 import com.orynx.orchestrator.workflow.Workflow;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -14,12 +15,12 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1/ai")
 @RequiredArgsConstructor
 public class AiWorkflowController {
-    private final AiPlannerService aiPlannerService;
+    private final PlanningClient planningClient;
     private final AiWorkflowService aiWorkflowService;
 
     @PostMapping("/plan")
     public AiWorkflowResponse planWorkflow(@Valid @RequestBody AiWorkflowRequest request){
-        return aiPlannerService.generateWorkflowPlan(request.getGoal());
+        return planningClient.generateWorkflowPlan(request.getGoal());
     }
 
     @PostMapping("/workflows")
