@@ -54,16 +54,13 @@ public class AiPlannerService {
                             .build();
 
             String prompt = """
-                Generate a concise orchestration workflow.
-
-                Goal:
+                Generate a concise orchestration workflow for this goal:
                 %s
 
-                Return ONLY:
-                1. Workflow Name
-                2. 5 execution tasks
+                Return only valid JSON, with no Markdown or explanation, in exactly this shape:
+                {"workflowName":"short descriptive name","tasks":["task 1","task 2","task 3","task 4","task 5"]}
 
-                Keep response short.
+                The tasks must be five distinct, actionable execution steps.
                 """.formatted(goal);
 
             Map<String, Object> requestBody =
@@ -113,13 +110,7 @@ public class AiPlannerService {
                     content
             );
 
-            List<String> tasks =
-                    extractTasks(content);
-
-            return AiWorkflowResponse.builder()
-                    .workflowName(goal)
-                    .tasks(tasks)
-                    .build();
+            return parseWorkflowPlan(content);
 
         } catch (Exception e) {
 
@@ -134,34 +125,29 @@ public class AiPlannerService {
         }
     }
 
-    private List<String> extractTasks(
-            String content
-    ) {
+    private AiWorkflowResponse parseWorkflowPlan(String content) throws Exception {
+        String json = content.trim()
+                .replaceFirst("(?is)^```(?:json)?\\s*", "")
+                .replaceFirst("(?is)\\s*```$", "");
+        JsonNode plan = objectMapper.readTree(json);
 
-        List<String> tasks =
-                new ArrayList<>();
-
-        String[] lines =
-                content.split("\n");
-
-        for (String line : lines) {
-
-            if (
-                    line.matches(
-                            "^\\d+\\..*"
-                    )
-            ) {
-
-                String cleanedTask = line
-                        .replaceAll("^\\d+\\.\\s*", "")
-                        .replaceAll("\\*\\*", "")
-                        .replaceAll("Task\\s*\\d+\\s*:\\s*", "")
-                        .trim();
-
-                tasks.add(cleanedTask);
+        String workflowName = plan.path("workflowName").asText().trim();
+        List<String> tasks = new ArrayList<>();
+        for (JsonNode task : plan.path("tasks")) {
+            String taskName = task.asText().trim();
+            if (!taskName.isBlank()) {
+                tasks.add(taskName);
             }
         }
 
-        return tasks;
+        if (workflowName.isBlank() || tasks.size() != 5) {
+            throw new IllegalArgumentException("AI response must contain a workflow name and exactly five tasks");
+        }
+
+        return AiWorkflowResponse.builder()
+                .workflowName(workflowName)
+                .tasks(tasks)
+                .build();
     }
+
 }
