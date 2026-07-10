@@ -26,10 +26,11 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
 
         try {
             log.info(
-                    "[{}] {} {}",
+                    "[{}] {} {} from {}",
                     requestId,
                     request.getMethod(),
-                    request.getRequestURI()
+                    request.getRequestURI(),
+                    request.getRemoteAddr()
             );
 
             filterChain.doFilter(request,response);
