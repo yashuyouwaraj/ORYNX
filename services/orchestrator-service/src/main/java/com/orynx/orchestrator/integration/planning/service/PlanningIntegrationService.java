@@ -4,6 +4,7 @@ import com.orynx.orchestrator.ai.dto.AiWorkflowResponse;
 import com.orynx.orchestrator.integration.planning.PlanningClient;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import lombok.RequiredArgsConstructor;
+import io.github.resilience4j.retry.annotation.Retry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -15,25 +16,29 @@ import java.util.List;
 public class PlanningIntegrationService {
     private final PlanningClient planningClient;
 
+    @Retry(name="planningService")
     @CircuitBreaker(name="planningService",fallbackMethod="fallbackWorkflowPlan")
     public AiWorkflowResponse generateWorkflowPlan(String goal){
-        log.info("Calling Planning Service...");
+        log.info("Sending request to Planning Service...");
 
         return planningClient.generateWorkflowPlan(goal);
     }
 
     public AiWorkflowResponse fallbackWorkflowPlan(String goal, Exception ex){
-        log.warn("Planning Service unavailable. Using fallback workflow.");
+        log.warn(
+                "Planning Service unavailable after retries: {}. Using emergency workflow.",
+                ex.getMessage()
+        );
 
         return AiWorkflowResponse.builder()
-                .workflowName("Fallback Workflow")
+                .workflowName("Emergency Workflow Plan")
                 .tasks(
                         List.of(
-                                "Collect Metrics",
-                                "Analyze Logs",
+                                "Collect System Metrics",
+                                "Analyze Available Logs",
                                 "Generate Incident Report",
-                                "Notify Administrator",
-                                "Close Workflow"
+                                "Notify Platform Administrator",
+                                "Close Emergency Workflow"
                         )
                 )
                 .build();
