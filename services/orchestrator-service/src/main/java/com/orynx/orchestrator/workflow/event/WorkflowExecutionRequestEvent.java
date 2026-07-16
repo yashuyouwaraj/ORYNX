@@ -1,15 +1,21 @@
 package com.orynx.orchestrator.workflow.event;
 
-import lombok.AllArgsConstructor;
-import lombok.Builder;
-import lombok.Data;
-import lombok.NoArgsConstructor;
+import com.orynx.orchestrator.workflow.event.dto.TaskExecutionRequest;
+import lombok.*;
 
-@Data
-@Builder
+import java.util.List;
+
+@Getter
+@Setter
 @NoArgsConstructor
 @AllArgsConstructor
+@Builder
 public class WorkflowExecutionRequestEvent {
+
     private Long workflowId;
+
     private String workflowName;
+
+    private List<TaskExecutionRequest> tasks;
+
 }

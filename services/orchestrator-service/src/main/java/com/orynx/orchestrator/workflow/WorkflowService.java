@@ -6,6 +6,7 @@ import com.orynx.orchestrator.workflow.dto.CreateWorkflowRequest;
 import com.orynx.orchestrator.workflow.event.WorkflowCreatedEvent;
 import com.orynx.orchestrator.workflow.event.WorkflowExecutionEvent;
 import com.orynx.orchestrator.workflow.event.WorkflowExecutionRequestEvent;
+import com.orynx.orchestrator.workflow.event.dto.TaskExecutionRequest;
 import com.orynx.orchestrator.workflow.task.TaskStatus;
 import com.orynx.orchestrator.workflow.task.WorkflowExecutionEngine;
 import com.orynx.orchestrator.workflow.task.WorkflowTask;
@@ -72,10 +73,24 @@ public class WorkflowService {
 
         Workflow updatedWorkflow = workflowRepository.save(workflow);
 
+        List<WorkflowTask> workflowTasks =
+                workflowTaskRepository.findByWorkflowIdOrderByExecutionOrder(
+                        workflow.getId()
+                );
+        List<TaskExecutionRequest> taskRequests= workflowTasks.stream()
+                        .map((task-> TaskExecutionRequest.builder()
+                                .name(task.getName())
+                                .executionOrder(task.getExecutionOrder())
+                                .maxRetries(task.getMaxRetries())
+                                .build()
+                        ))
+                                .toList();
+
         executionRequestProducer.publishExecutionRequest(
                 WorkflowExecutionRequestEvent.builder()
                         .workflowId(workflow.getId())
                         .workflowName(workflow.getName())
+                        .tasks(taskRequests)
                         .build()
         );
 
