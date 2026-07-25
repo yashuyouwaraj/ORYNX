@@ -25,7 +25,11 @@ public class WorkflowEventConsumer {
             topics = "workflow-events",
             groupId = "orynx-workflow-group",
             containerFactory =
-                    "kafkaListenerContainerFactory"
+                    "kafkaListenerContainerFactory",
+            properties = {
+                    "spring.json.value.default.type=com.orynx.orchestrator.workflow.dto.WorkflowRealtimeEvent",
+                    "spring.json.use.type.headers=false"
+            }
     )
     public void consume(
             WorkflowRealtimeEvent event

@@ -30,7 +30,11 @@ public class TaskEventConsumer {
 
     @KafkaListener(
             topics = TaskEventProducer.TASK_EXECUTION_EVENTS_TOPIC,
-            groupId = "orynx-task-group"
+            groupId = "orynx-task-group",
+            properties = {
+                    "spring.json.value.default.type=com.orynx.orchestrator.workflow.task.dto.TaskExecutionEvent",
+                    "spring.json.use.type.headers=false"
+            }
     )
     public void consume(
             TaskExecutionEvent event
