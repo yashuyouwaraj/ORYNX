@@ -1,9 +1,12 @@
 package com.orynx.orchestrator.workflow;
 
+import com.orynx.orchestrator.kafka.ExecutionRequestProducer;
 import com.orynx.orchestrator.kafka.KafkaProducer;
 import com.orynx.orchestrator.workflow.dto.CreateWorkflowRequest;
 import com.orynx.orchestrator.workflow.event.WorkflowCreatedEvent;
 import com.orynx.orchestrator.workflow.event.WorkflowExecutionEvent;
+import com.orynx.orchestrator.workflow.event.WorkflowExecutionRequestEvent;
+import com.orynx.orchestrator.workflow.event.dto.TaskExecutionRequest;
 import com.orynx.orchestrator.workflow.task.TaskStatus;
 import com.orynx.orchestrator.workflow.task.WorkflowExecutionEngine;
 import com.orynx.orchestrator.workflow.task.WorkflowTask;
@@ -24,6 +27,7 @@ public class WorkflowService {
     private final WorkflowEventPublisher workflowEventPublisher;
     private final WorkflowTaskRepository workflowTaskRepository;
     private final WorkflowExecutionEngine workflowExecutionEngine;
+    private final ExecutionRequestProducer executionRequestProducer;
 
     public Workflow createWorkflow(CreateWorkflowRequest request){
         log.info("Creating workflow: {}",request.getName());
@@ -69,7 +73,26 @@ public class WorkflowService {
 
         Workflow updatedWorkflow = workflowRepository.save(workflow);
 
-        workflowExecutionEngine.executeWorkflow(workflowId);
+        List<WorkflowTask> workflowTasks =
+                workflowTaskRepository.findByWorkflowIdOrderByExecutionOrder(
+                        workflow.getId()
+                );
+        List<TaskExecutionRequest> taskRequests= workflowTasks.stream()
+                        .map((task-> TaskExecutionRequest.builder()
+                                .name(task.getName())
+                                .executionOrder(task.getExecutionOrder())
+                                .maxRetries(task.getMaxRetries())
+                                .build()
+                        ))
+                                .toList();
+
+        executionRequestProducer.publishExecutionRequest(
+                WorkflowExecutionRequestEvent.builder()
+                        .workflowId(workflow.getId())
+                        .workflowName(workflow.getName())
+                        .tasks(taskRequests)
+                        .build()
+        );
 
         WorkflowExecutionEvent event = WorkflowExecutionEvent.builder()
                 .workflowId(updatedWorkflow.getId())

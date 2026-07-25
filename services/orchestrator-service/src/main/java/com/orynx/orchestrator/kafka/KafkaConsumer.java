@@ -8,7 +8,14 @@ import org.springframework.stereotype.Service;
 @Service
 @Slf4j
 public class KafkaConsumer {
-    @KafkaListener(topics = "workflow-created",groupId = "orynx-orchestrator-group")
+    @KafkaListener(
+            topics = "workflow-created",
+            groupId = "orynx-orchestrator-group",
+            properties = {
+                    "spring.json.value.default.type=com.orynx.orchestrator.workflow.event.WorkflowCreatedEvent",
+                    "spring.json.use.type.headers=false"
+            }
+    )
     public void consume(WorkflowCreatedEvent event){
         log.info("Workflow Event Received: {}",event.getWorkflowName());
     }
