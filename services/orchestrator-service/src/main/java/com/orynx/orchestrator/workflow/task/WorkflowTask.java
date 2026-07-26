@@ -1,5 +1,6 @@
 package com.orynx.orchestrator.workflow.task;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.orynx.orchestrator.workflow.Workflow;
 import jakarta.persistence.*;
 import lombok.*;
@@ -25,6 +26,7 @@ public class WorkflowTask {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "workflow_id")
+    @JsonIgnore
     private Workflow workflow;
 
     private Long startedAt;

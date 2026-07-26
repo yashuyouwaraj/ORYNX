@@ -10,6 +10,8 @@ import java.util.List;
 public interface WorkflowRepository extends JpaRepository<Workflow, Long> {
     List<Workflow> findAllByOrderByIdDesc();
     List<Workflow> findByDependsOnWorkflowId(Long workflowId);
+    List<Workflow> findByStatusOrderByIdDesc(WorkflowStatus status);
+    long countByStatus(WorkflowStatus status);
 
     @Query("""
             SELECT w FROM Workflow w

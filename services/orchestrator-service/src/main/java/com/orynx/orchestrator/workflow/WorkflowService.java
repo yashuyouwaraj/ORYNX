@@ -3,6 +3,7 @@ package com.orynx.orchestrator.workflow;
 import com.orynx.orchestrator.kafka.ExecutionRequestProducer;
 import com.orynx.orchestrator.kafka.KafkaProducer;
 import com.orynx.orchestrator.workflow.dto.CreateWorkflowRequest;
+import com.orynx.orchestrator.workflow.dto.DashboardSummaryResponse;
 import com.orynx.orchestrator.workflow.event.WorkflowCreatedEvent;
 import com.orynx.orchestrator.workflow.event.WorkflowExecutionEvent;
 import com.orynx.orchestrator.workflow.event.WorkflowExecutionRequestEvent;
@@ -15,6 +16,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 
 import java.util.List;
 
@@ -105,8 +108,8 @@ public class WorkflowService {
         return updatedWorkflow;
     }
 
-    public List<Workflow> getAllWorkflows(){
-        return workflowRepository.findAllByOrderByIdDesc();
+    public Page<Workflow> getAllWorkflows(Pageable pageable){
+        return workflowRepository.findAll(pageable);
     }
 
     private void ensureWorkflowTasksExist(Workflow workflow) {
@@ -157,5 +160,27 @@ public class WorkflowService {
                         generateReport
                 )
         );
+    }
+
+    public Workflow getWorkflow(Long id){
+        return workflowRepository.findById(id).orElseThrow(()-> new RuntimeException("Workflow not found: "+id));
+    }
+
+    public List<Workflow> getWorkflowsByStatus(WorkflowStatus status){
+        return workflowRepository.findByStatusOrderByIdDesc(status);
+    }
+
+    public List<WorkflowTask> getWorkflowTasks(Long workflowId){
+        return workflowTaskRepository.findByWorkflowIdOrderByExecutionOrder(workflowId);
+    }
+
+    public DashboardSummaryResponse getDashboardSummary(){
+        return DashboardSummaryResponse.builder()
+                .totalWorkflows(workflowRepository.count())
+                .runningWorkflows(workflowRepository.countByStatus(WorkflowStatus.RUNNING))
+                .completedWorkflows(workflowRepository.countByStatus(WorkflowStatus.COMPLETED))
+                .failedWorkflows(workflowRepository.countByStatus(WorkflowStatus.FAILED))
+                .createdWorkflows(workflowRepository.countByStatus(WorkflowStatus.CREATED))
+                .build();
     }
 }
