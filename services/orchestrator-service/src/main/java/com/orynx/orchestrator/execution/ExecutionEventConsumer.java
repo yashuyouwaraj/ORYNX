@@ -22,6 +22,7 @@ import java.util.Optional;
 public class ExecutionEventConsumer {
     private final WorkflowRepository workflowRepository;
     private final WorkflowTaskRepository workflowTaskRepository;
+    private final WorkflowExecutionRepository workflowExecutionRepository;
 
     @KafkaListener(
             topics = "task-started",
@@ -118,34 +119,64 @@ public class ExecutionEventConsumer {
                     "spring.json.use.type.headers=false"
             }
     )
-    public void consumeWorkflowCompleted(WorkflowCompletedEvent event){
+
+    public void consumeWorkflowCompleted(WorkflowCompletedEvent event) {
+
         log.info(
                 "Workflow Completed -> {}",
                 event.getWorkflowName()
         );
 
-        Optional<Workflow> workflowOptional = workflowRepository.findById(event.getWorkflowId());
+        Optional<Workflow> workflowOptional =
+                workflowRepository.findById(event.getWorkflowId());
 
-        if(workflowOptional.isPresent()){
-            Workflow workflow =workflowOptional.get();
+        if (workflowOptional.isPresent()) {
+
+            Workflow workflow = workflowOptional.get();
 
             workflow.setStatus(
-                    event.isSuccess() ? WorkflowStatus.COMPLETED : WorkflowStatus.FAILED
+                    event.isSuccess()
+                            ? WorkflowStatus.COMPLETED
+                            : WorkflowStatus.FAILED
             );
 
             workflow.setCompletedAt(System.currentTimeMillis());
 
             workflowRepository.save(workflow);
+
+            Optional<WorkflowExecution> executionOptional =
+                    workflowExecutionRepository.findFirstByWorkflowIdOrderByStartedAtDesc(
+                            workflow.getId()
+                    );
+
+            if (executionOptional.isPresent()) {
+
+                WorkflowExecution execution = executionOptional.get();
+
+                execution.setStatus(workflow.getStatus());
+                execution.setCompletedAt(System.currentTimeMillis());
+
+                workflowExecutionRepository.save(execution);
+
+                log.info(
+                        "Execution history updated for workflow {}",
+                        workflow.getName()
+                );
+            }
+
             log.info(
                     "Workflow {} marked {}",
                     workflow.getName(),
                     workflow.getStatus()
             );
-        } else{
+
+        } else {
+
             log.warn(
                     "Workflow {} not found",
                     event.getWorkflowId()
             );
+
         }
     }
 }

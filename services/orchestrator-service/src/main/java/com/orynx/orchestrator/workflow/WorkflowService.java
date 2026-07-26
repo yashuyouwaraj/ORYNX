@@ -1,5 +1,7 @@
 package com.orynx.orchestrator.workflow;
 
+import com.orynx.orchestrator.execution.WorkflowExecution;
+import com.orynx.orchestrator.execution.WorkflowExecutionRepository;
 import com.orynx.orchestrator.kafka.ExecutionRequestProducer;
 import com.orynx.orchestrator.kafka.KafkaProducer;
 import com.orynx.orchestrator.workflow.dto.CreateWorkflowRequest;
@@ -8,6 +10,7 @@ import com.orynx.orchestrator.workflow.event.WorkflowCreatedEvent;
 import com.orynx.orchestrator.workflow.event.WorkflowExecutionEvent;
 import com.orynx.orchestrator.workflow.event.WorkflowExecutionRequestEvent;
 import com.orynx.orchestrator.workflow.event.dto.TaskExecutionRequest;
+import com.orynx.orchestrator.workflow.execution.dto.WorkflowExecutionResponse;
 import com.orynx.orchestrator.workflow.task.TaskStatus;
 import com.orynx.orchestrator.workflow.task.WorkflowExecutionEngine;
 import com.orynx.orchestrator.workflow.task.WorkflowTask;
@@ -31,6 +34,8 @@ public class WorkflowService {
     private final WorkflowTaskRepository workflowTaskRepository;
     private final WorkflowExecutionEngine workflowExecutionEngine;
     private final ExecutionRequestProducer executionRequestProducer;
+    private final WorkflowExecutionRepository workflowExecutionRepository;
+
 
     public Workflow createWorkflow(CreateWorkflowRequest request){
         log.info("Creating workflow: {}",request.getName());
@@ -75,6 +80,19 @@ public class WorkflowService {
         workflow.setStatus(WorkflowStatus.RUNNING);
 
         Workflow updatedWorkflow = workflowRepository.save(workflow);
+
+        WorkflowExecution execution = WorkflowExecution.builder()
+                .workflow(updatedWorkflow)
+                .status(WorkflowStatus.RUNNING)
+                .startedAt(System.currentTimeMillis())
+                .build();
+
+        workflowExecutionRepository.save(execution);
+
+        log.info(
+                "Created execution history record for workflow {}",
+                updatedWorkflow.getName()
+        );
 
         List<WorkflowTask> workflowTasks =
                 workflowTaskRepository.findByWorkflowIdOrderByExecutionOrder(
@@ -182,5 +200,22 @@ public class WorkflowService {
                 .failedWorkflows(workflowRepository.countByStatus(WorkflowStatus.FAILED))
                 .createdWorkflows(workflowRepository.countByStatus(WorkflowStatus.CREATED))
                 .build();
+    }
+
+    public List<WorkflowExecutionResponse> getWorkflowExecutionHistory(Long workflowId) {
+
+        return workflowExecutionRepository
+                .findByWorkflowIdOrderByStartedAtDesc(workflowId)
+                .stream()
+                .map(execution ->
+                        WorkflowExecutionResponse.builder()
+                                .id(execution.getId())
+                                .status(execution.getStatus())
+                                .startedAt(execution.getStartedAt())
+                                .completedAt(execution.getCompletedAt())
+                                .build()
+                )
+                .toList();
+
     }
 }

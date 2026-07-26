@@ -2,6 +2,7 @@ package com.orynx.orchestrator.workflow;
 
 import com.orynx.orchestrator.workflow.dto.CreateWorkflowRequest;
 import com.orynx.orchestrator.workflow.dto.DashboardSummaryResponse;
+import com.orynx.orchestrator.workflow.execution.dto.WorkflowExecutionResponse;
 import com.orynx.orchestrator.workflow.task.WorkflowTask;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -50,5 +51,10 @@ public class WorkflowController {
     @GetMapping("/dashboard/summary")
     public DashboardSummaryResponse getDashboardSummary(){
         return workflowService.getDashboardSummary();
+    }
+
+    @GetMapping("/{id}/executions")
+    public List<WorkflowExecutionResponse> getWorkflowExecutionHistory(@PathVariable Long id){
+        return workflowService.getWorkflowExecutionHistory(id);
     }
 }
