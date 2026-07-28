@@ -5,14 +5,16 @@ import type { GraphNode, GraphConnection } from "@/types/graph";
 type TaskStatuses = Record<number, string>;
 
 export const mapWorkflowsToGraph = (
-  workflows: Workflow[],
+  workflows: Workflow[] | null | undefined,
   taskStatuses: TaskStatuses,
 ): {
   nodes: GraphNode[];
 
   connections: GraphConnection[];
 } => {
-  const nodes: GraphNode[] = workflows.map((workflow, index) => ({
+  const workflowList = Array.isArray(workflows) ? workflows : [];
+
+  const nodes: GraphNode[] = workflowList.map((workflow, index) => ({
     id: workflow.id,
 
     label: workflow.name,

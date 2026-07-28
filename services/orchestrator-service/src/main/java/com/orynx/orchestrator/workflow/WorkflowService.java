@@ -1,9 +1,11 @@
 package com.orynx.orchestrator.workflow;
 
+import com.orynx.orchestrator.event.dto.WorkflowCancelledEvent;
 import com.orynx.orchestrator.execution.WorkflowExecution;
 import com.orynx.orchestrator.execution.WorkflowExecutionRepository;
 import com.orynx.orchestrator.kafka.ExecutionRequestProducer;
 import com.orynx.orchestrator.kafka.KafkaProducer;
+import com.orynx.orchestrator.kafka.WorkflowCancellationProducer;
 import com.orynx.orchestrator.workflow.dto.CreateWorkflowRequest;
 import com.orynx.orchestrator.workflow.dto.DashboardSummaryResponse;
 import com.orynx.orchestrator.workflow.event.WorkflowCreatedEvent;
@@ -25,6 +27,7 @@ import org.springframework.data.domain.Pageable;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
@@ -37,6 +40,7 @@ public class WorkflowService {
     private final WorkflowExecutionEngine workflowExecutionEngine;
     private final ExecutionRequestProducer executionRequestProducer;
     private final WorkflowExecutionRepository workflowExecutionRepository;
+    private final WorkflowCancellationProducer workflowCancellationProducer;
 
 
     public Workflow createWorkflow(CreateWorkflowRequest request){
@@ -201,6 +205,7 @@ public class WorkflowService {
                 .completedWorkflows(workflowRepository.countByStatus(WorkflowStatus.COMPLETED))
                 .failedWorkflows(workflowRepository.countByStatus(WorkflowStatus.FAILED))
                 .createdWorkflows(workflowRepository.countByStatus(WorkflowStatus.CREATED))
+                .cancelledWorkflows(workflowRepository.countByStatus(WorkflowStatus.CANCELLED))
                 .build();
     }
 
@@ -282,5 +287,46 @@ public class WorkflowService {
                 .fastestExecutionMs(fastest)
                 .slowestExecutionMs(slowest)
                 .build();
+    }
+
+    @Transactional
+    public Workflow cancelWorkflow(Long workflowId){
+        Workflow workflow = workflowRepository.findById(workflowId)
+                .orElseThrow(()-> new RuntimeException("Workflow not found"));
+
+        if(workflow.getStatus() !=WorkflowStatus.RUNNING){
+            throw new RuntimeException("Only Running workflows can be cancelled");
+        }
+
+        workflow.setStatus(WorkflowStatus.CANCELLED);
+        workflow.setCompletedAt(System.currentTimeMillis());
+        Workflow updatedWorkflow = workflowRepository.save(workflow);
+
+        workflowCancellationProducer.publishWorkflowCancelled(
+                WorkflowCancelledEvent.builder()
+                        .workflowId(workflow.getId())
+                        .workflowName(workflow.getName())
+                        .build()
+        );
+
+        Optional<WorkflowExecution> executionOptional = workflowExecutionRepository.findFirstByWorkflowIdOrderByStartedAtDesc(workflowId);
+
+        if(executionOptional.isPresent()){
+            WorkflowExecution execution = executionOptional.get();
+
+            execution.setStatus(WorkflowStatus.CANCELLED);
+
+            long completedTime = System.currentTimeMillis();
+
+            execution.setCompletedAt(completedTime);
+
+            execution.setDurationMs(completedTime-execution.getStartedAt());
+
+            workflowExecutionRepository.save(execution);
+        }
+
+        log.info("Workflow {} cancelled.", updatedWorkflow.getName());
+
+        return updatedWorkflow;
     }
 }

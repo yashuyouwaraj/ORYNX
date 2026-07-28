@@ -13,4 +13,5 @@ public class DashboardSummaryResponse {
     private long completedWorkflows;
     private long failedWorkflows;
     private long createdWorkflows;
+    private long cancelledWorkflows;
 }

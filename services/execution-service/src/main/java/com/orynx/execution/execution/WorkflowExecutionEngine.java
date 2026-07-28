@@ -17,13 +17,29 @@ import org.springframework.stereotype.Component;
 public class WorkflowExecutionEngine {
     private final TaskExecutor taskExecutor;
     private final ExecutionEventProducer executionEventProducer;
+    private final WorkflowCancellationRegistry cancellationRegistry;
 
-    public void execute(WorkflowExecutionRequestEvent event){
+    public void execute(WorkflowExecutionRequestEvent event) {
+
         log.info("========================================");
         log.info("WorkflowExecutionEngine Started");
         log.info("Workflow : {}", event.getWorkflowName());
 
-        for(TaskExecutionRequest task: event.getTasks()){
+        for (TaskExecutionRequest task : event.getTasks()) {
+
+            // Stop execution if workflow has been cancelled
+            if (cancellationRegistry.isCancelled(event.getWorkflowId())) {
+
+                log.warn(
+                        "Workflow {} has been cancelled. Stopping execution.",
+                        event.getWorkflowName()
+                );
+
+                cancellationRegistry.clear(event.getWorkflowId());
+
+                return;
+            }
+
             executionEventProducer.publishTaskStarted(
                     TaskStartedEvent.builder()
                             .workflowId(event.getWorkflowId())
@@ -46,14 +62,26 @@ public class WorkflowExecutionEngine {
                             .build()
             );
 
-            if(!result.isSuccess()){
-                log.error("Workflow {} failed because task {} failed",
+            if (!result.isSuccess()) {
+
+                log.error(
+                        "Workflow {} failed because task {} failed",
                         event.getWorkflowName(),
                         task.getName()
-                        );
+                );
+
+                executionEventProducer.publishWorkflowCompleted(
+                        WorkflowCompletedEvent.builder()
+                                .workflowId(event.getWorkflowId())
+                                .workflowName(event.getWorkflowName())
+                                .success(false)
+                                .build()
+                );
+
                 return;
             }
         }
+
         executionEventProducer.publishWorkflowCompleted(
                 WorkflowCompletedEvent.builder()
                         .workflowId(event.getWorkflowId())
@@ -61,6 +89,10 @@ public class WorkflowExecutionEngine {
                         .success(true)
                         .build()
         );
-        log.info("Workflow {} completed successfully", event.getWorkflowName());
+
+        log.info(
+                "Workflow {} completed successfully",
+                event.getWorkflowName()
+        );
     }
 }

@@ -65,4 +65,9 @@ public class WorkflowController {
     ){
         return workflowService.getWorkflowAnalytics(id);
     }
+
+    @PatchMapping("/{id}/cancel")
+    public Workflow cancelWorkflow(@PathVariable Long id){
+        return workflowService.cancelWorkflow(id);
+    }
 }

@@ -1,16 +1,31 @@
 import type { Workflow } from "@/types/workflow";
 
+type WorkflowPage = {
+  content: Workflow[];
+  [key: string]: unknown;
+};
+
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8082";
 
 export const getWorkflows = async (): Promise<Workflow[]> => {
-    const response = await fetch(`${API_BASE_URL}/api/v1/workflows`)
+  const response = await fetch(`${API_BASE_URL}/api/v1/workflows`);
 
-    if(!response.ok){
-        throw new Error("Failed to fetch workflows");
-    }
+  if (!response.ok) {
+    throw new Error("Failed to fetch workflows");
+  }
 
-    return response.json()
+  const data = (await response.json()) as Workflow[] | WorkflowPage;
+
+  if (Array.isArray(data)) {
+    return data;
+  }
+
+  if (data && Array.isArray((data as WorkflowPage).content)) {
+    return (data as WorkflowPage).content;
+  }
+
+  return [];
 }
 
 export const getAnalytics = async()=>{
