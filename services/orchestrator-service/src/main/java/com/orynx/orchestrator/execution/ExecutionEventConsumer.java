@@ -154,7 +154,13 @@ public class ExecutionEventConsumer {
                 WorkflowExecution execution = executionOptional.get();
 
                 execution.setStatus(workflow.getStatus());
-                execution.setCompletedAt(System.currentTimeMillis());
+                long completedTime = System.currentTimeMillis();
+
+                execution.setCompletedAt(completedTime);
+
+                execution.setDurationMs(
+                        completedTime-execution.getStartedAt()
+                );
 
                 workflowExecutionRepository.save(execution);
 

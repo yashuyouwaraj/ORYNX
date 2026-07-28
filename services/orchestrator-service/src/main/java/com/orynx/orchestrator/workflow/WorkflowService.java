@@ -10,6 +10,7 @@ import com.orynx.orchestrator.workflow.event.WorkflowCreatedEvent;
 import com.orynx.orchestrator.workflow.event.WorkflowExecutionEvent;
 import com.orynx.orchestrator.workflow.event.WorkflowExecutionRequestEvent;
 import com.orynx.orchestrator.workflow.event.dto.TaskExecutionRequest;
+import com.orynx.orchestrator.workflow.execution.dto.WorkflowAnalyticsResponse;
 import com.orynx.orchestrator.workflow.execution.dto.WorkflowExecutionResponse;
 import com.orynx.orchestrator.workflow.task.TaskStatus;
 import com.orynx.orchestrator.workflow.task.WorkflowExecutionEngine;
@@ -23,6 +24,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 
 import java.util.List;
+import java.util.Objects;
 
 @Service
 @RequiredArgsConstructor
@@ -217,5 +219,68 @@ public class WorkflowService {
                 )
                 .toList();
 
+    }
+
+    public WorkflowAnalyticsResponse getWorkflowAnalytics(Long workflowId) {
+
+        Workflow workflow = workflowRepository.findById(workflowId)
+                .orElseThrow(() -> new RuntimeException("Workflow not found"));
+
+        List<WorkflowExecution> executions =
+                workflowExecutionRepository.findByWorkflowIdOrderByStartedAtDesc(workflowId);
+
+        if (executions.isEmpty()) {
+
+            return WorkflowAnalyticsResponse.builder()
+                    .workflowId(workflow.getId())
+                    .workflowName(workflow.getName())
+                    .build();
+
+        }
+
+        long total = executions.size();
+
+        long successful = executions.stream()
+                .filter(e -> e.getStatus() == WorkflowStatus.COMPLETED)
+                .count();
+
+        long failed = executions.stream()
+                .filter(e -> e.getStatus() == WorkflowStatus.FAILED)
+                .count();
+
+        double successRate =
+                (successful * 100.0) / total;
+
+        List<Long> durations = executions.stream()
+                .map(WorkflowExecution::getDurationMs)
+                .filter(Objects::nonNull)
+                .toList();
+
+        long averageDuration = (long) durations.stream()
+                .mapToLong(Long::longValue)
+                .average()
+                .orElse(0);
+
+        long fastest = durations.stream()
+                .mapToLong(Long::longValue)
+                .min()
+                .orElse(0);
+
+        long slowest = durations.stream()
+                .mapToLong(Long::longValue)
+                .max()
+                .orElse(0);
+
+        return WorkflowAnalyticsResponse.builder()
+                .workflowId(workflow.getId())
+                .workflowName(workflow.getName())
+                .totalExecutions(total)
+                .successfulExecutions(successful)
+                .failedExecutions(failed)
+                .successRate(successRate)
+                .averageDurationMs(averageDuration)
+                .fastestExecutionMs(fastest)
+                .slowestExecutionMs(slowest)
+                .build();
     }
 }

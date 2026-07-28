@@ -27,4 +27,6 @@ public class WorkflowExecution {
     private Long startedAt;
 
     private Long completedAt;
+
+    private Long durationMs;
 }
