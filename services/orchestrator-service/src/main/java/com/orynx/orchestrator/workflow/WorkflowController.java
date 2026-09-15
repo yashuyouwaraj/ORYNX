@@ -70,4 +70,14 @@ public class WorkflowController {
     public Workflow cancelWorkflow(@PathVariable Long id){
         return workflowService.cancelWorkflow(id);
     }
+
+    @PatchMapping("/{id}/pause")
+    public Workflow pauseWorkflow(@PathVariable Long id){
+        return workflowService.pauseWorkflow(id);
+    }
+
+    @PatchMapping("/{id}/resume")
+    public Workflow resumeWorkflow(@PathVariable Long id){
+        return workflowService.resumeWorkflow(id);
+    }
 }

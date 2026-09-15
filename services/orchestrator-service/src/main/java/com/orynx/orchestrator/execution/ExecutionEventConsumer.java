@@ -1,5 +1,6 @@
 package com.orynx.orchestrator.execution;
 
+import com.orynx.orchestrator.event.dto.WorkflowExecutionPausedEvent;
 import com.orynx.orchestrator.execution.event.TaskCompletedEvent;
 import com.orynx.orchestrator.execution.event.TaskStartedEvent;
 import com.orynx.orchestrator.execution.event.WorkflowCompletedEvent;
@@ -13,6 +14,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Optional;
 
@@ -72,7 +74,8 @@ public class ExecutionEventConsumer {
                     "spring.json.use.type.headers=false"
             }
     )
-    public void consumeTaskCompleted(TaskCompletedEvent event){
+    public void consumeTaskCompleted(TaskCompletedEvent event) {
+
         log.info(
                 "Task Completed -> Workflow: {}, Task: {}, Success: {}",
                 event.getWorkflowName(),
@@ -80,29 +83,74 @@ public class ExecutionEventConsumer {
                 event.isSuccess()
         );
 
-        Optional<WorkflowTask> taskOptional = workflowTaskRepository.findByWorkflowIdAndExecutionOrder(
-                event.getWorkflowId(),
-                event.getExecutionOrder()
-        );
+        Optional<WorkflowTask> taskOptional =
+                workflowTaskRepository.findByWorkflowIdAndExecutionOrder(
+                        event.getWorkflowId(),
+                        event.getExecutionOrder()
+                );
 
-        if(taskOptional.isPresent()){
-          WorkflowTask task = taskOptional.get();
+        if (taskOptional.isPresent()) {
 
-          task.setStatus(
-                  event.isSuccess() ? TaskStatus.COMPLETED : TaskStatus.FAILED
-          );
+            WorkflowTask task = taskOptional.get();
 
-          task.setCompletedAt(System.currentTimeMillis());
+            task.setStatus(
+                    event.isSuccess()
+                            ? TaskStatus.COMPLETED
+                            : TaskStatus.FAILED
+            );
 
-          workflowTaskRepository.save(task);
+            task.setCompletedAt(System.currentTimeMillis());
+
+            workflowTaskRepository.save(task);
 
             log.info(
                     "Task {} marked {}",
                     task.getName(),
                     task.getStatus()
             );
-        }
-        else{
+
+            /*
+             * Update workflow execution progress.
+             *
+             * We only move the checkpoint forward when the task
+             * actually succeeds.
+             */
+            if (event.isSuccess()) {
+
+                Optional<WorkflowExecution> executionOptional =
+                        workflowExecutionRepository
+                                .findFirstByWorkflowIdOrderByStartedAtDesc(
+                                        event.getWorkflowId()
+                                );
+
+                if (executionOptional.isPresent()) {
+
+                    WorkflowExecution execution =
+                            executionOptional.get();
+
+                    execution.setLastCompletedExecutionOrder(
+                            event.getExecutionOrder()
+                    );
+
+                    workflowExecutionRepository.save(execution);
+
+                    log.info(
+                            "Workflow {} last completed execution order updated to {}",
+                            event.getWorkflowId(),
+                            event.getExecutionOrder()
+                    );
+
+                } else {
+
+                    log.warn(
+                            "Execution record not found for workflow {}",
+                            event.getWorkflowId()
+                    );
+                }
+            }
+
+        } else {
+
             log.warn(
                     "Task not found for workflow {} order {}",
                     event.getWorkflowId(),
@@ -183,6 +231,58 @@ public class ExecutionEventConsumer {
                     event.getWorkflowId()
             );
 
+        }
+    }
+
+    @KafkaListener(
+            topics = "workflow-execution-paused",
+            groupId = "orchestrator-service",
+            properties = {
+                    "spring.json.value.default.type=com.orynx.orchestrator.event.dto.WorkflowExecutionPausedEvent",
+                    "spring.json.use.type.headers=false"
+            }
+    )
+    @Transactional
+    public void consumeWorkflowExecutionPaused(
+            WorkflowExecutionPausedEvent event
+    ) {
+
+        log.info(
+                "Workflow Execution Paused -> Id: {}, Workflow: {}, Last Completed Task: {}",
+                event.getWorkflowId(),
+                event.getWorkflowName(),
+                event.getLastCompletedExecutionOrder()
+        );
+
+        Optional<WorkflowExecution> executionOptional =
+                workflowExecutionRepository
+                        .findFirstByWorkflowIdOrderByStartedAtDesc(
+                                event.getWorkflowId()
+                        );
+
+        if (executionOptional.isPresent()) {
+
+            WorkflowExecution execution = executionOptional.get();
+
+            execution.setStatus(WorkflowStatus.PAUSED);
+
+            execution.setLastCompletedExecutionOrder(
+                    event.getLastCompletedExecutionOrder()
+            );
+
+            workflowExecutionRepository.save(execution);
+
+            log.info(
+                    "Workflow execution {} marked PAUSED",
+                    execution.getId()
+            );
+
+        } else {
+
+            log.warn(
+                    "Execution not found for workflow {}",
+                    event.getWorkflowId()
+            );
         }
     }
 }

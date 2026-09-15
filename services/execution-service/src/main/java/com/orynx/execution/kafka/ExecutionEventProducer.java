@@ -3,6 +3,7 @@ package com.orynx.execution.kafka;
 import com.orynx.execution.event.dto.TaskCompletedEvent;
 import com.orynx.execution.event.dto.TaskStartedEvent;
 import com.orynx.execution.event.dto.WorkflowCompletedEvent;
+import com.orynx.execution.event.dto.WorkflowExecutionPausedEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -36,6 +37,21 @@ public class ExecutionEventProducer {
 
         log.info(
                 "Published WorkflowCompletedEvent for {}",
+                event.getWorkflowName()
+        );
+    }
+
+    public void publishWorkflowExecutionPaused(
+            WorkflowExecutionPausedEvent event
+    ) {
+
+        kafkaTemplate.send(
+                "workflow-execution-paused",
+                event
+        );
+
+        log.info(
+                "Published WorkflowExecutionPausedEvent for {}",
                 event.getWorkflowName()
         );
     }

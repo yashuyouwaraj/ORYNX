@@ -29,4 +29,6 @@ public class WorkflowExecution {
     private Long completedAt;
 
     private Long durationMs;
+
+    private Integer lastCompletedExecutionOrder;
 }

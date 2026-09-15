@@ -1,11 +1,11 @@
 package com.orynx.orchestrator.workflow;
 
 import com.orynx.orchestrator.event.dto.WorkflowCancelledEvent;
+import com.orynx.orchestrator.event.dto.WorkflowPausedEvent;
+import com.orynx.orchestrator.event.dto.WorkflowResumedEvent;
 import com.orynx.orchestrator.execution.WorkflowExecution;
 import com.orynx.orchestrator.execution.WorkflowExecutionRepository;
-import com.orynx.orchestrator.kafka.ExecutionRequestProducer;
-import com.orynx.orchestrator.kafka.KafkaProducer;
-import com.orynx.orchestrator.kafka.WorkflowCancellationProducer;
+import com.orynx.orchestrator.kafka.*;
 import com.orynx.orchestrator.workflow.dto.CreateWorkflowRequest;
 import com.orynx.orchestrator.workflow.dto.DashboardSummaryResponse;
 import com.orynx.orchestrator.workflow.event.WorkflowCreatedEvent;
@@ -41,7 +41,8 @@ public class WorkflowService {
     private final ExecutionRequestProducer executionRequestProducer;
     private final WorkflowExecutionRepository workflowExecutionRepository;
     private final WorkflowCancellationProducer workflowCancellationProducer;
-
+    private final WorkflowPauseProducer workflowPauseProducer;
+    private final WorkflowResumeProducer workflowResumeProducer;
 
     public Workflow createWorkflow(CreateWorkflowRequest request){
         log.info("Creating workflow: {}",request.getName());
@@ -202,6 +203,7 @@ public class WorkflowService {
         return DashboardSummaryResponse.builder()
                 .totalWorkflows(workflowRepository.count())
                 .runningWorkflows(workflowRepository.countByStatus(WorkflowStatus.RUNNING))
+                .pausedWorkflows(workflowRepository.countByStatus(WorkflowStatus.PAUSED))
                 .completedWorkflows(workflowRepository.countByStatus(WorkflowStatus.COMPLETED))
                 .failedWorkflows(workflowRepository.countByStatus(WorkflowStatus.FAILED))
                 .createdWorkflows(workflowRepository.countByStatus(WorkflowStatus.CREATED))
@@ -326,6 +328,153 @@ public class WorkflowService {
         }
 
         log.info("Workflow {} cancelled.", updatedWorkflow.getName());
+
+        return updatedWorkflow;
+    }
+
+    @Transactional
+    public Workflow pauseWorkflow(Long workflowId) {
+
+        Workflow workflow = workflowRepository.findById(workflowId)
+                .orElseThrow(() -> new RuntimeException("Workflow not found"));
+
+        if (workflow.getStatus() != WorkflowStatus.RUNNING) {
+            throw new RuntimeException(
+                    "Only RUNNING workflows can be paused."
+            );
+        }
+
+        workflow.setStatus(WorkflowStatus.PAUSED);
+
+        Workflow updatedWorkflow = workflowRepository.save(workflow);
+
+        workflowPauseProducer.publishWorkflowPaused(
+                WorkflowPausedEvent.builder()
+                        .workflowId(updatedWorkflow.getId())
+                        .workflowName(updatedWorkflow.getName())
+                        .build()
+        );
+
+        log.info(
+                "Workflow {} paused.",
+                updatedWorkflow.getName()
+        );
+
+        return updatedWorkflow;
+    }
+
+    @Transactional
+    public Workflow resumeWorkflow(Long workflowId) {
+
+        Workflow workflow = workflowRepository.findById(workflowId)
+                .orElseThrow(() -> new RuntimeException("Workflow not found"));
+
+        if (workflow.getStatus() != WorkflowStatus.PAUSED) {
+            throw new RuntimeException(
+                    "Only PAUSED workflows can be resumed."
+            );
+        }
+
+        /*
+         * Find the latest execution record.
+         */
+        WorkflowExecution execution =
+                workflowExecutionRepository
+                        .findFirstByWorkflowIdOrderByStartedAtDesc(workflowId)
+                        .orElseThrow(() ->
+                                new RuntimeException(
+                                        "Execution record not found for workflow"
+                                )
+                        );
+
+        /*
+         * Get the last successfully completed task.
+         *
+         * Example:
+         *
+         * Task 1 -> COMPLETED
+         * Task 2 -> COMPLETED
+         * Task 3 -> PAUSED
+         *
+         * lastCompletedExecutionOrder = 2
+         *
+         * Therefore resume starts from executionOrder 3.
+         */
+        Integer lastCompletedOrder =
+                execution.getLastCompletedExecutionOrder();
+
+        final Integer resumeFromOrder =
+                lastCompletedOrder == null ? 0 : lastCompletedOrder;
+
+        List<WorkflowTask> workflowTasks =
+                workflowTaskRepository
+                        .findByWorkflowIdOrderByExecutionOrder(workflowId);
+
+        List<TaskExecutionRequest> remainingTasks =
+                workflowTasks.stream()
+                        .filter(task ->
+                                task.getExecutionOrder() > resumeFromOrder
+                        )
+                        .map(task ->
+                                TaskExecutionRequest.builder()
+                                        .name(task.getName())
+                                        .executionOrder(task.getExecutionOrder())
+                                        .maxRetries(task.getMaxRetries())
+                                        .build()
+                        )
+                        .toList();
+
+        if (remainingTasks.isEmpty()) {
+            throw new RuntimeException(
+                    "No remaining tasks to resume for workflow " + workflowId
+            );
+        }
+
+        /*
+         * Change workflow state back to RUNNING.
+         */
+        workflow.setStatus(WorkflowStatus.RUNNING);
+
+        Workflow updatedWorkflow =
+                workflowRepository.save(workflow);
+
+        /*
+         * Change the existing execution record back to RUNNING.
+         *
+         * We reuse the same execution history record because
+         * this is a continuation of the same execution.
+         */
+        execution.setStatus(WorkflowStatus.RUNNING);
+
+        workflowExecutionRepository.save(execution);
+
+        /*
+         * Tell Execution Service to clear its pause state.
+         */
+        workflowResumeProducer.publishWorkflowResumed(
+                WorkflowResumedEvent.builder()
+                        .workflowId(updatedWorkflow.getId())
+                        .workflowName(updatedWorkflow.getName())
+                        .build()
+        );
+
+        /*
+         * Send only the remaining tasks to Execution Service.
+         */
+        executionRequestProducer.publishExecutionRequest(
+                WorkflowExecutionRequestEvent.builder()
+                        .workflowId(updatedWorkflow.getId())
+                        .workflowName(updatedWorkflow.getName())
+                        .tasks(remainingTasks)
+                        .build()
+        );
+
+        log.info(
+                "Workflow {} resumed from execution order {}. Remaining tasks: {}",
+                updatedWorkflow.getName(),
+                resumeFromOrder + 1,
+                remainingTasks.size()
+        );
 
         return updatedWorkflow;
     }
