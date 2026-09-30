@@ -80,4 +80,9 @@ public class WorkflowController {
     public Workflow resumeWorkflow(@PathVariable Long id){
         return workflowService.resumeWorkflow(id);
     }
+    @PatchMapping("/{id}/retry")
+    public Workflow retryWorkflow(@PathVariable Long id) {
+        return workflowService.retryWorkflow(id);
+    }
+
 }

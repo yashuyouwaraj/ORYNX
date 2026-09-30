@@ -478,4 +478,91 @@ public class WorkflowService {
 
         return updatedWorkflow;
     }
+
+    @Transactional
+    public Workflow retryWorkflow(Long workflowId) {
+
+        Workflow workflow = workflowRepository.findById(workflowId)
+                .orElseThrow(() ->
+                        new RuntimeException("Workflow not found")
+                );
+
+        if (workflow.getStatus() != WorkflowStatus.FAILED) {
+            throw new RuntimeException(
+                    "Only FAILED workflows can be retried."
+            );
+        }
+
+        /*
+         * Reset workflow state.
+         */
+        workflow.setStatus(WorkflowStatus.RUNNING);
+        workflow.setCompletedAt(null);
+
+        Workflow updatedWorkflow =
+                workflowRepository.save(workflow);
+
+        /*
+         * Reset all workflow tasks.
+         *
+         * A workflow retry represents a completely new execution,
+         * therefore execution starts from task 1.
+         */
+        List<WorkflowTask> workflowTasks =
+                workflowTaskRepository
+                        .findByWorkflowIdOrderByExecutionOrder(workflowId);
+
+        workflowTasks.forEach(task -> {
+            task.setStatus(TaskStatus.PENDING);
+            task.setStartedAt(null);
+            task.setCompletedAt(null);
+            task.setRetryCount(0);
+        });
+
+        workflowTaskRepository.saveAll(workflowTasks);
+
+        /*
+         * Create a NEW execution history record.
+         */
+        WorkflowExecution execution =
+                WorkflowExecution.builder()
+                        .workflow(updatedWorkflow)
+                        .status(WorkflowStatus.RUNNING)
+                        .startedAt(System.currentTimeMillis())
+                        .lastCompletedExecutionOrder(null)
+                        .build();
+
+        workflowExecutionRepository.save(execution);
+
+        /*
+         * Build a fresh execution request containing
+         * all workflow tasks.
+         */
+        List<TaskExecutionRequest> taskRequests =
+                workflowTasks.stream()
+                        .map(task ->
+                                TaskExecutionRequest.builder()
+                                        .name(task.getName())
+                                        .executionOrder(task.getExecutionOrder())
+                                        .maxRetries(task.getMaxRetries())
+                                        .build()
+                        )
+                        .toList();
+
+        executionRequestProducer.publishExecutionRequest(
+                WorkflowExecutionRequestEvent.builder()
+                        .workflowId(updatedWorkflow.getId())
+                        .workflowName(updatedWorkflow.getName())
+                        .tasks(taskRequests)
+                        .build()
+        );
+
+        log.info(
+                "Workflow {} retry started with {} tasks",
+                updatedWorkflow.getName(),
+                taskRequests.size()
+        );
+
+        return updatedWorkflow;
+    }
 }
