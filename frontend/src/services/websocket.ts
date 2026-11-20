@@ -7,7 +7,7 @@ import type { TaskExecutionEvent } from "@/types/task-event";
 import type { WorkflowEvent } from "@/types/workflow";
 
 const WS_BASE_URL =
-  process.env.NEXT_PUBLIC_WS_BASE_URL ?? "http://localhost:8082";
+  process.env.NEXT_PUBLIC_WS_BASE_URL ?? "http://localhost:8080";
 
 let stompClient: Client | null = null;
 

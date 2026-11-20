@@ -6,10 +6,22 @@ type WorkflowPage = {
 };
 
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8082";
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8080";
 
-export const getWorkflows = async (): Promise<Workflow[]> => {
-  const response = await fetch(`${API_BASE_URL}/api/v1/workflows`);
+const createHeaders = (token?: string): HeadersInit => {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  return headers;
+};
+
+export const getWorkflows = async (token?: string): Promise<Workflow[]> => {
+  const response = await fetch(`${API_BASE_URL}/api/v1/workflows`, {
+    headers: createHeaders(token),
+  });
 
   if (!response.ok) {
     throw new Error("Failed to fetch workflows");
@@ -26,54 +38,64 @@ export const getWorkflows = async (): Promise<Workflow[]> => {
   }
 
   return [];
-}
+};
 
-export const getAnalytics = async()=>{
-    const response = await fetch(`${API_BASE_URL}/api/v1/analytics`)
+export const getAnalytics = async (token?: string) => {
+  const response = await fetch(`${API_BASE_URL}/api/v1/analytics`, {
+    headers: createHeaders(token),
+  });
 
-    if(!response.ok){
-        throw new Error("Failed to fetch analytics");
-    }
+  if (!response.ok) {
+    throw new Error("Failed to fetch analytics");
+  }
 
-    return response.json()
-}
+  return response.json();
+};
 
-export const getTimeline = async (workflowId: number)=>{
-    const response = await fetch(`${API_BASE_URL}/api/v1/timeline/${workflowId}`)
+export const getTimeline = async (workflowId: number, token?: string) => {
+  const response = await fetch(`${API_BASE_URL}/api/v1/timeline/${workflowId}`, {
+    headers: createHeaders(token),
+  });
 
-    if(!response.ok){
-        throw new Error("Failed to fetch timeline");
-    }
+  if (!response.ok) {
+    throw new Error("Failed to fetch timeline");
+  }
 
-    return response.json()
-}
+  return response.json();
+};
 
-export const getPerformance = async ()=>{
-    const response = await fetch(`${API_BASE_URL}/api/v1/performance`)
+export const getPerformance = async (token?: string) => {
+  const response = await fetch(`${API_BASE_URL}/api/v1/performance`, {
+    headers: createHeaders(token),
+  });
 
-    if(!response.ok){
-        throw new Error("Failed to fetch performance");
-    }
+  if (!response.ok) {
+    throw new Error("Failed to fetch performance");
+  }
 
-    return response.json()
-}
+  return response.json();
+};
 
-export const getPerformanceSummary = async ()=>{
-    const response = await fetch(`${API_BASE_URL}/api/v1/performance/summary`)
+export const getPerformanceSummary = async (token?: string) => {
+  const response = await fetch(`${API_BASE_URL}/api/v1/performance/summary`, {
+    headers: createHeaders(token),
+  });
 
-    if(!response.ok){
-        throw new Error("Failed to fetch performance summary");
-    }
+  if (!response.ok) {
+    throw new Error("Failed to fetch performance summary");
+  }
 
-    return response.json()
-}
+  return response.json();
+};
 
-export const getWorkflowHealth = async () => {
-    const response = await fetch(`${API_BASE_URL}/api/v1/performance/health`);
+export const getWorkflowHealth = async (token?: string) => {
+  const response = await fetch(`${API_BASE_URL}/api/v1/performance/health`, {
+    headers: createHeaders(token),
+  });
 
-    if(!response.ok){
-        throw new Error("Failed to fetch workflow health");
-    }
+  if (!response.ok) {
+    throw new Error("Failed to fetch workflow health");
+  }
 
-    return response.json()
-}
+  return response.json();
+};
