@@ -109,6 +109,15 @@ public class WorkflowExecutionEngine {
             }
         }
 
+        if (cancellationRegistry.isCancelled(event.getWorkflowId())) {
+            log.warn(
+                    "Workflow {} was cancelled during execution. Suppressing completion event.",
+                    event.getWorkflowName()
+            );
+            cancellationRegistry.clear(event.getWorkflowId());
+            return;
+        }
+
         executionEventProducer.publishWorkflowCompleted(
                 WorkflowCompletedEvent.builder()
                         .workflowId(event.getWorkflowId())

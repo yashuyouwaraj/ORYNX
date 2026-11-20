@@ -16,6 +16,8 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
@@ -114,5 +116,78 @@ class WorkflowExecutionEngineTest {
         WorkflowCompletedEvent workflowCompleted = completedWorkflowCaptor.getValue();
         assertThat(workflowCompleted.getWorkflowId()).isEqualTo(77L);
         assertThat(workflowCompleted.isSuccess()).isTrue();
+    }
+
+    @Test
+    void shouldSuppressCompletionEventWhenCancelledDuringLastTaskExecution() {
+        WorkflowCancellationRegistry cancellationRegistry = new WorkflowCancellationRegistry();
+        WorkflowPauseRegistry pauseRegistry = new WorkflowPauseRegistry();
+
+        // Simulate cancellation arriving during the execution of Task 1
+        TaskExecutor taskExecutor = new TaskExecutor(() -> {
+            cancellationRegistry.cancel(88L);
+            return true;
+        }, 0L);
+
+        WorkflowExecutionEngine engine = new WorkflowExecutionEngine(
+                taskExecutor,
+                executionEventProducer,
+                cancellationRegistry,
+                pauseRegistry
+        );
+
+        WorkflowExecutionRequestEvent event = WorkflowExecutionRequestEvent.builder()
+                .workflowId(88L)
+                .workflowName("Single Task Pipeline")
+                .tasks(List.of(
+                        TaskExecutionRequest.builder().name("Task 1").executionOrder(1).maxRetries(1).build()
+                ))
+                .build();
+
+        engine.execute(event);
+
+        // Task 1 completed
+        verify(executionEventProducer, times(1)).publishTaskCompleted(any());
+
+        // But WorkflowCompletedEvent MUST NOT be published
+        verify(executionEventProducer, never()).publishWorkflowCompleted(any());
+
+        // Cancellation registry must be cleared
+        assertThat(cancellationRegistry.isCancelled(88L)).isFalse();
+    }
+
+    @Test
+    void shouldStopExecutionAndNotPublishCompletionWhenCancelledBetweenTasks() {
+        WorkflowCancellationRegistry cancellationRegistry = new WorkflowCancellationRegistry();
+        WorkflowPauseRegistry pauseRegistry = new WorkflowPauseRegistry();
+
+        // Cancel during task 1
+        TaskExecutor taskExecutor = new TaskExecutor(() -> {
+            cancellationRegistry.cancel(99L);
+            return true;
+        }, 0L);
+
+        WorkflowExecutionEngine engine = new WorkflowExecutionEngine(
+                taskExecutor,
+                executionEventProducer,
+                cancellationRegistry,
+                pauseRegistry
+        );
+
+        WorkflowExecutionRequestEvent event = WorkflowExecutionRequestEvent.builder()
+                .workflowId(99L)
+                .workflowName("Multi Task Pipeline")
+                .tasks(List.of(
+                        TaskExecutionRequest.builder().name("Task 1").executionOrder(1).maxRetries(1).build(),
+                        TaskExecutionRequest.builder().name("Task 2").executionOrder(2).maxRetries(1).build()
+                ))
+                .build();
+
+        engine.execute(event);
+
+        // Task 1 executes, but Task 2 never executes because cancellation is detected between tasks
+        verify(executionEventProducer, times(1)).publishTaskStarted(any());
+        verify(executionEventProducer, times(1)).publishTaskCompleted(any());
+        verify(executionEventProducer, never()).publishWorkflowCompleted(any());
     }
 }
