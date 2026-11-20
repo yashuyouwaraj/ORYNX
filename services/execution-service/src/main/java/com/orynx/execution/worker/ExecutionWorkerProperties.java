@@ -38,4 +38,24 @@ public class ExecutionWorkerProperties {
      * Distributed execution lease duration in seconds before considering a worker crashed.
      */
     private long leaseDurationSeconds = 300L;
+
+    /**
+     * Heartbeat interval in seconds for extending the lease of an actively running worker.
+     */
+    private long heartbeatIntervalSeconds = 30L;
+
+    /**
+     * Whether the background recovery scanner for abandoned executions is enabled.
+     */
+    private boolean recoveryEnabled = true;
+
+    /**
+     * Interval in seconds between recovery scanner runs.
+     */
+    private long recoveryIntervalSeconds = 60L;
+
+    /**
+     * Maximum number of automatic recovery attempts before marking an abandoned workflow FAILED.
+     */
+    private int maxRecoveryAttempts = 3;
 }

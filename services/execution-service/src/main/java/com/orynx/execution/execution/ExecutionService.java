@@ -12,11 +12,16 @@ public class ExecutionService {
     private final WorkflowExecutionDispatcher dispatcher;
 
     public void executeWorkflow(WorkflowExecutionRequestEvent event) {
+        executeWorkflow(event, 1L);
+    }
+
+    public void executeWorkflow(WorkflowExecutionRequestEvent event, Long generation) {
         log.info(
-                "Submitting workflow {} (id={}) to execution dispatcher",
+                "Submitting workflow {} (id={}, gen={}) to execution dispatcher",
                 event.getWorkflowName(),
-                event.getWorkflowId()
+                event.getWorkflowId(),
+                generation
         );
-        dispatcher.dispatch(event);
+        dispatcher.dispatch(event, generation);
     }
 }

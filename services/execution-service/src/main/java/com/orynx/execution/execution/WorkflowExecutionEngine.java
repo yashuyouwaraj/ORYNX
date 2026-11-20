@@ -1,6 +1,7 @@
 package com.orynx.execution.execution;
 
 import com.orynx.execution.coordination.ExecutionCoordinationService;
+import com.orynx.execution.coordination.StaleWorkerExecutionException;
 import com.orynx.execution.event.dto.TaskCompletedEvent;
 import com.orynx.execution.event.dto.TaskStartedEvent;
 import com.orynx.execution.event.dto.WorkflowCompletedEvent;
@@ -51,43 +52,68 @@ public class WorkflowExecutionEngine {
     }
 
     public void execute(WorkflowExecutionRequestEvent event) {
+        execute(event, 1L, null);
+    }
+
+    public void execute(WorkflowExecutionRequestEvent event, Long generation, String instanceId) {
+        Long workflowId = event.getWorkflowId();
+        String workflowName = event.getWorkflowName();
 
         log.info("========================================");
-        log.info("WorkflowExecutionEngine Started");
-        log.info("Workflow : {}", event.getWorkflowName());
+        log.info("WorkflowExecutionEngine Started (gen={}, instance={})", generation, instanceId);
+        log.info("Workflow : {}", workflowName);
 
-        Long workflowId = event.getWorkflowId();
         Integer lastCompletedExecutionOrder = null;
 
         if (event.getTasks() != null) {
             for (TaskExecutionRequest task : event.getTasks()) {
 
-                // Stop execution if workflow has been cancelled
+                // 1. Fencing check before task
+                if (checkFenced(workflowId, generation, instanceId)) {
+                    log.warn("Workflow {} (id={}, gen={}) is FENCED. Aborting execution without publishing events.",
+                            workflowName, workflowId, generation);
+                    return;
+                }
+
+                // 2. Cancellation check before task
                 if (checkCancelled(workflowId)) {
-                    handleCancellation(event);
+                    handleCancellation(event, generation, instanceId);
                     return;
                 }
 
+                // 3. Pause check before task
                 if (checkPaused(workflowId)) {
-                    handlePause(event, lastCompletedExecutionOrder);
+                    handlePause(event, lastCompletedExecutionOrder, generation, instanceId);
                     return;
                 }
 
-                executionEventProducer.publishTaskStarted(
-                        TaskStartedEvent.builder()
-                                .workflowId(workflowId)
-                                .workflowName(event.getWorkflowName())
-                                .taskName(task.getName())
-                                .executionOrder(task.getExecutionOrder())
-                                .build()
-                );
+                // Publish task started only if not fenced
+                if (!checkFenced(workflowId, generation, instanceId)) {
+                    executionEventProducer.publishTaskStarted(
+                            TaskStartedEvent.builder()
+                                    .workflowId(workflowId)
+                                    .workflowName(workflowName)
+                                    .taskName(task.getName())
+                                    .executionOrder(task.getExecutionOrder())
+                                    .build()
+                    );
+                } else {
+                    return;
+                }
 
                 TaskExecutionResult result = taskExecutor.execute(task);
+
+                // Check fencing right after task completes
+                if (checkFenced(workflowId, generation, instanceId)) {
+                    log.warn("Workflow {} (id={}, gen={}) fenced during task {}. Suppressing task completion.",
+                            workflowName, workflowId, generation, task.getName());
+                    return;
+                }
 
                 executionEventProducer.publishTaskCompleted(
                         TaskCompletedEvent.builder()
                                 .workflowId(workflowId)
-                                .workflowName(event.getWorkflowName())
+                                .workflowName(workflowName)
                                 .taskName(task.getName())
                                 .executionOrder(task.getExecutionOrder())
                                 .success(result.isSuccess())
@@ -101,66 +127,104 @@ public class WorkflowExecutionEngine {
 
                 // If cancelled while task was executing
                 if (checkCancelled(workflowId)) {
-                    handleCancellation(event);
+                    handleCancellation(event, generation, instanceId);
                     return;
                 }
 
                 // If paused while task was executing
                 if (checkPaused(workflowId)) {
-                    handlePause(event, lastCompletedExecutionOrder);
+                    handlePause(event, lastCompletedExecutionOrder, generation, instanceId);
                     return;
                 }
 
                 if (!result.isSuccess()) {
                     log.error(
                             "Workflow {} failed because task {} failed",
-                            event.getWorkflowName(),
+                            workflowName,
                             task.getName()
                     );
 
-                    if (coordinationService != null) {
-                        coordinationService.markCompleted(workflowId, false);
-                    }
+                    if (!checkFenced(workflowId, generation, instanceId)) {
+                        try {
+                            if (coordinationService != null) {
+                                if (generation != null && instanceId != null) {
+                                    coordinationService.markCompleted(workflowId, generation, instanceId, false);
+                                } else {
+                                    coordinationService.markCompleted(workflowId, false);
+                                }
+                            }
+                        } catch (StaleWorkerExecutionException e) {
+                            log.warn("Fenced worker failed to mark failure for workflow {}: {}", workflowId, e.getMessage());
+                            return;
+                        }
 
-                    executionEventProducer.publishWorkflowCompleted(
-                            WorkflowCompletedEvent.builder()
-                                    .workflowId(workflowId)
-                                    .workflowName(event.getWorkflowName())
-                                    .success(false)
-                                    .build()
-                    );
+                        executionEventProducer.publishWorkflowCompleted(
+                                WorkflowCompletedEvent.builder()
+                                        .workflowId(workflowId)
+                                        .workflowName(workflowName)
+                                        .success(false)
+                                        .build()
+                        );
+                    }
 
                     return;
                 }
             }
         }
 
+        // Final checks before completion
+        if (checkFenced(workflowId, generation, instanceId)) {
+            log.warn("Workflow {} (id={}, gen={}) fenced before completion. Suppressing completion.",
+                    workflowName, workflowId, generation);
+            return;
+        }
+
         if (checkCancelled(workflowId)) {
-            handleCancellation(event);
+            handleCancellation(event, generation, instanceId);
             return;
         }
 
         if (checkPaused(workflowId)) {
-            handlePause(event, lastCompletedExecutionOrder);
+            handlePause(event, lastCompletedExecutionOrder, generation, instanceId);
             return;
         }
 
-        if (coordinationService != null) {
-            coordinationService.markCompleted(workflowId, true);
+        try {
+            if (coordinationService != null) {
+                if (generation != null && instanceId != null) {
+                    coordinationService.markCompleted(workflowId, generation, instanceId, true);
+                } else {
+                    coordinationService.markCompleted(workflowId, true);
+                }
+            }
+        } catch (StaleWorkerExecutionException e) {
+            log.warn("Fenced worker attempted to mark completion for workflow {}. Suppressing event.", workflowId);
+            return;
         }
 
         executionEventProducer.publishWorkflowCompleted(
                 WorkflowCompletedEvent.builder()
                         .workflowId(workflowId)
-                        .workflowName(event.getWorkflowName())
+                        .workflowName(workflowName)
                         .success(true)
                         .build()
         );
 
         log.info(
-                "Workflow {} completed successfully",
-                event.getWorkflowName()
+                "Workflow {} completed successfully (gen={})",
+                workflowName,
+                generation
         );
+    }
+
+    private boolean checkFenced(Long workflowId, Long generation, String instanceId) {
+        if (activeExecutionTracker != null && activeExecutionTracker.isFenced(workflowId, generation)) {
+            return true;
+        }
+        if (coordinationService != null && generation != null && instanceId != null) {
+            return coordinationService.isFenced(workflowId, generation, instanceId);
+        }
+        return false;
     }
 
     private boolean checkCancelled(Long workflowId) {
@@ -176,7 +240,7 @@ public class WorkflowExecutionEngine {
                 || (coordinationService != null && coordinationService.isPaused(workflowId));
     }
 
-    private void handleCancellation(WorkflowExecutionRequestEvent event) {
+    private void handleCancellation(WorkflowExecutionRequestEvent event, Long generation, String instanceId) {
         Long workflowId = event.getWorkflowId();
         log.warn("Workflow {} has been cancelled. Stopping execution.", event.getWorkflowName());
         if (coordinationService != null) {
@@ -186,11 +250,20 @@ public class WorkflowExecutionEngine {
         Thread.interrupted(); // Clear interrupted status
     }
 
-    private void handlePause(WorkflowExecutionRequestEvent event, Integer lastCompletedExecutionOrder) {
+    private void handlePause(WorkflowExecutionRequestEvent event, Integer lastCompletedExecutionOrder, Long generation, String instanceId) {
         Long workflowId = event.getWorkflowId();
         log.warn("Workflow {} is paused. Stopping execution.", event.getWorkflowName());
         if (coordinationService != null) {
-            coordinationService.markPaused(workflowId, lastCompletedExecutionOrder);
+            try {
+                if (generation != null && instanceId != null) {
+                    coordinationService.markPaused(workflowId, generation, instanceId, lastCompletedExecutionOrder);
+                } else {
+                    coordinationService.markPaused(workflowId, lastCompletedExecutionOrder);
+                }
+            } catch (StaleWorkerExecutionException e) {
+                log.warn("Fenced worker attempted to record pause for workflow {}: {}", workflowId, e.getMessage());
+                return;
+            }
         }
         executionEventProducer.publishWorkflowExecutionPaused(
                 WorkflowExecutionPausedEvent.builder()

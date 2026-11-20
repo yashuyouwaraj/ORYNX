@@ -40,6 +40,17 @@ public class WorkflowExecutionCoordination {
     @Column(name = "lease_expires_at")
     private Instant leaseExpiresAt;
 
+    @Column(name = "generation", nullable = false)
+    @Builder.Default
+    private Long generation = 1L;
+
+    @Column(name = "recovery_attempts", nullable = false)
+    @Builder.Default
+    private Integer recoveryAttempts = 0;
+
+    @Column(name = "payload_json", columnDefinition = "TEXT")
+    private String payloadJson;
+
     @Version
     @Column(name = "version")
     private Long version;
