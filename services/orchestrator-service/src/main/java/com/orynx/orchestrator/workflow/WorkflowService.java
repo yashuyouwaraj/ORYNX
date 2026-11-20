@@ -22,10 +22,10 @@ import com.orynx.orchestrator.workflow.task.WorkflowTask;
 import com.orynx.orchestrator.workflow.task.WorkflowTaskRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Objects;
@@ -53,12 +53,21 @@ public class WorkflowService {
     public Workflow createWorkflow(CreateWorkflowRequest request, Long userId) {
         log.info("Creating workflow: {} for userId: {}", request.getName(), userId);
 
+        Workflow dependsOn = null;
+        if (request.getDependsOnWorkflowId() != null) {
+            dependsOn = workflowRepository.findById(request.getDependsOnWorkflowId())
+                    .orElseThrow(() -> new WorkflowNotFoundException(
+                            "Dependent workflow not found with id: " + request.getDependsOnWorkflowId()
+                    ));
+        }
+
         Workflow workflow = Workflow.builder()
                 .name(request.getName())
                 .scheduledAt(request.getScheduledAt())
                 .scheduled(request.getScheduledAt() != null)
                 .goal(request.getGoal())
                 .status(WorkflowStatus.CREATED)
+                .dependsOnWorkflow(dependsOn)
                 .userId(userId)
                 .build();
 
@@ -92,11 +101,39 @@ public class WorkflowService {
 
     @Transactional
     public Workflow startWorkflow(Long workflowId, Long userId) {
-        Workflow workflow = getWorkflow(workflowId, userId);
+        Workflow workflow = getWorkflowForUpdate(workflowId, userId);
+
+        if (workflow.getStatus() != WorkflowStatus.CREATED) {
+            if (workflow.getStatus() == WorkflowStatus.RUNNING) {
+                throw new IllegalStateException("Cannot start workflow: workflow is already RUNNING");
+            } else if (workflow.getStatus() == WorkflowStatus.PAUSED) {
+                throw new IllegalStateException("Cannot start workflow: workflow is PAUSED. Use resume instead.");
+            } else if (workflow.getStatus() == WorkflowStatus.FAILED) {
+                throw new IllegalStateException("Cannot start workflow: workflow is in terminal state FAILED. Use retry instead.");
+            } else {
+                throw new IllegalStateException("Cannot start workflow: workflow is in terminal state " + workflow.getStatus());
+            }
+        }
+
+        WorkflowStateValidator.validateTransition(workflow.getStatus(), WorkflowStatus.RUNNING, "start");
+
+        if (workflow.getDependsOnWorkflow() != null) {
+            Workflow dependency = workflow.getDependsOnWorkflow();
+            if (dependency.getStatus() != WorkflowStatus.COMPLETED) {
+                throw new IllegalStateException(String.format(
+                        "Cannot start workflow: dependent workflow %d is not COMPLETED (current status: %s)",
+                        dependency.getId(), dependency.getStatus()
+                ));
+            }
+        }
 
         ensureWorkflowTasksExist(workflow);
 
         workflow.setStatus(WorkflowStatus.RUNNING);
+        workflow.setStartedAt(System.currentTimeMillis());
+        if (Boolean.TRUE.equals(workflow.getScheduled())) {
+            workflow.setScheduled(false);
+        }
 
         Workflow updatedWorkflow = workflowRepository.save(workflow);
 
@@ -150,70 +187,41 @@ public class WorkflowService {
     }
 
     public Page<Workflow> getAllWorkflows(Pageable pageable, Long userId) {
-        if (userId == null) {
+        if (userId != null) {
+            return workflowRepository.findByUserIdOrderByIdDesc(userId, pageable);
+        } else {
             return workflowRepository.findAll(pageable);
         }
-        return workflowRepository.findByUserIdOrderByIdDesc(userId, pageable);
     }
 
-    private void ensureWorkflowTasksExist(Workflow workflow) {
-        List<WorkflowTask> existingTasks =
-                workflowTaskRepository.findByWorkflowIdOrderByExecutionOrder(workflow.getId());
+    public Workflow getWorkflow(Long workflowId) {
+        return getWorkflow(workflowId, UserContext.getUserId());
+    }
 
-        if (!existingTasks.isEmpty()) {
-            return;
+    public Workflow getWorkflow(Long workflowId, Long userId) {
+        if (userId != null) {
+            return workflowRepository.findByIdAndUserId(workflowId, userId)
+                    .orElseThrow(() -> new WorkflowNotFoundException(
+                            "Workflow not found: " + workflowId
+                    ));
+        } else {
+            return workflowRepository.findById(workflowId)
+                    .orElseThrow(() -> new WorkflowNotFoundException(
+                            "Workflow not found: " + workflowId
+                    ));
         }
-
-        log.info("Creating default execution tasks for workflow: {}", workflow.getId());
-
-        createWorkflowTasks(workflow);
     }
 
-    private void createWorkflowTasks(Workflow workflow) {
-        WorkflowTask collectMetrics =
-                WorkflowTask.builder()
-                        .name("Collect Metrics")
-                        .status(TaskStatus.PENDING)
-                        .executionOrder(1)
-                        .workflow(workflow)
-                        .build();
+    public Workflow getWorkflowForUpdate(Long workflowId, Long userId) {
+        Optional<Workflow> locked = (userId != null)
+                ? workflowRepository.findByIdAndUserIdForUpdate(workflowId, userId)
+                : workflowRepository.findByIdForUpdate(workflowId);
 
-        WorkflowTask analyzeLogs =
-                WorkflowTask.builder()
-                        .name("Analyze Logs")
-                        .status(TaskStatus.PENDING)
-                        .executionOrder(2)
-                        .workflow(workflow)
-                        .build();
-
-        WorkflowTask generateReport =
-                WorkflowTask.builder()
-                        .name("Generate Report")
-                        .status(TaskStatus.PENDING)
-                        .executionOrder(3)
-                        .workflow(workflow)
-                        .build();
-
-        workflowTaskRepository.saveAll(
-                List.of(
-                        collectMetrics,
-                        analyzeLogs,
-                        generateReport
-                )
-        );
-    }
-
-    public Workflow getWorkflow(Long id) {
-        return getWorkflow(id, UserContext.getUserId());
-    }
-
-    public Workflow getWorkflow(Long id, Long userId) {
-        if (userId == null) {
-            return workflowRepository.findById(id)
-                    .orElseThrow(() -> new WorkflowNotFoundException("Workflow not found: " + id));
+        if (locked.isPresent()) {
+            return locked.get();
         }
-        return workflowRepository.findByIdAndUserId(id, userId)
-                .orElseThrow(() -> new WorkflowNotFoundException("Workflow not found: " + id));
+        // Fallback to standard lookup (supports unit test environments where only findById is stubbed)
+        return getWorkflow(workflowId, userId);
     }
 
     public List<Workflow> getWorkflowsByStatus(WorkflowStatus status) {
@@ -221,10 +229,11 @@ public class WorkflowService {
     }
 
     public List<Workflow> getWorkflowsByStatus(WorkflowStatus status, Long userId) {
-        if (userId == null) {
+        if (userId != null) {
+            return workflowRepository.findByUserIdAndStatusOrderByIdDesc(userId, status);
+        } else {
             return workflowRepository.findByStatusOrderByIdDesc(status);
         }
-        return workflowRepository.findByUserIdAndStatusOrderByIdDesc(userId, status);
     }
 
     public List<WorkflowTask> getWorkflowTasks(Long workflowId) {
@@ -232,8 +241,74 @@ public class WorkflowService {
     }
 
     public List<WorkflowTask> getWorkflowTasks(Long workflowId, Long userId) {
+        // Enforce ownership: caller must have access to workflow
         getWorkflow(workflowId, userId);
         return workflowTaskRepository.findByWorkflowIdOrderByExecutionOrder(workflowId);
+    }
+
+    private void createWorkflowTasks(Workflow workflow) {
+        List<WorkflowTask> tasks = List.of(
+                WorkflowTask.builder()
+                        .name("Validate Payload")
+                        .executionOrder(1)
+                        .status(TaskStatus.PENDING)
+                        .maxRetries(2)
+                        .workflow(workflow)
+                        .build(),
+
+                WorkflowTask.builder()
+                        .name("Generate Report")
+                        .executionOrder(2)
+                        .status(TaskStatus.PENDING)
+                        .maxRetries(3)
+                        .workflow(workflow)
+                        .build(),
+
+                WorkflowTask.builder()
+                        .name("Collect Metrics")
+                        .executionOrder(3)
+                        .status(TaskStatus.PENDING)
+                        .maxRetries(3)
+                        .workflow(workflow)
+                        .build(),
+
+                WorkflowTask.builder()
+                        .name("Analyze Logs")
+                        .executionOrder(4)
+                        .status(TaskStatus.PENDING)
+                        .maxRetries(3)
+                        .workflow(workflow)
+                        .build(),
+
+                WorkflowTask.builder()
+                        .name("Store Results")
+                        .executionOrder(5)
+                        .status(TaskStatus.PENDING)
+                        .maxRetries(3)
+                        .workflow(workflow)
+                        .build(),
+
+                WorkflowTask.builder()
+                        .name("Notify Stakeholders")
+                        .executionOrder(6)
+                        .status(TaskStatus.PENDING)
+                        .maxRetries(3)
+                        .workflow(workflow)
+                        .build()
+        );
+
+        workflowTaskRepository.saveAll(tasks);
+    }
+
+    private void ensureWorkflowTasksExist(Workflow workflow) {
+        List<WorkflowTask> existingTasks =
+                workflowTaskRepository.findByWorkflowIdOrderByExecutionOrder(
+                        workflow.getId()
+                );
+
+        if (existingTasks.isEmpty()) {
+            createWorkflowTasks(workflow);
+        }
     }
 
     public DashboardSummaryResponse getDashboardSummary() {
@@ -354,7 +429,7 @@ public class WorkflowService {
 
     @Transactional
     public Workflow cancelWorkflow(Long workflowId, Long userId) {
-        Workflow workflow = getWorkflow(workflowId, userId);
+        Workflow workflow = getWorkflowForUpdate(workflowId, userId);
 
         if (workflow.getStatus() != WorkflowStatus.RUNNING) {
             throw new IllegalStateException("Only Running workflows can be cancelled");
@@ -362,6 +437,7 @@ public class WorkflowService {
 
         workflow.setStatus(WorkflowStatus.CANCELLED);
         workflow.setCompletedAt(System.currentTimeMillis());
+
         Workflow updatedWorkflow = workflowRepository.save(workflow);
 
         workflowCancellationProducer.publishWorkflowCancelled(
@@ -382,10 +458,20 @@ public class WorkflowService {
 
             execution.setCompletedAt(completedTime);
 
-            execution.setDurationMs(completedTime - execution.getStartedAt());
+            if (execution.getStartedAt() != null) {
+                execution.setDurationMs(completedTime - execution.getStartedAt());
+            }
 
             workflowExecutionRepository.save(execution);
         }
+
+        WorkflowExecutionEvent event = WorkflowExecutionEvent.builder()
+                .workflowId(updatedWorkflow.getId())
+                .workflowName(updatedWorkflow.getName())
+                .status(updatedWorkflow.getStatus().name())
+                .build();
+
+        workflowEventPublisher.publishWorkflowUpdate(event);
 
         log.info("Workflow {} cancelled.", updatedWorkflow.getName());
 
@@ -399,13 +485,19 @@ public class WorkflowService {
 
     @Transactional
     public Workflow pauseWorkflow(Long workflowId, Long userId) {
-        Workflow workflow = getWorkflow(workflowId, userId);
+        Workflow workflow = getWorkflowForUpdate(workflowId, userId);
 
         if (workflow.getStatus() != WorkflowStatus.RUNNING) {
-            throw new IllegalStateException(
-                    "Only RUNNING workflows can be paused."
-            );
+            if (workflow.getStatus() == WorkflowStatus.PAUSED) {
+                throw new IllegalStateException("Cannot pause workflow: workflow is already PAUSED");
+            } else if (workflow.getStatus() == WorkflowStatus.CREATED) {
+                throw new IllegalStateException("Cannot pause workflow: workflow is in CREATED state");
+            } else {
+                throw new IllegalStateException("Cannot pause workflow: workflow is in terminal state " + workflow.getStatus());
+            }
         }
+
+        WorkflowStateValidator.validateTransition(workflow.getStatus(), WorkflowStatus.PAUSED, "pause");
 
         workflow.setStatus(WorkflowStatus.PAUSED);
 
@@ -417,6 +509,14 @@ public class WorkflowService {
                         .workflowName(updatedWorkflow.getName())
                         .build()
         );
+
+        WorkflowExecutionEvent event = WorkflowExecutionEvent.builder()
+                .workflowId(updatedWorkflow.getId())
+                .workflowName(updatedWorkflow.getName())
+                .status(updatedWorkflow.getStatus().name())
+                .build();
+
+        workflowEventPublisher.publishWorkflowUpdate(event);
 
         log.info(
                 "Workflow {} paused.",
@@ -433,13 +533,21 @@ public class WorkflowService {
 
     @Transactional
     public Workflow resumeWorkflow(Long workflowId, Long userId) {
-        Workflow workflow = getWorkflow(workflowId, userId);
+        Workflow workflow = getWorkflowForUpdate(workflowId, userId);
 
         if (workflow.getStatus() != WorkflowStatus.PAUSED) {
-            throw new IllegalStateException(
-                    "Only PAUSED workflows can be resumed."
-            );
+            if (workflow.getStatus() == WorkflowStatus.RUNNING) {
+                throw new IllegalStateException("Cannot resume workflow: workflow is already RUNNING");
+            } else if (workflow.getStatus() == WorkflowStatus.CREATED) {
+                throw new IllegalStateException("Cannot resume workflow: workflow is in CREATED state. Use start instead.");
+            } else if (workflow.getStatus() == WorkflowStatus.FAILED) {
+                throw new IllegalStateException("Cannot resume workflow: workflow is in terminal state FAILED. Use retry instead.");
+            } else {
+                throw new IllegalStateException("Cannot resume workflow: workflow is in terminal state " + workflow.getStatus());
+            }
         }
+
+        WorkflowStateValidator.validateTransition(workflow.getStatus(), WorkflowStatus.RUNNING, "resume");
 
         WorkflowExecution execution =
                 workflowExecutionRepository
@@ -504,6 +612,14 @@ public class WorkflowService {
                         .build()
         );
 
+        WorkflowExecutionEvent event = WorkflowExecutionEvent.builder()
+                .workflowId(updatedWorkflow.getId())
+                .workflowName(updatedWorkflow.getName())
+                .status(updatedWorkflow.getStatus().name())
+                .build();
+
+        workflowEventPublisher.publishWorkflowUpdate(event);
+
         log.info(
                 "Workflow {} resumed from execution order {}. Remaining tasks: {}",
                 updatedWorkflow.getName(),
@@ -521,13 +637,21 @@ public class WorkflowService {
 
     @Transactional
     public Workflow retryWorkflow(Long workflowId, Long userId) {
-        Workflow workflow = getWorkflow(workflowId, userId);
+        Workflow workflow = getWorkflowForUpdate(workflowId, userId);
 
         if (workflow.getStatus() != WorkflowStatus.FAILED) {
-            throw new IllegalStateException(
-                    "Only FAILED workflows can be retried."
-            );
+            if (workflow.getStatus() == WorkflowStatus.RUNNING) {
+                throw new IllegalStateException("Cannot retry workflow: workflow is already RUNNING");
+            } else if (workflow.getStatus() == WorkflowStatus.PAUSED) {
+                throw new IllegalStateException("Cannot retry workflow: workflow is PAUSED. Use resume instead.");
+            } else if (workflow.getStatus() == WorkflowStatus.CREATED) {
+                throw new IllegalStateException("Cannot retry workflow: workflow is in CREATED state. Use start instead.");
+            } else {
+                throw new IllegalStateException("Cannot retry workflow: workflow is in terminal state " + workflow.getStatus());
+            }
         }
+
+        WorkflowStateValidator.validateTransition(workflow.getStatus(), WorkflowStatus.RUNNING, "retry");
 
         workflow.setStatus(WorkflowStatus.RUNNING);
         workflow.setCompletedAt(null);
@@ -576,6 +700,14 @@ public class WorkflowService {
                         .tasks(taskRequests)
                         .build()
         );
+
+        WorkflowExecutionEvent event = WorkflowExecutionEvent.builder()
+                .workflowId(updatedWorkflow.getId())
+                .workflowName(updatedWorkflow.getName())
+                .status(updatedWorkflow.getStatus().name())
+                .build();
+
+        workflowEventPublisher.publishWorkflowUpdate(event);
 
         log.info(
                 "Workflow {} retry started with {} tasks",

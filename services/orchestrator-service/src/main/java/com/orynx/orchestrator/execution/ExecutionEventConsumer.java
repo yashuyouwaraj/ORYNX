@@ -6,6 +6,7 @@ import com.orynx.orchestrator.execution.event.TaskStartedEvent;
 import com.orynx.orchestrator.execution.event.WorkflowCompletedEvent;
 import com.orynx.orchestrator.workflow.Workflow;
 import com.orynx.orchestrator.workflow.WorkflowRepository;
+import com.orynx.orchestrator.workflow.WorkflowStateValidator;
 import com.orynx.orchestrator.workflow.WorkflowStatus;
 import com.orynx.orchestrator.workflow.task.TaskStatus;
 import com.orynx.orchestrator.workflow.task.WorkflowTask;
@@ -45,6 +46,16 @@ public class ExecutionEventConsumer {
         if (taskOptional.isPresent()) {
 
             WorkflowTask task = taskOptional.get();
+
+            Optional<Workflow> workflowOptional = workflowRepository.findById(event.getWorkflowId());
+            if (workflowOptional.isPresent()) {
+                WorkflowStatus wfStatus = workflowOptional.get().getStatus();
+                if (wfStatus == WorkflowStatus.CANCELLED || wfStatus == WorkflowStatus.PAUSED) {
+                    log.info("Workflow {} is in state {}. Suppressing task-started event for task {}.",
+                            event.getWorkflowId(), wfStatus, task.getName());
+                    return;
+                }
+            }
 
             task.setStatus(TaskStatus.RUNNING);
             task.setStartedAt(System.currentTimeMillis());
@@ -172,7 +183,6 @@ public class ExecutionEventConsumer {
                     "spring.json.use.type.headers=false"
             }
     )
-
     public void consumeWorkflowCompleted(WorkflowCompletedEvent event) {
 
         log.info(
@@ -195,12 +205,29 @@ public class ExecutionEventConsumer {
                 return;
             }
 
-            workflow.setStatus(
-                    event.isSuccess()
-                            ? WorkflowStatus.COMPLETED
-                            : WorkflowStatus.FAILED
-            );
+            if (workflow.getStatus() == WorkflowStatus.COMPLETED) {
+                log.info(
+                        "Workflow {} is already in terminal state COMPLETED. Suppressing duplicate completion event.",
+                        workflow.getName()
+                );
+                return;
+            }
 
+            if (workflow.getStatus() == WorkflowStatus.PAUSED) {
+                log.warn(
+                        "Workflow {} is in state PAUSED. Suppressing late workflow-completed event.",
+                        workflow.getName()
+                );
+                return;
+            }
+
+            WorkflowStatus targetStatus = event.isSuccess()
+                    ? WorkflowStatus.COMPLETED
+                    : WorkflowStatus.FAILED;
+
+            WorkflowStateValidator.validateTransition(workflow.getStatus(), targetStatus, "complete");
+
+            workflow.setStatus(targetStatus);
             workflow.setCompletedAt(System.currentTimeMillis());
 
             workflowRepository.save(workflow);
@@ -222,14 +249,24 @@ public class ExecutionEventConsumer {
                     return;
                 }
 
+                if (execution.getStatus() == WorkflowStatus.COMPLETED) {
+                    log.info(
+                            "Execution history for workflow {} is already in terminal state COMPLETED. Preserving status.",
+                            workflow.getName()
+                    );
+                    return;
+                }
+
                 execution.setStatus(workflow.getStatus());
                 long completedTime = System.currentTimeMillis();
 
                 execution.setCompletedAt(completedTime);
 
-                execution.setDurationMs(
-                        completedTime-execution.getStartedAt()
-                );
+                if (execution.getStartedAt() != null) {
+                    execution.setDurationMs(
+                            completedTime - execution.getStartedAt()
+                    );
+                }
 
                 workflowExecutionRepository.save(execution);
 
@@ -288,6 +325,14 @@ public class ExecutionEventConsumer {
             if (execution.getStatus() == WorkflowStatus.CANCELLED) {
                 log.info(
                         "Execution {} is in terminal state CANCELLED. Suppressing late pause event.",
+                        execution.getId()
+                );
+                return;
+            }
+
+            if (execution.getStatus() == WorkflowStatus.COMPLETED) {
+                log.info(
+                        "Execution {} is in terminal state COMPLETED. Suppressing late pause event.",
                         execution.getId()
                 );
                 return;

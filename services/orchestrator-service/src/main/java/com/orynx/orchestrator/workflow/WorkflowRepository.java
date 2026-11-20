@@ -1,8 +1,10 @@
 package com.orynx.orchestrator.workflow;
 
+import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -17,6 +19,14 @@ import java.util.Optional;
 public interface WorkflowRepository extends JpaRepository<Workflow, Long> {
 
     Optional<Workflow> findByIdAndUserId(Long id, Long userId);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT w FROM Workflow w WHERE w.id = :id AND w.userId = :userId")
+    Optional<Workflow> findByIdAndUserIdForUpdate(@Param("id") Long id, @Param("userId") Long userId);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT w FROM Workflow w WHERE w.id = :id")
+    Optional<Workflow> findByIdForUpdate(@Param("id") Long id);
 
     Page<Workflow> findByUserId(Long userId, Pageable pageable);
 
@@ -43,6 +53,7 @@ public interface WorkflowRepository extends JpaRepository<Workflow, Long> {
             WHERE w.scheduled = true
               AND w.scheduledAt IS NOT NULL
               AND w.scheduledAt <= :now
+              AND w.status = com.orynx.orchestrator.workflow.WorkflowStatus.CREATED
             """)
     List<Workflow> findDueScheduledWorkflows(
             @Param("now") LocalDateTime now
@@ -55,6 +66,7 @@ public interface WorkflowRepository extends JpaRepository<Workflow, Long> {
             SET w.scheduled = false
             WHERE w.id = :workflowId
               AND w.scheduled = true
+              AND w.status = com.orynx.orchestrator.workflow.WorkflowStatus.CREATED
             """)
     int claimScheduledWorkflow(
             @Param("workflowId") Long workflowId
