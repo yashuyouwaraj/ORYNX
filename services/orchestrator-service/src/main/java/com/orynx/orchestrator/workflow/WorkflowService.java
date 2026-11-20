@@ -431,12 +431,26 @@ public class WorkflowService {
     public Workflow cancelWorkflow(Long workflowId, Long userId) {
         Workflow workflow = getWorkflowForUpdate(workflowId, userId);
 
-        if (workflow.getStatus() != WorkflowStatus.RUNNING) {
-            throw new IllegalStateException("Only Running workflows can be cancelled");
+        // Idempotent cancellation: If already cancelled, return safely without side-effects
+        if (workflow.getStatus() == WorkflowStatus.CANCELLED) {
+            log.info("Workflow {} is already CANCELLED. Returning idempotently.", workflow.getId());
+            return workflow;
         }
+
+        if (workflow.getStatus() == WorkflowStatus.COMPLETED) {
+            throw new IllegalStateException("Cannot cancel workflow: workflow is in terminal state COMPLETED");
+        }
+        if (workflow.getStatus() == WorkflowStatus.FAILED) {
+            throw new IllegalStateException("Cannot cancel workflow: workflow is in terminal state FAILED");
+        }
+
+        WorkflowStateValidator.validateTransition(workflow.getStatus(), WorkflowStatus.CANCELLED, "cancel");
 
         workflow.setStatus(WorkflowStatus.CANCELLED);
         workflow.setCompletedAt(System.currentTimeMillis());
+        if (Boolean.TRUE.equals(workflow.getScheduled())) {
+            workflow.setScheduled(false);
+        }
 
         Workflow updatedWorkflow = workflowRepository.save(workflow);
 
