@@ -17,9 +17,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Real PostgreSQL Distributed Execution Coordination Integration Tests (Phase A, Step 15).
- * Validates distributed row locking, duplicate execution prevention across instances,
- * lease expiration/recovery, and checkpoint storage on PostgreSQL 17 at localhost:5439.
+ * Real PostgreSQL Distributed Execution Coordination Integration Tests (Phase A, Step 15.1 Review).
+ * Validates distributed row locking, fencing tokens/generations, lease heartbeat ownership checks,
+ * stale worker rejection, and checkpoint storage on PostgreSQL 17 at localhost:5439.
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 public class ExecutionCoordinationPostgreSqlTest {
@@ -61,6 +61,9 @@ public class ExecutionCoordinationPostgreSqlTest {
                 acquired_at TIMESTAMP NOT NULL,
                 updated_at TIMESTAMP,
                 lease_expires_at TIMESTAMP,
+                generation BIGINT NOT NULL DEFAULT 1,
+                recovery_attempts INTEGER NOT NULL DEFAULT 0,
+                payload_json TEXT,
                 version BIGINT DEFAULT 0
             )
         """);
@@ -106,27 +109,27 @@ public class ExecutionCoordinationPostgreSqlTest {
         assertThat(duplicateCount.get()).isEqualTo(1);
 
         // Verify state in PostgreSQL
-        String status = jdbcTemplate.queryForObject(
-                "SELECT status FROM workflow_execution_coordination WHERE workflow_id = ?",
-                String.class,
+        var record = jdbcTemplate.queryForMap(
+                "SELECT status, generation FROM workflow_execution_coordination WHERE workflow_id = ?",
                 workflowId
         );
-        assertThat(status).isEqualTo("DISPATCHED");
+        assertThat(record.get("status")).isEqualTo("DISPATCHED");
+        assertThat(((Number) record.get("generation")).longValue()).isEqualTo(1L);
     }
 
     @Test
     @Order(2)
-    @DisplayName("Expired lease from crashed instance is safely reclaimed by healthy instance")
+    @DisplayName("Expired lease from crashed instance is safely reclaimed by healthy instance with incremented generation")
     void testReclaimExpiredLeaseFromCrashedInstanceInPostgreSql() {
         Long workflowId = 5002L;
         Instant now = Instant.now();
         Instant expiredLease = now.minusSeconds(60); // Expired 60s ago
 
-        // Seed crashed instance A record
+        // Seed crashed instance A record (generation = 1)
         jdbcTemplate.update("""
             INSERT INTO workflow_execution_coordination
-            (workflow_id, workflow_name, status, instance_id, acquired_at, updated_at, lease_expires_at, version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+            (workflow_id, workflow_name, status, instance_id, acquired_at, updated_at, lease_expires_at, generation, recovery_attempts, version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, 0)
         """, workflowId, "Crash Recovery Pipeline", "RUNNING", "crashed-instance-A",
                 Timestamp.from(now.minusSeconds(400)), Timestamp.from(now.minusSeconds(400)),
                 Timestamp.from(expiredLease));
@@ -135,19 +138,96 @@ public class ExecutionCoordinationPostgreSqlTest {
         boolean reclaimed = tryAcquireLeaseInDb(workflowId, "Crash Recovery Pipeline", "healthy-instance-B", 300);
         assertThat(reclaimed).isTrue();
 
-        // Verify updated record in PostgreSQL
+        // Verify updated record in PostgreSQL: generation MUST be incremented to 2
         var record = jdbcTemplate.queryForMap(
-                "SELECT status, instance_id, lease_expires_at FROM workflow_execution_coordination WHERE workflow_id = ?",
+                "SELECT status, instance_id, generation, lease_expires_at FROM workflow_execution_coordination WHERE workflow_id = ?",
                 workflowId
         );
         assertThat(record.get("status")).isEqualTo("DISPATCHED");
         assertThat(record.get("instance_id")).isEqualTo("healthy-instance-B");
+        assertThat(((Number) record.get("generation")).longValue()).isEqualTo(2L);
         Timestamp newLease = (Timestamp) record.get("lease_expires_at");
         assertThat(newLease.toInstant()).isAfter(now);
     }
 
     @Test
     @Order(3)
+    @DisplayName("Heartbeat extends lease only when instanceId and generation match current owner")
+    void testHeartbeatExtendsLeaseOnlyForMatchingOwnerAndGeneration() {
+        Long workflowId = 5005L;
+        Instant now = Instant.now();
+        Instant initialExpiry = now.plusSeconds(30);
+
+        // Seed RUNNING record owned by instance-A at generation 1
+        jdbcTemplate.update("""
+            INSERT INTO workflow_execution_coordination
+            (workflow_id, workflow_name, status, instance_id, acquired_at, updated_at, lease_expires_at, generation, recovery_attempts, version)
+            VALUES (?, ?, 'RUNNING', ?, ?, ?, ?, 1, 0, 0)
+        """, workflowId, "Heartbeat Pipeline", "instance-A",
+                Timestamp.from(now), Timestamp.from(now), Timestamp.from(initialExpiry));
+
+        // Valid owner heartbeat succeeds
+        Instant extendedExpiry = now.plusSeconds(300);
+        int rowsUpdated = jdbcTemplate.update("""
+            UPDATE workflow_execution_coordination
+            SET updated_at = ?, lease_expires_at = ?
+            WHERE workflow_id = ? AND generation = ? AND instance_id = ? AND status = 'RUNNING'
+        """, Timestamp.from(now), Timestamp.from(extendedExpiry), workflowId, 1L, "instance-A");
+        assertThat(rowsUpdated).isEqualTo(1);
+
+        // Stale owner or wrong generation heartbeat fails (0 rows)
+        int staleAttempt = jdbcTemplate.update("""
+            UPDATE workflow_execution_coordination
+            SET updated_at = ?, lease_expires_at = ?
+            WHERE workflow_id = ? AND generation = ? AND instance_id = ? AND status = 'RUNNING'
+        """, Timestamp.from(now), Timestamp.from(extendedExpiry), workflowId, 2L, "instance-A");
+        assertThat(staleAttempt).isEqualTo(0);
+
+        int wrongInstanceAttempt = jdbcTemplate.update("""
+            UPDATE workflow_execution_coordination
+            SET updated_at = ?, lease_expires_at = ?
+            WHERE workflow_id = ? AND generation = ? AND instance_id = ? AND status = 'RUNNING'
+        """, Timestamp.from(now), Timestamp.from(extendedExpiry), workflowId, 1L, "imposter-instance");
+        assertThat(wrongInstanceAttempt).isEqualTo(0);
+    }
+
+    @Test
+    @Order(4)
+    @DisplayName("Stale worker from old generation cannot overwrite status of new generation owner")
+    void testStaleWorkerFencingInPostgreSql() {
+        Long workflowId = 5006L;
+        Instant now = Instant.now();
+
+        // Seed record currently at generation 2 owned by instance-B
+        jdbcTemplate.update("""
+            INSERT INTO workflow_execution_coordination
+            (workflow_id, workflow_name, status, instance_id, acquired_at, updated_at, lease_expires_at, generation, recovery_attempts, version)
+            VALUES (?, ?, 'RUNNING', ?, ?, ?, ?, 2, 1, 0)
+        """, workflowId, "Fenced Pipeline", "instance-B",
+                Timestamp.from(now), Timestamp.from(now), Timestamp.from(now.plusSeconds(300)));
+
+        // Stale worker (generation 1, instance-A) attempts to mark workflow COMPLETED
+        int updated = jdbcTemplate.update("""
+            UPDATE workflow_execution_coordination
+            SET status = 'COMPLETED', updated_at = ?, lease_expires_at = NULL
+            WHERE workflow_id = ? AND generation = ? AND instance_id = ?
+        """, Timestamp.from(now), workflowId, 1L, "instance-A");
+
+        // Stale worker MUST be fenced (0 rows updated)
+        assertThat(updated).isEqualTo(0);
+
+        // Current status must remain RUNNING at generation 2
+        var record = jdbcTemplate.queryForMap(
+                "SELECT status, generation, instance_id FROM workflow_execution_coordination WHERE workflow_id = ?",
+                workflowId
+        );
+        assertThat(record.get("status")).isEqualTo("RUNNING");
+        assertThat(((Number) record.get("generation")).longValue()).isEqualTo(2L);
+        assertThat(record.get("instance_id")).isEqualTo("instance-B");
+    }
+
+    @Test
+    @Order(5)
     @DisplayName("Terminal workflow state prevents duplicate execution in PostgreSQL")
     void testTerminalStateRejectionInPostgreSql() {
         Long workflowId = 5003L;
@@ -156,8 +236,8 @@ public class ExecutionCoordinationPostgreSqlTest {
         // Seed COMPLETED record
         jdbcTemplate.update("""
             INSERT INTO workflow_execution_coordination
-            (workflow_id, workflow_name, status, instance_id, acquired_at, updated_at, lease_expires_at, version)
-            VALUES (?, ?, ?, ?, ?, ?, NULL, 0)
+            (workflow_id, workflow_name, status, instance_id, acquired_at, updated_at, lease_expires_at, generation, version)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, 1, 0)
         """, workflowId, "Completed Pipeline", "COMPLETED", "instance-A",
                 Timestamp.from(now.minusSeconds(200)), Timestamp.from(now.minusSeconds(100)));
 
@@ -167,7 +247,7 @@ public class ExecutionCoordinationPostgreSqlTest {
     }
 
     @Test
-    @Order(4)
+    @Order(6)
     @DisplayName("Paused workflow preserves checkpoint and rejects duplicate dispatch in PostgreSQL")
     void testPausedWorkflowPreservesCheckpointInPostgreSql() {
         Long workflowId = 5004L;
@@ -176,8 +256,8 @@ public class ExecutionCoordinationPostgreSqlTest {
         // Seed PAUSED record with checkpoint 3
         jdbcTemplate.update("""
             INSERT INTO workflow_execution_coordination
-            (workflow_id, workflow_name, status, instance_id, last_completed_execution_order, acquired_at, updated_at, lease_expires_at, version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0)
+            (workflow_id, workflow_name, status, instance_id, last_completed_execution_order, acquired_at, updated_at, lease_expires_at, generation, version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1, 0)
         """, workflowId, "Paused Pipeline", "PAUSED", "instance-A", 3,
                 Timestamp.from(now.minusSeconds(200)), Timestamp.from(now.minusSeconds(50)));
 
@@ -199,7 +279,7 @@ public class ExecutionCoordinationPostgreSqlTest {
             Boolean result = transactionTemplate.execute(status -> {
                 // Pessimistic write lock on existing row
                 List<java.util.Map<String, Object>> rows = jdbcTemplate.queryForList(
-                        "SELECT status, instance_id, lease_expires_at FROM workflow_execution_coordination WHERE workflow_id = ? FOR UPDATE",
+                        "SELECT status, instance_id, lease_expires_at, generation FROM workflow_execution_coordination WHERE workflow_id = ? FOR UPDATE",
                         workflowId
                 );
 
@@ -209,8 +289,8 @@ public class ExecutionCoordinationPostgreSqlTest {
                 if (rows.isEmpty()) {
                     jdbcTemplate.update("""
                         INSERT INTO workflow_execution_coordination
-                        (workflow_id, workflow_name, status, instance_id, acquired_at, updated_at, lease_expires_at, version)
-                        VALUES (?, ?, 'DISPATCHED', ?, ?, ?, ?, 0)
+                        (workflow_id, workflow_name, status, instance_id, acquired_at, updated_at, lease_expires_at, generation, recovery_attempts, version)
+                        VALUES (?, ?, 'DISPATCHED', ?, ?, ?, ?, 1, 0, 0)
                     """, workflowId, name, instanceId, Timestamp.from(now), Timestamp.from(now), Timestamp.from(newLeaseExpiry));
                     return true;
                 }
@@ -218,6 +298,7 @@ public class ExecutionCoordinationPostgreSqlTest {
                 var row = rows.get(0);
                 String currentStatus = (String) row.get("status");
                 Timestamp leaseExpiresAt = (Timestamp) row.get("lease_expires_at");
+                long currentGen = ((Number) row.get("generation")).longValue();
 
                 if ("COMPLETED".equals(currentStatus) || "CANCELLED".equals(currentStatus) || "PAUSED".equals(currentStatus)) {
                     return false;
@@ -227,12 +308,12 @@ public class ExecutionCoordinationPostgreSqlTest {
                     return false; // Active lease
                 }
 
-                // Expired lease reclamation
+                // Expired lease reclamation with incremented generation
                 jdbcTemplate.update("""
                     UPDATE workflow_execution_coordination
-                    SET status = 'DISPATCHED', instance_id = ?, updated_at = ?, lease_expires_at = ?, version = version + 1
+                    SET status = 'DISPATCHED', instance_id = ?, updated_at = ?, lease_expires_at = ?, generation = ?, version = version + 1
                     WHERE workflow_id = ?
-                """, instanceId, Timestamp.from(now), Timestamp.from(newLeaseExpiry), workflowId);
+                """, instanceId, Timestamp.from(now), Timestamp.from(newLeaseExpiry), currentGen + 1L, workflowId);
                 return true;
             });
 

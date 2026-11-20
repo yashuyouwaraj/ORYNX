@@ -1,5 +1,6 @@
 package com.orynx.execution.kafka;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.orynx.execution.coordination.ExecutionCoordinationService;
 import com.orynx.execution.coordination.ExecutionLeaseAcquisitionResult;
 import com.orynx.execution.coordination.WorkflowExecutionCoordination;
@@ -38,19 +39,22 @@ class ExecutionRequestConsumerTest {
     private Acknowledgment acknowledgment;
 
     private ExecutionWorkerProperties properties;
+    private ObjectMapper objectMapper;
     private ExecutionRequestConsumer consumer;
 
     @BeforeEach
     void setUp() {
         properties = new ExecutionWorkerProperties();
         properties.setLeaseDurationSeconds(300L);
+        objectMapper = new ObjectMapper();
         lenient().when(dispatcher.getInstanceId()).thenReturn("test-instance-1");
 
         consumer = new ExecutionRequestConsumer(
                 executionService,
                 coordinationService,
                 dispatcher,
-                properties
+                properties,
+                objectMapper
         );
     }
 
@@ -64,13 +68,14 @@ class ExecutionRequestConsumerTest {
 
         WorkflowExecutionCoordination coordination = WorkflowExecutionCoordination.builder()
                 .workflowId(10L)
+                .generation(1L)
                 .build();
-        when(coordinationService.tryAcquireLease(eq(10L), eq("Process Data"), anyString(), anyLong()))
+        when(coordinationService.tryAcquireLease(eq(10L), eq("Process Data"), anyString(), anyLong(), any()))
                 .thenReturn(ExecutionLeaseAcquisitionResult.acquired(coordination));
 
         consumer.consume(event, acknowledgment);
 
-        verify(executionService).executeWorkflow(event);
+        verify(executionService).executeWorkflow(event, 1L);
         verify(acknowledgment).acknowledge();
         verify(coordinationService, never()).releaseLeaseOnDispatchFailure(any());
     }
@@ -85,14 +90,15 @@ class ExecutionRequestConsumerTest {
         WorkflowExecutionCoordination coordination = WorkflowExecutionCoordination.builder()
                 .workflowId(11L)
                 .instanceId("other-node")
+                .generation(1L)
                 .build();
-        when(coordinationService.tryAcquireLease(eq(11L), eq("Duplicate Job"), anyString(), anyLong()))
+        when(coordinationService.tryAcquireLease(eq(11L), eq("Duplicate Job"), anyString(), anyLong(), any()))
                 .thenReturn(ExecutionLeaseAcquisitionResult.duplicateActive(coordination));
 
         consumer.consume(event, acknowledgment);
 
         // Must NOT dispatch to worker pool
-        verify(executionService, never()).executeWorkflow(any());
+        verify(executionService, never()).executeWorkflow(any(), any());
         // Must acknowledge to remove duplicate message from Kafka partition
         verify(acknowledgment).acknowledge();
     }
@@ -106,12 +112,13 @@ class ExecutionRequestConsumerTest {
 
         WorkflowExecutionCoordination coordination = WorkflowExecutionCoordination.builder()
                 .workflowId(12L)
+                .generation(1L)
                 .build();
-        when(coordinationService.tryAcquireLease(eq(12L), eq("High Load Job"), anyString(), anyLong()))
+        when(coordinationService.tryAcquireLease(eq(12L), eq("High Load Job"), anyString(), anyLong(), any()))
                 .thenReturn(ExecutionLeaseAcquisitionResult.acquired(coordination));
 
         doThrow(new WorkerQueueFullException("Queue full"))
-                .when(executionService).executeWorkflow(event);
+                .when(executionService).executeWorkflow(eq(event), anyLong());
 
         assertThatThrownBy(() -> consumer.consume(event, acknowledgment))
                 .isInstanceOf(WorkerQueueFullException.class);
@@ -126,7 +133,7 @@ class ExecutionRequestConsumerTest {
     void shouldAcknowledgeAndDiscardMalformedNullPayload() {
         consumer.consume(null, acknowledgment);
         verify(acknowledgment).acknowledge();
-        verify(executionService, never()).executeWorkflow(any());
+        verify(executionService, never()).executeWorkflow(any(), any());
 
         WorkflowExecutionRequestEvent invalidEvent = new WorkflowExecutionRequestEvent();
         consumer.consume(invalidEvent, acknowledgment);
