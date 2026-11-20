@@ -5,6 +5,7 @@ import com.orynx.execution.execution.WorkflowPauseRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -22,18 +23,24 @@ public class WorkflowResumeConsumer {
                     "spring.json.use.type.headers=false"
             }
     )
-    public void consumeWorkflowResumed(WorkflowResumedEvent event) {
+    public void consumeWorkflowResumed(WorkflowResumedEvent event, Acknowledgment acknowledgment) {
+        if (event != null && event.getWorkflowId() != null) {
+            log.info(
+                    "Workflow Resumed -> Workflow: {} (id={})",
+                    event.getWorkflowName(),
+                    event.getWorkflowId()
+            );
 
-        log.info(
-                "Workflow Resumed -> Workflow: {}",
-                event.getWorkflowName()
-        );
+            pauseRegistry.clear(event.getWorkflowId());
 
-        pauseRegistry.clear(event.getWorkflowId());
+            log.info(
+                    "Pause registry cleared for workflow {}",
+                    event.getWorkflowName()
+            );
+        }
 
-        log.info(
-                "Pause registry cleared for workflow {}",
-                event.getWorkflowName()
-        );
+        if (acknowledgment != null) {
+            acknowledgment.acknowledge();
+        }
     }
 }

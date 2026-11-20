@@ -9,15 +9,14 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 @Slf4j
 public class ExecutionService {
-    private final WorkflowExecutionEngine engine;
+    private final WorkflowExecutionDispatcher dispatcher;
 
     public void executeWorkflow(WorkflowExecutionRequestEvent event) {
-
         log.info(
-                "Dispatching workflow {} to execution engine",
-                event.getWorkflowName()
+                "Submitting workflow {} (id={}) to execution dispatcher",
+                event.getWorkflowName(),
+                event.getWorkflowId()
         );
-
-        engine.execute(event);
+        dispatcher.dispatch(event);
     }
 }
