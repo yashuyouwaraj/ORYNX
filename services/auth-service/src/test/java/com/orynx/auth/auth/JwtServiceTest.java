@@ -29,6 +29,30 @@ class JwtServiceTest {
     }
 
     @Test
+    @DisplayName("Should generate token with userId claim and extract userId successfully")
+    void shouldGenerateAndExtractUserIdSuccessfully() {
+        JwtService jwtService = new JwtService(VALID_TEST_SECRET, ONE_HOUR_MS);
+        String email = "alice@orynx.io";
+        Long userId = 42L;
+
+        String token = jwtService.generateToken(email, userId);
+
+        assertThat(token).isNotBlank();
+        assertThat(jwtService.extractEmail(token)).isEqualTo(email);
+        assertThat(jwtService.extractUserId(token)).isEqualTo(42L);
+        assertThat(jwtService.isTokenValid(token, email)).isTrue();
+    }
+
+    @Test
+    @DisplayName("Should return null userId when token does not contain userId claim")
+    void shouldReturnNullUserIdWhenTokenHasNoUserIdClaim() {
+        JwtService jwtService = new JwtService(VALID_TEST_SECRET, ONE_HOUR_MS);
+        String token = jwtService.generateToken("legacy@orynx.io");
+
+        assertThat(jwtService.extractUserId(token)).isNull();
+    }
+
+    @Test
     @DisplayName("Should reject token when validated against mismatched email")
     void shouldRejectTokenWhenEmailDoesNotMatch() {
         JwtService jwtService = new JwtService(VALID_TEST_SECRET, ONE_HOUR_MS);
