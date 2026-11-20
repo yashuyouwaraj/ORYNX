@@ -33,43 +33,41 @@ public class WorkflowScheduler {
         );
 
         for (Workflow workflow : dueWorkflows) {
+            processScheduledWorkflow(workflow);
+        }
+    }
 
-            try {
+    void processScheduledWorkflow(Workflow workflow) {
+        try {
+            int claimed = workflowRepository.claimScheduledWorkflow(workflow.getId());
 
-                int claimed =
-                        workflowRepository.claimScheduledWorkflow(
-                                workflow.getId()
-                        );
-
-                if (claimed == 0) {
-                    log.info(
-                            "Workflow {} was already claimed. Skipping.",
-                            workflow.getId()
-                    );
-                    continue;
-                }
-
+            if (claimed == 0) {
                 log.info(
-                        "Claimed scheduled workflow: {} (id={})",
-                        workflow.getName(),
+                        "Workflow {} was already claimed or ineligible. Skipping.",
                         workflow.getId()
                 );
+                return;
+            }
 
-                workflowService.startWorkflow(workflow.getId());
+            log.info(
+                    "Claimed scheduled workflow: {} (id={})",
+                    workflow.getName(),
+                    workflow.getId()
+            );
 
-            } catch (Exception e) {
+            workflowService.startWorkflow(workflow.getId());
 
-                log.error(
-                        "Failed to start scheduled workflow: {} (id={})",
-                        workflow.getName(),
-                        workflow.getId(),
-                        e
-                );
+        } catch (Exception e) {
 
-                int released =
-                        workflowRepository.releaseScheduledWorkflow(
-                                workflow.getId()
-                        );
+            log.error(
+                    "Failed to start scheduled workflow: {} (id={})",
+                    workflow.getName(),
+                    workflow.getId(),
+                    e
+            );
+
+            try {
+                int released = workflowRepository.releaseScheduledWorkflow(workflow.getId());
 
                 if (released > 0) {
                     log.info(
@@ -82,6 +80,13 @@ public class WorkflowScheduler {
                             workflow.getId()
                     );
                 }
+            } catch (Exception releaseEx) {
+                log.error(
+                        "Error while releasing scheduler claim for workflow {}: {}",
+                        workflow.getId(),
+                        releaseEx.getMessage(),
+                        releaseEx
+                );
             }
         }
     }
