@@ -128,17 +128,22 @@ public class ExecutionEventConsumer {
                     WorkflowExecution execution =
                             executionOptional.get();
 
-                    execution.setLastCompletedExecutionOrder(
-                            event.getExecutionOrder()
-                    );
+                    if (execution.getStatus() != WorkflowStatus.CANCELLED) {
+                        if (execution.getLastCompletedExecutionOrder() == null ||
+                                event.getExecutionOrder() > execution.getLastCompletedExecutionOrder()) {
+                            execution.setLastCompletedExecutionOrder(
+                                    event.getExecutionOrder()
+                            );
 
-                    workflowExecutionRepository.save(execution);
+                            workflowExecutionRepository.save(execution);
 
-                    log.info(
-                            "Workflow {} last completed execution order updated to {}",
-                            event.getWorkflowId(),
-                            event.getExecutionOrder()
-                    );
+                            log.info(
+                                    "Workflow {} last completed execution order updated to {}",
+                                    event.getWorkflowId(),
+                                    event.getExecutionOrder()
+                            );
+                        }
+                    }
 
                 } else {
 
@@ -182,6 +187,14 @@ public class ExecutionEventConsumer {
 
             Workflow workflow = workflowOptional.get();
 
+            if (workflow.getStatus() == WorkflowStatus.CANCELLED) {
+                log.info(
+                        "Workflow {} is in terminal state CANCELLED. Suppressing late workflow-completed event.",
+                        workflow.getName()
+                );
+                return;
+            }
+
             workflow.setStatus(
                     event.isSuccess()
                             ? WorkflowStatus.COMPLETED
@@ -200,6 +213,14 @@ public class ExecutionEventConsumer {
             if (executionOptional.isPresent()) {
 
                 WorkflowExecution execution = executionOptional.get();
+
+                if (execution.getStatus() == WorkflowStatus.CANCELLED) {
+                    log.info(
+                            "Execution history for workflow {} is in terminal state CANCELLED. Preserving status.",
+                            workflow.getName()
+                    );
+                    return;
+                }
 
                 execution.setStatus(workflow.getStatus());
                 long completedTime = System.currentTimeMillis();
@@ -264,11 +285,24 @@ public class ExecutionEventConsumer {
 
             WorkflowExecution execution = executionOptional.get();
 
+            if (execution.getStatus() == WorkflowStatus.CANCELLED) {
+                log.info(
+                        "Execution {} is in terminal state CANCELLED. Suppressing late pause event.",
+                        execution.getId()
+                );
+                return;
+            }
+
             execution.setStatus(WorkflowStatus.PAUSED);
 
-            execution.setLastCompletedExecutionOrder(
-                    event.getLastCompletedExecutionOrder()
-            );
+            if (event.getLastCompletedExecutionOrder() != null) {
+                if (execution.getLastCompletedExecutionOrder() == null ||
+                        event.getLastCompletedExecutionOrder() > execution.getLastCompletedExecutionOrder()) {
+                    execution.setLastCompletedExecutionOrder(
+                            event.getLastCompletedExecutionOrder()
+                    );
+                }
+            }
 
             workflowExecutionRepository.save(execution);
 
