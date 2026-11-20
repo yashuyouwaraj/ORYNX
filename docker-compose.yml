@@ -5,9 +5,9 @@ services:
     container_name: orynx-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: orynx
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ${POSTGRES_DB:-orynx}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "5432:5432"
 
@@ -71,7 +71,7 @@ services:
 
   #   environment:
   #     SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/orynx
-  #     SPRING_DATASOURCE_USERNAME: postgres
-  #     SPRING_DATASOURCE_PASSWORD: postgres
+  #     SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-postgres}
+  #     SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD}
 
   #     SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092

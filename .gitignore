@@ -12,8 +12,11 @@ target/
 logs/
 *.log
 
-# Environment
+# Environment & Secrets
 .env
+.env.*
+*.env
+!.env.example
 
 # IDE
 .idea/
