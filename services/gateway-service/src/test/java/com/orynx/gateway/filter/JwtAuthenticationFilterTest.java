@@ -6,6 +6,8 @@ import io.jsonwebtoken.security.Keys;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -47,10 +49,25 @@ class JwtAuthenticationFilterTest {
         return builder.signWith(key, SignatureAlgorithm.HS256).compact();
     }
 
-    @Test
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "/api/v1/workflows",
+            "/api/v1/workflows/1/cancel",
+            "/api/v1/ai/plan",
+            "/api/v1/analytics",
+            "/api/v1/performance",
+            "/api/v1/performance/summary",
+            "/api/v1/performance/health",
+            "/api/v1/timeline/1",
+            "/api/v1/plans",
+            "/api/v1/users/profile",
+            "/api/v1/users/admin",
+            "/actuator/env",
+            "/actuator/beans"
+    })
     @DisplayName("Should reject anonymous request to protected endpoint with 401")
-    void shouldRejectAnonymousRequestToProtectedEndpoint() {
-        MockServerHttpRequest request = MockServerHttpRequest.get("/api/v1/workflows").build();
+    void shouldRejectAnonymousRequestToProtectedEndpoints(String path) {
+        MockServerHttpRequest request = MockServerHttpRequest.get(path).build();
         MockServerWebExchange exchange = MockServerWebExchange.from(request);
 
         GatewayFilterChain chain = ex -> Mono.empty();
@@ -58,6 +75,41 @@ class JwtAuthenticationFilterTest {
         filter.filter(exchange, chain).block();
 
         assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "/api/v1/auth/health",
+            "/api/v1/users/register",
+            "/api/v1/users/login",
+            "/api/v1/platform/health",
+            "/actuator/health",
+            "/actuator/health/readiness",
+            "/ws",
+            "/ws/info"
+    })
+    @DisplayName("Should permit public endpoints anonymously and strip spoofed identity headers")
+    void shouldPermitPublicEndpointsAndStripSpoofedHeaders(String path) {
+        MockServerHttpRequest request = MockServerHttpRequest.get(path)
+                .header("X-User-Id", "999")
+                .header("X-User-Email", "spoofed@orynx.io")
+                .build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+
+        AtomicReference<ServerWebExchange> downstreamExchange = new AtomicReference<>();
+        GatewayFilterChain chain = ex -> {
+            downstreamExchange.set(ex);
+            return Mono.empty();
+        };
+
+        filter.filter(exchange, chain).block();
+
+        assertThat(exchange.getResponse().getStatusCode()).isNull(); // Not intercepted with error
+        assertThat(downstreamExchange.get()).isNotNull();
+
+        HttpHeaders downstreamHeaders = downstreamExchange.get().getRequest().getHeaders();
+        assertThat(downstreamHeaders.getFirst("X-User-Id")).isNull();
+        assertThat(downstreamHeaders.getFirst("X-User-Email")).isNull();
     }
 
     @Test
@@ -138,11 +190,12 @@ class JwtAuthenticationFilterTest {
     }
 
     @Test
-    @DisplayName("Should strip client-supplied X-User-Id on public endpoints")
-    void shouldStripClientSuppliedHeadersOnPublicEndpoint() {
-        MockServerHttpRequest request = MockServerHttpRequest.post("/api/v1/auth/login")
-                .header("X-User-Id", "999")
-                .header("X-User-Email", "spoofed@orynx.io")
+    @DisplayName("Should authenticate valid JWT on user profile endpoint and inject verified claims")
+    void shouldAuthenticateProtectedUserEndpoint() {
+        String token = generateToken("user99@orynx.io", 99L, 3600000L, TEST_SECRET);
+
+        MockServerHttpRequest request = MockServerHttpRequest.get("/api/v1/users/profile")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
                 .build();
         MockServerWebExchange exchange = MockServerWebExchange.from(request);
 
@@ -158,8 +211,8 @@ class JwtAuthenticationFilterTest {
         assertThat(downstreamExchange.get()).isNotNull();
 
         HttpHeaders downstreamHeaders = downstreamExchange.get().getRequest().getHeaders();
-        assertThat(downstreamHeaders.getFirst("X-User-Id")).isNull();
-        assertThat(downstreamHeaders.getFirst("X-User-Email")).isNull();
+        assertThat(downstreamHeaders.getFirst("X-User-Id")).isEqualTo("99");
+        assertThat(downstreamHeaders.getFirst("X-User-Email")).isEqualTo("user99@orynx.io");
     }
 
     @Test
