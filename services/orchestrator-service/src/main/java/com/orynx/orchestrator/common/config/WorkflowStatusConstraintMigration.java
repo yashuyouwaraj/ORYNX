@@ -1,30 +1,54 @@
 package com.orynx.orchestrator.common.config;
 
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.annotation.Order;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @Component
 @Order(1)
-@RequiredArgsConstructor
 @Slf4j
 public class WorkflowStatusConstraintMigration implements ApplicationRunner {
 
-    private static final String CONSTRAINT_NAME = "workflows_status_check";
-    private static final String VALID_STATUSES =
+    public static final String CONSTRAINT_NAME = "workflows_status_check";
+    public static final String VALID_STATUSES =
             "('CREATED', 'RUNNING', 'PAUSED', 'COMPLETED', 'FAILED', 'CANCELLED')";
+    public static final long MIGRATION_ADVISORY_LOCK_ID = 849201849L;
+
+    public static final String ATOMIC_MIGRATION_SQL =
+            "ALTER TABLE workflows " +
+            "DROP CONSTRAINT IF EXISTS " + CONSTRAINT_NAME + ", " +
+            "ADD CONSTRAINT " + CONSTRAINT_NAME + " CHECK (status IN " + VALID_STATUSES + ")";
 
     private final JdbcTemplate jdbcTemplate;
+    private final TransactionTemplate transactionTemplate;
+
+    @Autowired
+    public WorkflowStatusConstraintMigration(
+            JdbcTemplate jdbcTemplate,
+            PlatformTransactionManager transactionManager
+    ) {
+        this(jdbcTemplate, new TransactionTemplate(transactionManager));
+    }
+
+    public WorkflowStatusConstraintMigration(
+            JdbcTemplate jdbcTemplate,
+            TransactionTemplate transactionTemplate
+    ) {
+        this.jdbcTemplate = jdbcTemplate;
+        this.transactionTemplate = transactionTemplate;
+    }
 
     @Override
     public void run(ApplicationArguments args) {
         try {
             if (!tableExists()) {
-                log.debug("workflows table not found; skipping status constraint migration");
+                log.info("workflows table not found; skipping status constraint migration (fresh database initialization)");
                 return;
             }
 
@@ -33,16 +57,29 @@ public class WorkflowStatusConstraintMigration implements ApplicationRunner {
                 return;
             }
 
-            jdbcTemplate.execute(
-                    "ALTER TABLE workflows DROP CONSTRAINT IF EXISTS " + CONSTRAINT_NAME
-            );
-            jdbcTemplate.execute(
-                    "ALTER TABLE workflows ADD CONSTRAINT " + CONSTRAINT_NAME
-                            + " CHECK (status IN " + VALID_STATUSES + ")"
-            );
-            log.info("Updated {} to allow PAUSED and CANCELLED workflow statuses", CONSTRAINT_NAME);
+            transactionTemplate.executeWithoutResult(status -> {
+                acquireAdvisoryLock();
+
+                // Re-verify inside transaction after obtaining advisory lock
+                if (constraintIncludesPausedAndCancelled()) {
+                    log.debug("{} already updated by a concurrent instance", CONSTRAINT_NAME);
+                    return;
+                }
+
+                jdbcTemplate.execute(ATOMIC_MIGRATION_SQL);
+                log.info("Atomically updated {} to allow PAUSED and CANCELLED workflow statuses", CONSTRAINT_NAME);
+            });
         } catch (Exception ex) {
-            log.warn("Could not migrate workflows status constraint: {}", ex.getMessage());
+            log.error("Failed to migrate {} constraint: {}. Aborting application startup.", CONSTRAINT_NAME, ex.getMessage());
+            throw new IllegalStateException("Failed to migrate workflows status constraint: " + ex.getMessage(), ex);
+        }
+    }
+
+    private void acquireAdvisoryLock() {
+        try {
+            jdbcTemplate.execute("SELECT pg_advisory_xact_lock(" + MIGRATION_ADVISORY_LOCK_ID + ")");
+        } catch (Exception ex) {
+            log.debug("Advisory lock not acquired (non-PostgreSQL dialect or permissions): {}", ex.getMessage());
         }
     }
 
