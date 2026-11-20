@@ -39,4 +39,7 @@ public class Workflow {
     private Long startedAt;
 
     private Long completedAt;
+
+    @Column(name = "user_id", updatable = false)
+    private Long userId;
 }

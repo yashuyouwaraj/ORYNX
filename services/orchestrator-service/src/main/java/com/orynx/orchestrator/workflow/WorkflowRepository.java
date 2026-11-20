@@ -1,5 +1,7 @@
 package com.orynx.orchestrator.workflow;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -9,9 +11,24 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
 @Repository
 public interface WorkflowRepository extends JpaRepository<Workflow, Long> {
+
+    Optional<Workflow> findByIdAndUserId(Long id, Long userId);
+
+    Page<Workflow> findByUserId(Long userId, Pageable pageable);
+
+    Page<Workflow> findByUserIdOrderByIdDesc(Long userId, Pageable pageable);
+
+    List<Workflow> findByUserIdOrderByIdDesc(Long userId);
+
+    List<Workflow> findByUserIdAndStatusOrderByIdDesc(Long userId, WorkflowStatus status);
+
+    long countByUserId(Long userId);
+
+    long countByUserIdAndStatus(Long userId, WorkflowStatus status);
 
     List<Workflow> findAllByOrderByIdDesc();
 

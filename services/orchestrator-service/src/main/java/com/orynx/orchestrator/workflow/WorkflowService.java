@@ -1,5 +1,7 @@
 package com.orynx.orchestrator.workflow;
 
+import com.orynx.orchestrator.common.exception.WorkflowNotFoundException;
+import com.orynx.orchestrator.common.security.UserContext;
 import com.orynx.orchestrator.event.dto.WorkflowCancelledEvent;
 import com.orynx.orchestrator.event.dto.WorkflowPausedEvent;
 import com.orynx.orchestrator.event.dto.WorkflowResumedEvent;
@@ -44,15 +46,20 @@ public class WorkflowService {
     private final WorkflowPauseProducer workflowPauseProducer;
     private final WorkflowResumeProducer workflowResumeProducer;
 
-    public Workflow createWorkflow(CreateWorkflowRequest request){
-        log.info("Creating workflow: {}",request.getName());
+    public Workflow createWorkflow(CreateWorkflowRequest request) {
+        return createWorkflow(request, UserContext.getUserId());
+    }
 
-        Workflow workflow  = Workflow.builder()
+    public Workflow createWorkflow(CreateWorkflowRequest request, Long userId) {
+        log.info("Creating workflow: {} for userId: {}", request.getName(), userId);
+
+        Workflow workflow = Workflow.builder()
                 .name(request.getName())
                 .scheduledAt(request.getScheduledAt())
-                .scheduled(request.getScheduledAt() !=null)
+                .scheduled(request.getScheduledAt() != null)
                 .goal(request.getGoal())
                 .status(WorkflowStatus.CREATED)
+                .userId(userId)
                 .build();
 
         Workflow savedWorkflow = workflowRepository.save(workflow);
@@ -79,8 +86,13 @@ public class WorkflowService {
     }
 
     @Transactional
-    public Workflow startWorkflow(Long workflowId){
-        Workflow workflow = workflowRepository.findById(workflowId).orElseThrow(()-> new RuntimeException("Workflow not found"));
+    public Workflow startWorkflow(Long workflowId) {
+        return startWorkflow(workflowId, UserContext.getUserId());
+    }
+
+    @Transactional
+    public Workflow startWorkflow(Long workflowId, Long userId) {
+        Workflow workflow = getWorkflow(workflowId, userId);
 
         ensureWorkflowTasksExist(workflow);
 
@@ -105,14 +117,14 @@ public class WorkflowService {
                 workflowTaskRepository.findByWorkflowIdOrderByExecutionOrder(
                         workflow.getId()
                 );
-        List<TaskExecutionRequest> taskRequests= workflowTasks.stream()
-                        .map((task-> TaskExecutionRequest.builder()
-                                .name(task.getName())
-                                .executionOrder(task.getExecutionOrder())
-                                .maxRetries(task.getMaxRetries())
-                                .build()
-                        ))
-                                .toList();
+        List<TaskExecutionRequest> taskRequests = workflowTasks.stream()
+                .map((task -> TaskExecutionRequest.builder()
+                        .name(task.getName())
+                        .executionOrder(task.getExecutionOrder())
+                        .maxRetries(task.getMaxRetries())
+                        .build()
+                ))
+                .toList();
 
         executionRequestProducer.publishExecutionRequest(
                 WorkflowExecutionRequestEvent.builder()
@@ -133,8 +145,15 @@ public class WorkflowService {
         return updatedWorkflow;
     }
 
-    public Page<Workflow> getAllWorkflows(Pageable pageable){
-        return workflowRepository.findAll(pageable);
+    public Page<Workflow> getAllWorkflows(Pageable pageable) {
+        return getAllWorkflows(pageable, UserContext.getUserId());
+    }
+
+    public Page<Workflow> getAllWorkflows(Pageable pageable, Long userId) {
+        if (userId == null) {
+            return workflowRepository.findAll(pageable);
+        }
+        return workflowRepository.findByUserIdOrderByIdDesc(userId, pageable);
     }
 
     private void ensureWorkflowTasksExist(Workflow workflow) {
@@ -150,10 +169,7 @@ public class WorkflowService {
         createWorkflowTasks(workflow);
     }
 
-    private void createWorkflowTasks(
-            Workflow workflow
-    ) {
-
+    private void createWorkflowTasks(Workflow workflow) {
         WorkflowTask collectMetrics =
                 WorkflowTask.builder()
                         .name("Collect Metrics")
@@ -187,31 +203,73 @@ public class WorkflowService {
         );
     }
 
-    public Workflow getWorkflow(Long id){
-        return workflowRepository.findById(id).orElseThrow(()-> new RuntimeException("Workflow not found: "+id));
+    public Workflow getWorkflow(Long id) {
+        return getWorkflow(id, UserContext.getUserId());
     }
 
-    public List<Workflow> getWorkflowsByStatus(WorkflowStatus status){
-        return workflowRepository.findByStatusOrderByIdDesc(status);
+    public Workflow getWorkflow(Long id, Long userId) {
+        if (userId == null) {
+            return workflowRepository.findById(id)
+                    .orElseThrow(() -> new WorkflowNotFoundException("Workflow not found: " + id));
+        }
+        return workflowRepository.findByIdAndUserId(id, userId)
+                .orElseThrow(() -> new WorkflowNotFoundException("Workflow not found: " + id));
     }
 
-    public List<WorkflowTask> getWorkflowTasks(Long workflowId){
+    public List<Workflow> getWorkflowsByStatus(WorkflowStatus status) {
+        return getWorkflowsByStatus(status, UserContext.getUserId());
+    }
+
+    public List<Workflow> getWorkflowsByStatus(WorkflowStatus status, Long userId) {
+        if (userId == null) {
+            return workflowRepository.findByStatusOrderByIdDesc(status);
+        }
+        return workflowRepository.findByUserIdAndStatusOrderByIdDesc(userId, status);
+    }
+
+    public List<WorkflowTask> getWorkflowTasks(Long workflowId) {
+        return getWorkflowTasks(workflowId, UserContext.getUserId());
+    }
+
+    public List<WorkflowTask> getWorkflowTasks(Long workflowId, Long userId) {
+        getWorkflow(workflowId, userId);
         return workflowTaskRepository.findByWorkflowIdOrderByExecutionOrder(workflowId);
     }
 
-    public DashboardSummaryResponse getDashboardSummary(){
+    public DashboardSummaryResponse getDashboardSummary() {
+        return getDashboardSummary(UserContext.getUserId());
+    }
+
+    public DashboardSummaryResponse getDashboardSummary(Long userId) {
+        if (userId == null) {
+            return DashboardSummaryResponse.builder()
+                    .totalWorkflows(workflowRepository.count())
+                    .runningWorkflows(workflowRepository.countByStatus(WorkflowStatus.RUNNING))
+                    .pausedWorkflows(workflowRepository.countByStatus(WorkflowStatus.PAUSED))
+                    .completedWorkflows(workflowRepository.countByStatus(WorkflowStatus.COMPLETED))
+                    .failedWorkflows(workflowRepository.countByStatus(WorkflowStatus.FAILED))
+                    .createdWorkflows(workflowRepository.countByStatus(WorkflowStatus.CREATED))
+                    .cancelledWorkflows(workflowRepository.countByStatus(WorkflowStatus.CANCELLED))
+                    .build();
+        }
+
         return DashboardSummaryResponse.builder()
-                .totalWorkflows(workflowRepository.count())
-                .runningWorkflows(workflowRepository.countByStatus(WorkflowStatus.RUNNING))
-                .pausedWorkflows(workflowRepository.countByStatus(WorkflowStatus.PAUSED))
-                .completedWorkflows(workflowRepository.countByStatus(WorkflowStatus.COMPLETED))
-                .failedWorkflows(workflowRepository.countByStatus(WorkflowStatus.FAILED))
-                .createdWorkflows(workflowRepository.countByStatus(WorkflowStatus.CREATED))
-                .cancelledWorkflows(workflowRepository.countByStatus(WorkflowStatus.CANCELLED))
+                .totalWorkflows(workflowRepository.countByUserId(userId))
+                .runningWorkflows(workflowRepository.countByUserIdAndStatus(userId, WorkflowStatus.RUNNING))
+                .pausedWorkflows(workflowRepository.countByUserIdAndStatus(userId, WorkflowStatus.PAUSED))
+                .completedWorkflows(workflowRepository.countByUserIdAndStatus(userId, WorkflowStatus.COMPLETED))
+                .failedWorkflows(workflowRepository.countByUserIdAndStatus(userId, WorkflowStatus.FAILED))
+                .createdWorkflows(workflowRepository.countByUserIdAndStatus(userId, WorkflowStatus.CREATED))
+                .cancelledWorkflows(workflowRepository.countByUserIdAndStatus(userId, WorkflowStatus.CANCELLED))
                 .build();
     }
 
     public List<WorkflowExecutionResponse> getWorkflowExecutionHistory(Long workflowId) {
+        return getWorkflowExecutionHistory(workflowId, UserContext.getUserId());
+    }
+
+    public List<WorkflowExecutionResponse> getWorkflowExecutionHistory(Long workflowId, Long userId) {
+        getWorkflow(workflowId, userId);
 
         return workflowExecutionRepository
                 .findByWorkflowIdOrderByStartedAtDesc(workflowId)
@@ -225,24 +283,23 @@ public class WorkflowService {
                                 .build()
                 )
                 .toList();
-
     }
 
     public WorkflowAnalyticsResponse getWorkflowAnalytics(Long workflowId) {
+        return getWorkflowAnalytics(workflowId, UserContext.getUserId());
+    }
 
-        Workflow workflow = workflowRepository.findById(workflowId)
-                .orElseThrow(() -> new RuntimeException("Workflow not found"));
+    public WorkflowAnalyticsResponse getWorkflowAnalytics(Long workflowId, Long userId) {
+        Workflow workflow = getWorkflow(workflowId, userId);
 
         List<WorkflowExecution> executions =
                 workflowExecutionRepository.findByWorkflowIdOrderByStartedAtDesc(workflowId);
 
         if (executions.isEmpty()) {
-
             return WorkflowAnalyticsResponse.builder()
                     .workflowId(workflow.getId())
                     .workflowName(workflow.getName())
                     .build();
-
         }
 
         long total = executions.size();
@@ -255,8 +312,7 @@ public class WorkflowService {
                 .filter(e -> e.getStatus() == WorkflowStatus.FAILED)
                 .count();
 
-        double successRate =
-                (successful * 100.0) / total;
+        double successRate = (successful * 100.0) / total;
 
         List<Long> durations = executions.stream()
                 .map(WorkflowExecution::getDurationMs)
@@ -292,12 +348,16 @@ public class WorkflowService {
     }
 
     @Transactional
-    public Workflow cancelWorkflow(Long workflowId){
-        Workflow workflow = workflowRepository.findById(workflowId)
-                .orElseThrow(()-> new RuntimeException("Workflow not found"));
+    public Workflow cancelWorkflow(Long workflowId) {
+        return cancelWorkflow(workflowId, UserContext.getUserId());
+    }
 
-        if(workflow.getStatus() !=WorkflowStatus.RUNNING){
-            throw new RuntimeException("Only Running workflows can be cancelled");
+    @Transactional
+    public Workflow cancelWorkflow(Long workflowId, Long userId) {
+        Workflow workflow = getWorkflow(workflowId, userId);
+
+        if (workflow.getStatus() != WorkflowStatus.RUNNING) {
+            throw new IllegalStateException("Only Running workflows can be cancelled");
         }
 
         workflow.setStatus(WorkflowStatus.CANCELLED);
@@ -313,7 +373,7 @@ public class WorkflowService {
 
         Optional<WorkflowExecution> executionOptional = workflowExecutionRepository.findFirstByWorkflowIdOrderByStartedAtDesc(workflowId);
 
-        if(executionOptional.isPresent()){
+        if (executionOptional.isPresent()) {
             WorkflowExecution execution = executionOptional.get();
 
             execution.setStatus(WorkflowStatus.CANCELLED);
@@ -322,7 +382,7 @@ public class WorkflowService {
 
             execution.setCompletedAt(completedTime);
 
-            execution.setDurationMs(completedTime-execution.getStartedAt());
+            execution.setDurationMs(completedTime - execution.getStartedAt());
 
             workflowExecutionRepository.save(execution);
         }
@@ -334,12 +394,15 @@ public class WorkflowService {
 
     @Transactional
     public Workflow pauseWorkflow(Long workflowId) {
+        return pauseWorkflow(workflowId, UserContext.getUserId());
+    }
 
-        Workflow workflow = workflowRepository.findById(workflowId)
-                .orElseThrow(() -> new RuntimeException("Workflow not found"));
+    @Transactional
+    public Workflow pauseWorkflow(Long workflowId, Long userId) {
+        Workflow workflow = getWorkflow(workflowId, userId);
 
         if (workflow.getStatus() != WorkflowStatus.RUNNING) {
-            throw new RuntimeException(
+            throw new IllegalStateException(
                     "Only RUNNING workflows can be paused."
             );
         }
@@ -365,41 +428,28 @@ public class WorkflowService {
 
     @Transactional
     public Workflow resumeWorkflow(Long workflowId) {
+        return resumeWorkflow(workflowId, UserContext.getUserId());
+    }
 
-        Workflow workflow = workflowRepository.findById(workflowId)
-                .orElseThrow(() -> new RuntimeException("Workflow not found"));
+    @Transactional
+    public Workflow resumeWorkflow(Long workflowId, Long userId) {
+        Workflow workflow = getWorkflow(workflowId, userId);
 
         if (workflow.getStatus() != WorkflowStatus.PAUSED) {
-            throw new RuntimeException(
+            throw new IllegalStateException(
                     "Only PAUSED workflows can be resumed."
             );
         }
 
-        /*
-         * Find the latest execution record.
-         */
         WorkflowExecution execution =
                 workflowExecutionRepository
                         .findFirstByWorkflowIdOrderByStartedAtDesc(workflowId)
                         .orElseThrow(() ->
-                                new RuntimeException(
+                                new IllegalStateException(
                                         "Execution record not found for workflow"
                                 )
                         );
 
-        /*
-         * Get the last successfully completed task.
-         *
-         * Example:
-         *
-         * Task 1 -> COMPLETED
-         * Task 2 -> COMPLETED
-         * Task 3 -> PAUSED
-         *
-         * lastCompletedExecutionOrder = 2
-         *
-         * Therefore resume starts from executionOrder 3.
-         */
         Integer lastCompletedOrder =
                 execution.getLastCompletedExecutionOrder();
 
@@ -425,32 +475,20 @@ public class WorkflowService {
                         .toList();
 
         if (remainingTasks.isEmpty()) {
-            throw new RuntimeException(
+            throw new IllegalStateException(
                     "No remaining tasks to resume for workflow " + workflowId
             );
         }
 
-        /*
-         * Change workflow state back to RUNNING.
-         */
         workflow.setStatus(WorkflowStatus.RUNNING);
 
         Workflow updatedWorkflow =
                 workflowRepository.save(workflow);
 
-        /*
-         * Change the existing execution record back to RUNNING.
-         *
-         * We reuse the same execution history record because
-         * this is a continuation of the same execution.
-         */
         execution.setStatus(WorkflowStatus.RUNNING);
 
         workflowExecutionRepository.save(execution);
 
-        /*
-         * Tell Execution Service to clear its pause state.
-         */
         workflowResumeProducer.publishWorkflowResumed(
                 WorkflowResumedEvent.builder()
                         .workflowId(updatedWorkflow.getId())
@@ -458,9 +496,6 @@ public class WorkflowService {
                         .build()
         );
 
-        /*
-         * Send only the remaining tasks to Execution Service.
-         */
         executionRequestProducer.publishExecutionRequest(
                 WorkflowExecutionRequestEvent.builder()
                         .workflowId(updatedWorkflow.getId())
@@ -481,33 +516,25 @@ public class WorkflowService {
 
     @Transactional
     public Workflow retryWorkflow(Long workflowId) {
+        return retryWorkflow(workflowId, UserContext.getUserId());
+    }
 
-        Workflow workflow = workflowRepository.findById(workflowId)
-                .orElseThrow(() ->
-                        new RuntimeException("Workflow not found")
-                );
+    @Transactional
+    public Workflow retryWorkflow(Long workflowId, Long userId) {
+        Workflow workflow = getWorkflow(workflowId, userId);
 
         if (workflow.getStatus() != WorkflowStatus.FAILED) {
-            throw new RuntimeException(
+            throw new IllegalStateException(
                     "Only FAILED workflows can be retried."
             );
         }
 
-        /*
-         * Reset workflow state.
-         */
         workflow.setStatus(WorkflowStatus.RUNNING);
         workflow.setCompletedAt(null);
 
         Workflow updatedWorkflow =
                 workflowRepository.save(workflow);
 
-        /*
-         * Reset all workflow tasks.
-         *
-         * A workflow retry represents a completely new execution,
-         * therefore execution starts from task 1.
-         */
         List<WorkflowTask> workflowTasks =
                 workflowTaskRepository
                         .findByWorkflowIdOrderByExecutionOrder(workflowId);
@@ -521,9 +548,6 @@ public class WorkflowService {
 
         workflowTaskRepository.saveAll(workflowTasks);
 
-        /*
-         * Create a NEW execution history record.
-         */
         WorkflowExecution execution =
                 WorkflowExecution.builder()
                         .workflow(updatedWorkflow)
@@ -534,10 +558,6 @@ public class WorkflowService {
 
         workflowExecutionRepository.save(execution);
 
-        /*
-         * Build a fresh execution request containing
-         * all workflow tasks.
-         */
         List<TaskExecutionRequest> taskRequests =
                 workflowTasks.stream()
                         .map(task ->

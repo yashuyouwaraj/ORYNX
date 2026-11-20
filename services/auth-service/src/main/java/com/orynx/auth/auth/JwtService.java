@@ -45,14 +45,40 @@ public class JwtService {
     }
 
     public String generateToken(String email) {
+        return generateToken(email, null);
+    }
+
+    public String generateToken(String email, Long userId) {
         Key key = getSigningKey();
 
-        return Jwts.builder()
+        JwtBuilder builder = Jwts.builder()
                 .setSubject(email)
                 .setIssuedAt(new Date())
-                .setExpiration(new Date(System.currentTimeMillis() + expiration))
-                .signWith(key, SignatureAlgorithm.HS256)
-                .compact();
+                .setExpiration(new Date(System.currentTimeMillis() + expiration));
+
+        if (userId != null) {
+            builder.claim("userId", userId);
+        }
+
+        return builder.signWith(key, SignatureAlgorithm.HS256).compact();
+    }
+
+    public Long extractUserId(String token) {
+        Claims claims = Jwts.parserBuilder()
+                .setSigningKey(getSigningKey())
+                .build()
+                .parseClaimsJws(token)
+                .getBody();
+
+        Object userId = claims.get("userId");
+        if (userId instanceof Number number) {
+            return number.longValue();
+        } else if (userId != null) {
+            try {
+                return Long.parseLong(userId.toString());
+            } catch (NumberFormatException ignored) {}
+        }
+        return null;
     }
 
     public String extractEmail(String token) {

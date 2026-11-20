@@ -64,7 +64,7 @@ public class UserService {
                 request.getEmail()
         );
 
-        return jwtService.generateToken(user.getEmail());
+        return jwtService.generateToken(user.getEmail(), user.getId());
     }
 
 }

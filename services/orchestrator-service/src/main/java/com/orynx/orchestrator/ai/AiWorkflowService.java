@@ -1,5 +1,6 @@
 package com.orynx.orchestrator.ai;
 
+import com.orynx.orchestrator.common.security.UserContext;
 import com.orynx.orchestrator.integration.planning.PlanningClient;
 import com.orynx.orchestrator.ai.dto.AiWorkflowRequest;
 import com.orynx.orchestrator.ai.dto.AiWorkflowResponse;
@@ -25,7 +26,11 @@ public class AiWorkflowService {
     private final WorkflowTaskRepository workflowTaskRepository;
     private final WorkflowEventProducer workflowEventProducer;
 
-    public Workflow createdAiWorkflow(AiWorkflowRequest request){
+    public Workflow createdAiWorkflow(AiWorkflowRequest request) {
+        return createdAiWorkflow(request, UserContext.getUserId());
+    }
+
+    public Workflow createdAiWorkflow(AiWorkflowRequest request, Long userId) {
         AiWorkflowResponse aiWorkflowResponse = planningIntegrationService.generateWorkflowPlan(request.getGoal());
 
         String workflowName = request.getName() != null && !request.getName().isBlank()
@@ -38,6 +43,7 @@ public class AiWorkflowService {
                 .scheduledAt(request.getScheduledAt())
                 .scheduled(request.getScheduledAt() != null)
                 .status(WorkflowStatus.CREATED)
+                .userId(userId)
                 .build();
 
         Workflow savedWorkflow = workflowRepository.save(workflow);
