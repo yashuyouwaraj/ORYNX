@@ -33,7 +33,14 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
 
     private static final List<String> PUBLIC_PATH_PREFIXES = List.of(
             "/api/v1/auth",
-            "/actuator"
+            "/api/v1/platform"
+    );
+
+    private static final List<String> EXACT_PUBLIC_PATHS = List.of(
+            "/api/v1/users/register",
+            "/api/v1/users/login",
+            "/actuator/health",
+            "/ws"
     );
 
     @Value("${jwt.secret:}")
@@ -109,10 +116,24 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
     }
 
     private boolean isPublicPath(String path) {
+        if (path == null) {
+            return false;
+        }
+        for (String exact : EXACT_PUBLIC_PATHS) {
+            if (path.equals(exact)) {
+                return true;
+            }
+        }
         for (String prefix : PUBLIC_PATH_PREFIXES) {
             if (path.startsWith(prefix)) {
                 return true;
             }
+        }
+        if (path.startsWith("/actuator/health/")) {
+            return true;
+        }
+        if (path.startsWith("/ws/")) {
+            return true;
         }
         return false;
     }
