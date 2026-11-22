@@ -55,8 +55,37 @@ public class ExecutionCoordinationService {
             String payloadJson,
             boolean isResumeRequest
     ) {
+        return tryAcquireLease(
+                workflowId,
+                workflowName,
+                instanceId,
+                leaseDurationSeconds,
+                payloadJson,
+                isResumeRequest,
+                null
+        );
+    }
+
+    @Transactional
+    public ExecutionLeaseAcquisitionResult tryAcquireLease(
+            Long workflowId,
+            String workflowName,
+            String instanceId,
+            long leaseDurationSeconds,
+            String payloadJson,
+            boolean isResumeRequest,
+            Long requestedGeneration
+    ) {
         try {
-            return doAcquireLease(workflowId, workflowName, instanceId, leaseDurationSeconds, payloadJson, isResumeRequest);
+            return doAcquireLease(
+                    workflowId,
+                    workflowName,
+                    instanceId,
+                    leaseDurationSeconds,
+                    payloadJson,
+                    isResumeRequest,
+                    requestedGeneration
+            );
         } catch (DataIntegrityViolationException e) {
             log.warn(
                     "Concurrent lease creation race detected for workflow {} on instance {}. Treating as duplicate active lease.",
@@ -79,7 +108,8 @@ public class ExecutionCoordinationService {
             String instanceId,
             long leaseDurationSeconds,
             String payloadJson,
-            boolean isResumeRequest
+            boolean isResumeRequest,
+            Long requestedGeneration
     ) {
         Optional<WorkflowExecutionCoordination> existingOpt = repository.findByWorkflowIdForUpdate(workflowId);
 
@@ -87,6 +117,9 @@ public class ExecutionCoordinationService {
         Instant leaseExpiresAt = now.plusSeconds(leaseDurationSeconds);
 
         if (existingOpt.isEmpty()) {
+            long initialGeneration = (requestedGeneration != null && requestedGeneration > 0L)
+                    ? requestedGeneration
+                    : 1L;
             WorkflowExecutionCoordination coordination = WorkflowExecutionCoordination.builder()
                     .workflowId(workflowId)
                     .workflowName(workflowName)
@@ -95,13 +128,14 @@ public class ExecutionCoordinationService {
                     .acquiredAt(now)
                     .updatedAt(now)
                     .leaseExpiresAt(leaseExpiresAt)
-                    .generation(1L)
+                    .generation(initialGeneration)
                     .recoveryAttempts(0)
                     .payloadJson(payloadJson)
                     .build();
 
             WorkflowExecutionCoordination saved = repository.save(coordination);
-            log.info("Acquired initial execution lease for workflow {} (gen=1) on instance {}", workflowId, instanceId);
+            log.info("Acquired initial execution lease for workflow {} (gen={}) on instance {}",
+                    workflowId, initialGeneration, instanceId);
             return ExecutionLeaseAcquisitionResult.acquired(saved);
         }
 
@@ -119,7 +153,10 @@ public class ExecutionCoordinationService {
             return ExecutionLeaseAcquisitionResult.duplicateTerminal(coordination);
         }
 
-        long nextGeneration = (coordination.getGeneration() != null ? coordination.getGeneration() : 1L) + 1L;
+        long baseNextGen = (coordination.getGeneration() != null ? coordination.getGeneration() : 1L) + 1L;
+        long nextGeneration = (requestedGeneration != null && requestedGeneration > baseNextGen)
+                ? requestedGeneration
+                : baseNextGen;
 
         if (currentStatus == ExecutionCoordinationStatus.PAUSED) {
             if (!isResumeRequest) {
@@ -142,18 +179,6 @@ public class ExecutionCoordinationService {
         if (currentStatus == ExecutionCoordinationStatus.DISPATCHED ||
                 currentStatus == ExecutionCoordinationStatus.RUNNING) {
             if (coordination.getLeaseExpiresAt() != null && now.isBefore(coordination.getLeaseExpiresAt())) {
-                // If same instance is re-dispatching from DISPATCHED (e.g. consumer retry before running), allow with same generation
-                if (currentStatus == ExecutionCoordinationStatus.DISPATCHED && instanceId.equals(coordination.getInstanceId())) {
-                    log.info("Re-dispatching in-flight DISPATCHED workflow {} on same instance {}", workflowId, instanceId);
-                    coordination.setUpdatedAt(now);
-                    coordination.setLeaseExpiresAt(leaseExpiresAt);
-                    if (payloadJson != null) {
-                        coordination.setPayloadJson(payloadJson);
-                    }
-                    WorkflowExecutionCoordination updated = repository.save(coordination);
-                    return ExecutionLeaseAcquisitionResult.acquired(updated);
-                }
-
                 log.warn(
                         "Workflow {} is actively executing on instance {} (status={}, gen={}, leaseExpiresAt={}). Rejecting duplicate execution.",
                         workflowId,
@@ -300,6 +325,13 @@ public class ExecutionCoordinationService {
     @Transactional
     public void markPaused(Long workflowId, Integer lastCompletedOrder) {
         repository.findByWorkflowIdForUpdate(workflowId).ifPresent(coordination -> {
+            if (coordination.getStatus() == ExecutionCoordinationStatus.CANCELLED
+                    || coordination.getStatus() == ExecutionCoordinationStatus.COMPLETED
+                    || coordination.getStatus() == ExecutionCoordinationStatus.FAILED) {
+                log.info("Ignoring pause signal for workflow {} already in terminal state {}",
+                        workflowId, coordination.getStatus());
+                return;
+            }
             Instant now = Instant.now();
             coordination.setStatus(ExecutionCoordinationStatus.PAUSED);
             if (lastCompletedOrder != null) {
@@ -316,7 +348,8 @@ public class ExecutionCoordinationService {
     @Transactional
     public void markCancelled(Long workflowId) {
         repository.findByWorkflowIdForUpdate(workflowId).ifPresent(coordination -> {
-            if (coordination.getStatus() != ExecutionCoordinationStatus.COMPLETED) {
+            if (coordination.getStatus() != ExecutionCoordinationStatus.COMPLETED
+                    && coordination.getStatus() != ExecutionCoordinationStatus.FAILED) {
                 Instant now = Instant.now();
                 coordination.setStatus(ExecutionCoordinationStatus.CANCELLED);
                 coordination.setUpdatedAt(now);
@@ -332,11 +365,10 @@ public class ExecutionCoordinationService {
         repository.findByWorkflowIdForUpdate(workflowId).ifPresent(coordination -> {
             if (coordination.getStatus() == ExecutionCoordinationStatus.PAUSED) {
                 Instant now = Instant.now();
-                coordination.setStatus(ExecutionCoordinationStatus.DISPATCHED);
                 coordination.setUpdatedAt(now);
-                coordination.setLeaseExpiresAt(Instant.EPOCH);
+                coordination.setLeaseExpiresAt(null);
                 repository.save(coordination);
-                log.info("Marked workflow {} resumable (PAUSED -> DISPATCHED) in coordination record (gen={})",
+                log.info("Acknowledged resume signal for workflow {} while preserving PAUSED coordination state until resume dispatch claims lease (gen={})",
                         workflowId, coordination.getGeneration());
             }
         });
@@ -346,8 +378,13 @@ public class ExecutionCoordinationService {
     public void releaseLeaseOnDispatchFailure(Long workflowId) {
         repository.findByWorkflowIdForUpdate(workflowId).ifPresent(coordination -> {
             if (coordination.getStatus() == ExecutionCoordinationStatus.DISPATCHED) {
-                repository.delete(coordination);
-                log.info("Released execution lease for workflow {} following dispatch failure", workflowId);
+                long currentGen = coordination.getGeneration() != null ? coordination.getGeneration() : 1L;
+                coordination.setGeneration(Math.max(0L, currentGen - 1L));
+                coordination.setLeaseExpiresAt(Instant.EPOCH);
+                coordination.setUpdatedAt(Instant.now());
+                repository.save(coordination);
+                log.info("Released execution lease for workflow {} following dispatch failure while preserving coordination metadata (gen={})",
+                        workflowId, coordination.getGeneration());
             }
         });
     }

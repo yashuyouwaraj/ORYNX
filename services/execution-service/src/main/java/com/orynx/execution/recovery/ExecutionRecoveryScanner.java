@@ -7,6 +7,7 @@ import com.orynx.execution.event.dto.WorkflowCompletedEvent;
 import com.orynx.execution.execution.WorkflowExecutionDispatcher;
 import com.orynx.execution.kafka.ExecutionEventProducer;
 import com.orynx.execution.worker.ExecutionWorkerProperties;
+import com.orynx.execution.worker.WorkerQueueFullException;
 import com.orynx.execution.workflow.event.WorkflowExecutionRequestEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -87,6 +88,10 @@ public class ExecutionRecoveryScanner {
                     log.info("Redispatching recovered workflow {} (id={}, gen={}) to worker pool",
                             workflowName, workflowId, reclaimed.getGeneration());
                     dispatcher.dispatch(event, reclaimed.getGeneration());
+                } catch (WorkerQueueFullException e) {
+                    log.warn("Worker queue saturated during recovery dispatch for workflow {}; releasing lease for retry.",
+                            workflowId);
+                    coordinationService.releaseLeaseOnDispatchFailure(workflowId);
                 } catch (Exception e) {
                     log.error("Failed to deserialize payload for recovered workflow {}: {}", workflowId, e.getMessage());
                 }

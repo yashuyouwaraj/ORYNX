@@ -26,6 +26,14 @@ public class WorkflowPauseConsumer {
     public void consume(WorkflowPausedEvent event, Acknowledgment acknowledgment) {
         if (event != null && event.getWorkflowId() != null) {
             Long workflowId = event.getWorkflowId();
+            if (coordinationService.isCancelled(workflowId)) {
+                log.info("Ignoring pause request for workflow {} (id={}) because workflow is already CANCELLED.",
+                        event.getWorkflowName(), workflowId);
+                if (acknowledgment != null) {
+                    acknowledgment.acknowledge();
+                }
+                return;
+            }
             log.info(
                     "Received pause request for workflow {} (id={})",
                     event.getWorkflowName(),

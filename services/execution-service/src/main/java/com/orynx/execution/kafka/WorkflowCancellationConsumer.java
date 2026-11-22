@@ -35,7 +35,8 @@ public class WorkflowCancellationConsumer {
             // 1. Mark cancelled in distributed coordination store
             coordinationService.markCancelled(workflowId);
 
-            // 2. Interrupt active local worker thread if executing locally
+            // 2. Interrupt active local worker thread if executing locally and clear any stale pause flag
+            activeExecutionTracker.clearPause(workflowId);
             activeExecutionTracker.cancel(workflowId);
 
             // 3. Mark in-memory registry for backward-compatibility

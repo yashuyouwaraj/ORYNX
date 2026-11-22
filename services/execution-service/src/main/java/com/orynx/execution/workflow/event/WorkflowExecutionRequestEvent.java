@@ -24,4 +24,6 @@ public class WorkflowExecutionRequestEvent {
 
     private Boolean resume;
 
+    private Long generation;
+
 }

@@ -43,7 +43,8 @@ public interface WorkflowExecutionCoordinationRepository extends JpaRepository<W
 
     @Modifying
     @Query("UPDATE WorkflowExecutionCoordination c SET c.status = :status, c.updatedAt = :now, c.leaseExpiresAt = null " +
-           "WHERE c.workflowId = :workflowId AND c.generation = :generation AND c.instanceId = :instanceId")
+           "WHERE c.workflowId = :workflowId AND c.generation = :generation AND c.instanceId = :instanceId " +
+           "AND c.status NOT IN ('CANCELLED', 'COMPLETED')")
     int markCompletedFenced(
             @Param("workflowId") Long workflowId,
             @Param("generation") Long generation,
@@ -54,7 +55,8 @@ public interface WorkflowExecutionCoordinationRepository extends JpaRepository<W
 
     @Modifying
     @Query("UPDATE WorkflowExecutionCoordination c SET c.status = 'PAUSED', c.lastCompletedExecutionOrder = :order, c.updatedAt = :now, c.leaseExpiresAt = null " +
-           "WHERE c.workflowId = :workflowId AND c.generation = :generation AND c.instanceId = :instanceId")
+           "WHERE c.workflowId = :workflowId AND c.generation = :generation AND c.instanceId = :instanceId " +
+           "AND c.status NOT IN ('CANCELLED', 'COMPLETED', 'FAILED')")
     int markPausedFenced(
             @Param("workflowId") Long workflowId,
             @Param("generation") Long generation,

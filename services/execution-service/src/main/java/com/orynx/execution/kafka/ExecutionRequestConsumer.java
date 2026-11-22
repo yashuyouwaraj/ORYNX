@@ -96,22 +96,35 @@ public class ExecutionRequestConsumer {
         }
 
         // Distributed duplicate execution & lease acquisition check
-        ExecutionLeaseAcquisitionResult leaseResult = isResume
-                ? coordinationService.tryAcquireLease(
-                        workflowId,
-                        workflowName,
-                        dispatcher.getInstanceId(),
-                        properties.getLeaseDurationSeconds(),
-                        payloadJson,
-                        true
-                )
-                : coordinationService.tryAcquireLease(
-                        workflowId,
-                        workflowName,
-                        dispatcher.getInstanceId(),
-                        properties.getLeaseDurationSeconds(),
-                        payloadJson
-                );
+        ExecutionLeaseAcquisitionResult leaseResult;
+        if (event.getGeneration() != null) {
+            leaseResult = coordinationService.tryAcquireLease(
+                    workflowId,
+                    workflowName,
+                    dispatcher.getInstanceId(),
+                    properties.getLeaseDurationSeconds(),
+                    payloadJson,
+                    isResume,
+                    event.getGeneration()
+            );
+        } else {
+            leaseResult = isResume
+                    ? coordinationService.tryAcquireLease(
+                            workflowId,
+                            workflowName,
+                            dispatcher.getInstanceId(),
+                            properties.getLeaseDurationSeconds(),
+                            payloadJson,
+                            true
+                    )
+                    : coordinationService.tryAcquireLease(
+                            workflowId,
+                            workflowName,
+                            dispatcher.getInstanceId(),
+                            properties.getLeaseDurationSeconds(),
+                            payloadJson
+                    );
+        }
 
         if (!leaseResult.isAcquired()) {
             log.warn(

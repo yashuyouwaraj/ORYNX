@@ -273,6 +273,10 @@ public class WorkflowExecutionEngine {
                 return;
             }
         }
+        pauseRegistry.clear(workflowId);
+        if (activeExecutionTracker != null) {
+            activeExecutionTracker.clearPause(workflowId);
+        }
         executionEventProducer.publishWorkflowExecutionPaused(
                 WorkflowExecutionPausedEvent.builder()
                         .workflowId(workflowId)

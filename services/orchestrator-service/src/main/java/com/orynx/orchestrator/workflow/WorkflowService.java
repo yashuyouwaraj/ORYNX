@@ -142,6 +142,7 @@ public class WorkflowService {
                 .workflow(updatedWorkflow)
                 .status(WorkflowStatus.RUNNING)
                 .startedAt(System.currentTimeMillis())
+                .executionGeneration(1L)
                 .build();
 
         workflowExecutionRepository.save(execution);
@@ -172,6 +173,7 @@ public class WorkflowService {
                         .eventId(UUID.randomUUID().toString())
                         .executionId(execution.getId())
                         .resume(false)
+                        .generation(1L)
                         .build()
         );
 
@@ -608,12 +610,17 @@ public class WorkflowService {
             );
         }
 
+        long nextExecutionGeneration = (execution.getExecutionGeneration() != null
+                ? execution.getExecutionGeneration()
+                : 1L) + 1L;
+
         workflow.setStatus(WorkflowStatus.RUNNING);
 
         Workflow updatedWorkflow =
                 workflowRepository.save(workflow);
 
         execution.setStatus(WorkflowStatus.RUNNING);
+        execution.setExecutionGeneration(nextExecutionGeneration);
 
         workflowExecutionRepository.save(execution);
 
@@ -633,6 +640,7 @@ public class WorkflowService {
                         .eventId(UUID.randomUUID().toString())
                         .executionId(execution.getId())
                         .resume(true)
+                        .generation(nextExecutionGeneration)
                         .build()
         );
 
@@ -698,10 +706,10 @@ public class WorkflowService {
 
         Optional<WorkflowExecution> priorExecutionOpt =
                 workflowExecutionRepository.findFirstByWorkflowIdOrderByStartedAtDesc(workflowId);
-        Long nextExecutionGeneration = priorExecutionOpt
+        long nextExecutionGeneration = priorExecutionOpt
                 .map(WorkflowExecution::getExecutionGeneration)
-                .map(gen -> gen + 1L)
-                .orElse(null);
+                .filter(Objects::nonNull)
+                .orElse(1L) + 1L;
 
         WorkflowExecution execution =
                 WorkflowExecution.builder()
@@ -733,6 +741,7 @@ public class WorkflowService {
                         .eventId(UUID.randomUUID().toString())
                         .executionId(execution.getId())
                         .resume(false)
+                        .generation(nextExecutionGeneration)
                         .build()
         );
 
