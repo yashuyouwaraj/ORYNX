@@ -2,6 +2,7 @@ package com.orynx.gateway.filter;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.Ordered;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.stereotype.Component;
 import org.springframework.web.server.ServerWebExchange;
@@ -10,8 +11,9 @@ import org.springframework.web.server.WebFilterChain;
 import reactor.core.publisher.Mono;
 
 /**
- * Protects local Gateway WebFlux Actuator management endpoints, because Spring Cloud Gateway
- * GlobalFilters only execute on proxied routes and not on local management endpoints.
+ * Enforces an explicit HTTP boundary for local Gateway WebFlux Actuator management endpoints,
+ * requiring valid JWT authentication on non-health paths and returning 404 even if deployment
+ * environment variables attempt to re-enable sensitive endpoints.
  */
 @Component
 public class ActuatorSecurityWebFilter implements WebFilter, Ordered {
@@ -22,9 +24,9 @@ public class ActuatorSecurityWebFilter implements WebFilter, Ordered {
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
         ServerHttpRequest request = exchange.getRequest();
-        String path = request.getPath().value();
+        String rawPath = GatewayJwtSupport.extractRawPath(request);
 
-        if (!isActuatorPath(path) || GatewayJwtSupport.isPublicActuatorPath(path)) {
+        if (!GatewayJwtSupport.isActuatorPath(rawPath) || GatewayJwtSupport.isPublicActuatorHealthRequest(request)) {
             return chain.filter(exchange);
         }
 
@@ -33,11 +35,9 @@ public class ActuatorSecurityWebFilter implements WebFilter, Ordered {
             return GatewayJwtSupport.handleUnauthorized(exchange, outcome.errorMessage());
         }
 
-        return chain.filter(exchange);
-    }
-
-    private boolean isActuatorPath(String path) {
-        return path != null && (path.equals("/actuator") || path.startsWith("/actuator/"));
+        // Defense-in-depth: block all non-health Actuator paths and method/path variations even for authenticated callers
+        exchange.getResponse().setStatusCode(HttpStatus.NOT_FOUND);
+        return exchange.getResponse().setComplete();
     }
 
     @Override

@@ -8,6 +8,7 @@ import io.jsonwebtoken.security.Keys;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.server.reactive.ServerHttpRequest;
@@ -17,15 +18,17 @@ import reactor.core.publisher.Mono;
 
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
-import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 /**
- * Shared JWT authentication validation and unauthorized response helpers for Gateway filters.
+ * Shared JWT authentication validation, Actuator path normalization, and unauthorized response
+ * helpers for Gateway filters.
  */
 @Slf4j
 final class GatewayJwtSupport {
 
-    static final List<String> PUBLIC_ACTUATOR_PATHS = List.of(
+    static final Set<String> PUBLIC_ACTUATOR_PATHS = Set.of(
             "/actuator/health",
             "/actuator/health/liveness",
             "/actuator/health/readiness"
@@ -34,8 +37,54 @@ final class GatewayJwtSupport {
     private GatewayJwtSupport() {
     }
 
-    static boolean isPublicActuatorPath(String path) {
-        return path != null && PUBLIC_ACTUATOR_PATHS.contains(path);
+    static String extractRawPath(ServerHttpRequest request) {
+        if (request == null) {
+            return null;
+        }
+        String rawPath = request.getURI().getRawPath();
+        if (rawPath == null || rawPath.isEmpty()) {
+            rawPath = request.getPath().value();
+        }
+        return rawPath;
+    }
+
+    static String normalizePath(String rawPath) {
+        if (rawPath == null) {
+            return null;
+        }
+        String normalized = rawPath.replaceAll("/+", "/");
+        if (normalized.length() > 1 && normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized;
+    }
+
+    static boolean isActuatorPath(String rawPath) {
+        if (rawPath == null) {
+            return false;
+        }
+        String normalized = normalizePath(rawPath);
+        String lower = normalized.toLowerCase(Locale.ROOT);
+        if (lower.equals("/actuator") || lower.startsWith("/actuator/") || lower.startsWith("/actuator;")) {
+            return true;
+        }
+        String rawLower = rawPath.toLowerCase(Locale.ROOT);
+        return rawLower.contains("/actuator") && (rawPath.contains(";") || rawPath.contains(".."));
+    }
+
+    static boolean isPublicActuatorHealthRequest(ServerHttpRequest request) {
+        if (request == null) {
+            return false;
+        }
+        HttpMethod method = request.getMethod();
+        if (method != HttpMethod.GET && method != HttpMethod.HEAD) {
+            return false;
+        }
+        String rawPath = extractRawPath(request);
+        if (rawPath == null || rawPath.contains(";") || rawPath.contains("..")) {
+            return false;
+        }
+        return PUBLIC_ACTUATOR_PATHS.contains(normalizePath(rawPath));
     }
 
     /**

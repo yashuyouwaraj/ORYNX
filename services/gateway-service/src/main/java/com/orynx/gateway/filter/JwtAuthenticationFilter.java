@@ -26,9 +26,6 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
     private static final List<String> EXACT_PUBLIC_PATHS = List.of(
             "/api/v1/users/register",
             "/api/v1/users/login",
-            "/actuator/health",
-            "/actuator/health/liveness",
-            "/actuator/health/readiness",
             "/ws"
     );
 
@@ -44,7 +41,6 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
         ServerHttpRequest request = exchange.getRequest();
-        String path = request.getPath().value();
 
         // Security requirement: Remove/overwrite any client-supplied identity headers to prevent spoofing
         ServerHttpRequest.Builder mutatedRequestBuilder = request.mutate()
@@ -54,7 +50,7 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
                 });
 
         // Whitelist public endpoints
-        if (isPublicPath(path)) {
+        if (isPublicRequest(request)) {
             return chain.filter(exchange.mutate().request(mutatedRequestBuilder.build()).build());
         }
 
@@ -76,19 +72,23 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
         return chain.filter(exchange.mutate().request(mutatedRequestBuilder.build()).build());
     }
 
-    private boolean isPublicPath(String path) {
-        if (path == null) {
+    private boolean isPublicRequest(ServerHttpRequest request) {
+        String rawPath = GatewayJwtSupport.extractRawPath(request);
+        if (rawPath == null) {
             return false;
         }
-        if (EXACT_PUBLIC_PATHS.contains(path)) {
+        if (GatewayJwtSupport.isActuatorPath(rawPath)) {
+            return GatewayJwtSupport.isPublicActuatorHealthRequest(request);
+        }
+        if (EXACT_PUBLIC_PATHS.contains(rawPath)) {
             return true;
         }
         for (String prefix : PUBLIC_PATH_PREFIXES) {
-            if (path.startsWith(prefix)) {
+            if (rawPath.startsWith(prefix)) {
                 return true;
             }
         }
-        if (path.startsWith("/ws/")) {
+        if (rawPath.startsWith("/ws/")) {
             return true;
         }
         return false;
