@@ -50,9 +50,11 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
@@ -532,8 +534,8 @@ class OrchestratorKafkaKeyAndIdempotencyTest {
     }
 
     @Test
-    @DisplayName("KafkaReliabilityConfig retries IllegalArgumentException, forwards poison records to DLT, and commits recovered")
-    void kafkaReliabilityConfigProvidesDefaultErrorHandler() {
+    @DisplayName("KafkaReliabilityConfig retries IllegalArgumentException, confirms DLT before commit, and fails closed on DLT failure or interruption")
+    void kafkaReliabilityConfigProvidesDefaultErrorHandler() throws Exception {
         @SuppressWarnings("unchecked")
         ObjectProvider<KafkaTemplate<?, ?>> provider = mock(ObjectProvider.class);
         doReturn(objectKafkaTemplate).when(provider).getIfAvailable();
@@ -555,10 +557,13 @@ class OrchestratorKafkaKeyAndIdempotencyTest {
         }
         verifyNoInteractions(objectKafkaTemplate);
 
-        // Poison DeserializationException skips retries and forwards immediately to task-started.DLT
+        // Poison DeserializationException skips retries, confirms DLT future synchronously, and marks recovered
+        when(objectKafkaTemplate.send(eq("task-started.DLT"), eq("42"), any()))
+                .thenReturn(CompletableFuture.completedFuture(null));
         DeserializationException deserEx = new DeserializationException(
                 "bad payload", "{bad".getBytes(StandardCharsets.UTF_8), false, new RuntimeException("parse"));
-        handler.handleOne(new RuntimeException(deserEx), record, consumerMock, containerMock);
+        boolean recovered = handler.handleOne(new RuntimeException(deserEx), record, consumerMock, containerMock);
+        assertThat(recovered).isTrue();
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Map<String, Object>> dltCaptor = ArgumentCaptor.forClass(Map.class);
@@ -567,5 +572,26 @@ class OrchestratorKafkaKeyAndIdempotencyTest {
                 .containsEntry("originalTopic", "task-started")
                 .containsEntry("key", "42")
                 .containsEntry("rawPayload", "{bad");
+
+        // Failed DLT broker publish must return false from handleOne and throw without committing in handleRemaining
+        when(objectKafkaTemplate.send(eq("task-started.DLT"), eq("42"), any()))
+                .thenReturn(CompletableFuture.failedFuture(new RuntimeException("DLT broker down")));
+        assertThat(handler.handleOne(new RuntimeException(deserEx), record, consumerMock, containerMock)).isFalse();
+        assertThatThrownBy(() -> handler.handleRemaining(
+                new RuntimeException(deserEx), List.of(record), consumerMock, containerMock))
+                .isInstanceOf(Exception.class);
+        verify(consumerMock, never()).commitSync(anyMap(), any());
+        verify(consumerMock, never()).commitAsync(anyMap(), any());
+
+        // Interrupted DLT await must restore interrupt flag and fail recovery closed
+        CompletableFuture<?> interruptedFuture = mock(CompletableFuture.class);
+        doThrow(new InterruptedException("Consumer shutting down")).when(interruptedFuture).get(anyLong(), any(TimeUnit.class));
+        doReturn(interruptedFuture).when(objectKafkaTemplate).send(eq("task-started.DLT"), eq("42"), any());
+        try {
+            assertThat(handler.handleOne(new RuntimeException(deserEx), record, consumerMock, containerMock)).isFalse();
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        } finally {
+            Thread.interrupted();
+        }
     }
 }

@@ -23,8 +23,10 @@ import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
@@ -113,10 +115,13 @@ class AuthKafkaReliabilityTest {
         }
         verifyNoInteractions(dltKafkaTemplate);
 
-        // DeserializationException skips retries and forwards immediately to user-registered.DLT
+        // DeserializationException skips retries, confirms user-registered.DLT future, and marks recovered
+        doReturn(CompletableFuture.completedFuture(null))
+                .when(dltKafkaTemplate).send(eq("user-registered.DLT"), eq("42"), any());
         DeserializationException deserEx = new DeserializationException(
                 "bad json", "{corrupt".getBytes(StandardCharsets.UTF_8), false, new RuntimeException("parse"));
-        handler.handleOne(new RuntimeException(deserEx), record, consumerMock, containerMock);
+        boolean recovered = handler.handleOne(new RuntimeException(deserEx), record, consumerMock, containerMock);
+        assertThat(recovered).isTrue();
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Map<String, Object>> dltCaptor = ArgumentCaptor.forClass(Map.class);
@@ -125,5 +130,17 @@ class AuthKafkaReliabilityTest {
                 .containsEntry("originalTopic", "user-registered")
                 .containsEntry("key", "42")
                 .containsEntry("rawPayload", "{corrupt");
+
+        // Failed DLT broker publish must return false from handleOne and throw without committing in handleRemaining
+        doReturn(CompletableFuture.failedFuture(new RuntimeException("DLT broker unavailable")))
+                .when(dltKafkaTemplate).send(eq("user-registered.DLT"), eq("42"), org.mockito.ArgumentMatchers.any());
+        assertThat(handler.handleOne(new RuntimeException(deserEx), record, consumerMock, containerMock)).isFalse();
+        assertThatThrownBy(() -> handler.handleRemaining(
+                new RuntimeException(deserEx), java.util.List.of(record), consumerMock, containerMock))
+                .isInstanceOf(Exception.class);
+        verify(consumerMock, never()).commitSync(
+                org.mockito.ArgumentMatchers.anyMap(), org.mockito.ArgumentMatchers.any());
+        verify(consumerMock, never()).commitAsync(
+                org.mockito.ArgumentMatchers.anyMap(), org.mockito.ArgumentMatchers.any());
     }
 }

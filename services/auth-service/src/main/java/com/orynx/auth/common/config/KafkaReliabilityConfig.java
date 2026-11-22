@@ -19,19 +19,25 @@ import org.springframework.util.backoff.FixedBackOff;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Configures bounded consumer retries and poison-message recovery for auth-service
- * Kafka listeners so malformed or exhausted records are forwarded to a dead-letter
- * topic (.DLT) without stalling partition consumption.
+ * Kafka listeners so malformed or exhausted records are durably confirmed on a
+ * dead-letter topic (.DLT) before the original consumer offset is committed.
  */
 @Configuration
 @Slf4j
 public class KafkaReliabilityConfig {
 
     private static final String DLT_SUFFIX = ".DLT";
+    private static final long DEFAULT_DLT_PUBLISH_TIMEOUT_MS = 10_000L;
 
     private final ObjectProvider<KafkaTemplate<?, ?>> kafkaTemplateProvider;
+
+    @Value("${orynx.kafka.consumer.dlt.timeout-ms:10000}")
+    private long dltPublishTimeoutMs = DEFAULT_DLT_PUBLISH_TIMEOUT_MS;
 
     public KafkaReliabilityConfig() {
         this.kafkaTemplateProvider = null;
@@ -89,20 +95,26 @@ public class KafkaReliabilityConfig {
             String exceptionType,
             String cause
     ) {
-        if (kafkaTemplateProvider == null || record == null || record.topic() == null
-                || record.topic().endsWith(DLT_SUFFIX)) {
-            return;
+        if (record == null || record.topic() == null || record.topic().endsWith(DLT_SUFFIX)) {
+            throw new IllegalStateException("Cannot recover invalid or recursive DLT record for topic=" + topic);
+        }
+        if (kafkaTemplateProvider == null) {
+            throw new IllegalStateException("KafkaTemplate unavailable for DLT recovery on topic=" + topic);
         }
         KafkaTemplate template = kafkaTemplateProvider.getIfAvailable();
         if (template == null) {
-            return;
+            throw new IllegalStateException("KafkaTemplate unavailable for DLT recovery on topic=" + topic);
         }
+
+        String dltTopic = record.topic() + DLT_SUFFIX;
+        String dltKey = key != null ? String.valueOf(key) : null;
+        long timeoutMs = dltPublishTimeoutMs > 0 ? dltPublishTimeoutMs : DEFAULT_DLT_PUBLISH_TIMEOUT_MS;
         try {
             Map<String, Object> dltRecord = new LinkedHashMap<>();
             dltRecord.put("originalTopic", topic);
             dltRecord.put("partition", partition);
             dltRecord.put("offset", offset);
-            dltRecord.put("key", key != null ? String.valueOf(key) : null);
+            dltRecord.put("key", dltKey);
             dltRecord.put("timestamp", record.timestamp());
             dltRecord.put("exceptionType", exceptionType);
             dltRecord.put("exceptionMessage", cause);
@@ -112,14 +124,24 @@ public class KafkaReliabilityConfig {
                 dltRecord.put("rawPayload", rawPayload);
             }
 
-            String dltTopic = record.topic() + DLT_SUFFIX;
-            String dltKey = key != null ? String.valueOf(key) : null;
-            template.send(dltTopic, dltKey, dltRecord);
+            CompletableFuture<?> future = template.send(dltTopic, dltKey, dltRecord);
+            if (future == null) {
+                throw new IllegalStateException("KafkaTemplate.send returned null future for DLT topic=" + dltTopic);
+            }
+            future.get(timeoutMs, TimeUnit.MILLISECONDS);
             log.warn("Forwarded unrecoverable Kafka record to dead-letter topic={} (key={}, offset={})",
                     dltTopic, dltKey, offset);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            log.error("Interrupted while awaiting DLT broker confirmation for topic={}, offset={}: {}",
+                    topic, offset, ie.getMessage(), ie);
+            throw new IllegalStateException(
+                    "Interrupted while awaiting DLT broker confirmation for topic=" + topic + ", offset=" + offset, ie);
         } catch (Exception dltEx) {
-            log.error("Failed to publish record to DLT for topic={}, offset={}: {}",
-                    topic, offset, dltEx.getMessage(), dltEx);
+            log.error("Failed to confirm DLT delivery to {} for topic={}, offset={}: {}",
+                    dltTopic, topic, offset, dltEx.getMessage(), dltEx);
+            throw new IllegalStateException(
+                    "Failed to confirm DLT delivery to " + dltTopic + " for topic=" + topic + ", offset=" + offset, dltEx);
         }
     }
 

@@ -42,6 +42,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -413,7 +414,7 @@ class ExecutionKafkaReliabilityAndIdempotencyTest {
     }
 
     @Test
-    @DisplayName("Execution KafkaReliabilityConfig retries IllegalArgumentException and forwards DeserializationException to DLT")
+    @DisplayName("Execution KafkaReliabilityConfig retries IllegalArgumentException, confirms DLT before commit, and fails closed on DLT failure")
     void executionKafkaReliabilityConfigBuildsDefaultErrorHandler() {
         @SuppressWarnings("unchecked")
         ObjectProvider<KafkaTemplate<?, ?>> provider = mock(ObjectProvider.class);
@@ -433,9 +434,12 @@ class ExecutionKafkaReliabilityAndIdempotencyTest {
         }
         verifyNoInteractions(kafkaTemplate);
 
+        when(kafkaTemplate.send(eq("workflow-execution.DLT"), eq("95"), any()))
+                .thenReturn(CompletableFuture.completedFuture(null));
         DeserializationException deserEx = new DeserializationException(
                 "bad", "{broken".getBytes(StandardCharsets.UTF_8), false, new RuntimeException("parse"));
-        handler.handleOne(new RuntimeException(deserEx), record, consumerMock, containerMock);
+        boolean recovered = handler.handleOne(new RuntimeException(deserEx), record, consumerMock, containerMock);
+        assertThat(recovered).isTrue();
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Map<String, Object>> dltCaptor = ArgumentCaptor.forClass(Map.class);
@@ -444,5 +448,14 @@ class ExecutionKafkaReliabilityAndIdempotencyTest {
                 .containsEntry("originalTopic", "workflow-execution")
                 .containsEntry("key", "95")
                 .containsEntry("rawPayload", "{broken");
+
+        when(kafkaTemplate.send(eq("workflow-execution.DLT"), eq("95"), any()))
+                .thenReturn(CompletableFuture.failedFuture(new RuntimeException("DLT broker unavailable")));
+        assertThat(handler.handleOne(new RuntimeException(deserEx), record, consumerMock, containerMock)).isFalse();
+        assertThatThrownBy(() -> handler.handleRemaining(
+                new RuntimeException(deserEx), List.of(record), consumerMock, containerMock))
+                .isInstanceOf(Exception.class);
+        verify(consumerMock, never()).commitSync(org.mockito.ArgumentMatchers.anyMap(), any());
+        verify(consumerMock, never()).commitAsync(org.mockito.ArgumentMatchers.anyMap(), any());
     }
 }
