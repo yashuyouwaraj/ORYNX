@@ -10,6 +10,7 @@ import lombok.*;
 public class WorkflowResumedEvent {
     private Long workflowId;
     private String workflowName;
+    private String eventId;
 }
 
 

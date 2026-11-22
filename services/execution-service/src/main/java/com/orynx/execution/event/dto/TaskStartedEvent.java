@@ -12,4 +12,6 @@ public class TaskStartedEvent {
     private String workflowName;
     private String taskName;
     private Integer executionOrder;
+    private Long generation;
+    private String eventId;
 }

@@ -11,4 +11,6 @@ public class WorkflowCompletedEvent {
     private Long workflowId;
     private String workflowName;
     private boolean success;
+    private Long generation;
+    private String eventId;
 }

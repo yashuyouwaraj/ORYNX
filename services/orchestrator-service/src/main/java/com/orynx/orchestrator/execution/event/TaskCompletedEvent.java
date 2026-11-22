@@ -14,4 +14,6 @@ public class TaskCompletedEvent {
     private Integer executionOrder;
     private boolean success;
     private int attempts;
+    private Long generation;
+    private String eventId;
 }

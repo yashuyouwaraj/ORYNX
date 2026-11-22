@@ -14,4 +14,8 @@ public class WorkflowExecutionPausedEvent {
     private String workflowName;
 
     private Integer lastCompletedExecutionOrder;
+
+    private Long generation;
+
+    private String eventId;
 }

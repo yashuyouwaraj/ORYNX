@@ -11,4 +11,5 @@ import lombok.*;
 public class WorkflowCancelledEvent {
     private Long workflowId;
     private String workflowName;
+    private String eventId;
 }

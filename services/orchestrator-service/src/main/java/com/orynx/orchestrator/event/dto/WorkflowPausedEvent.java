@@ -12,4 +12,6 @@ public class WorkflowPausedEvent {
     private Long workflowId;
 
     private String workflowName;
+
+    private String eventId;
 }

@@ -18,4 +18,10 @@ public class WorkflowExecutionRequestEvent {
 
     private List<TaskExecutionRequest> tasks;
 
+    private String eventId;
+
+    private Long executionId;
+
+    private Boolean resume;
+
 }

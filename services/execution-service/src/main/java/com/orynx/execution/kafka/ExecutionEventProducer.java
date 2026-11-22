@@ -7,52 +7,74 @@ import com.orynx.execution.event.dto.WorkflowExecutionPausedEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.support.SendResult;
 import org.springframework.stereotype.Component;
+
+import java.util.concurrent.CompletableFuture;
 
 @Component
 @RequiredArgsConstructor
 @Slf4j
 public class ExecutionEventProducer {
+
+    public static final String TOPIC_TASK_STARTED = "task-started";
+    public static final String TOPIC_TASK_COMPLETED = "task-completed";
+    public static final String TOPIC_WORKFLOW_COMPLETED = "workflow-completed";
+    public static final String TOPIC_WORKFLOW_EXECUTION_PAUSED = "workflow-execution-paused";
+
     private final KafkaTemplate<String, Object> kafkaTemplate;
 
-    public void publishTaskStarted(TaskStartedEvent event){
-        kafkaTemplate.send("task-started",event);
-        log.info(
-                "Published TaskStartedEvent for {}",
-                event.getTaskName()
-        );
+    public void publishTaskStarted(TaskStartedEvent event) {
+        if (event == null) {
+            return;
+        }
+        String key = resolveKey(event.getWorkflowId());
+        sendWithCallback(TOPIC_TASK_STARTED, key, event, "TaskStartedEvent", event.getTaskName());
     }
 
-    public void publishTaskCompleted(TaskCompletedEvent event){
-        kafkaTemplate.send("task-completed",event);
-
-        log.info(
-                "Published TaskCompletedEvent for {}",
-                event.getTaskName()
-        );
+    public void publishTaskCompleted(TaskCompletedEvent event) {
+        if (event == null) {
+            return;
+        }
+        String key = resolveKey(event.getWorkflowId());
+        sendWithCallback(TOPIC_TASK_COMPLETED, key, event, "TaskCompletedEvent", event.getTaskName());
     }
 
-    public void publishWorkflowCompleted(WorkflowCompletedEvent event){
-        kafkaTemplate.send("workflow-completed",event);
-
-        log.info(
-                "Published WorkflowCompletedEvent for {}",
-                event.getWorkflowName()
-        );
+    public void publishWorkflowCompleted(WorkflowCompletedEvent event) {
+        if (event == null) {
+            return;
+        }
+        String key = resolveKey(event.getWorkflowId());
+        sendWithCallback(TOPIC_WORKFLOW_COMPLETED, key, event, "WorkflowCompletedEvent", event.getWorkflowName());
     }
 
-    public void publishWorkflowExecutionPaused(
-            WorkflowExecutionPausedEvent event
-    ) {
+    public void publishWorkflowExecutionPaused(WorkflowExecutionPausedEvent event) {
+        if (event == null) {
+            return;
+        }
+        String key = resolveKey(event.getWorkflowId());
+        sendWithCallback(TOPIC_WORKFLOW_EXECUTION_PAUSED, key, event, "WorkflowExecutionPausedEvent", event.getWorkflowName());
+    }
 
-        kafkaTemplate.send(
-                "workflow-execution-paused",
-                event
-        );
+    private void sendWithCallback(String topic, String key, Object payload, String eventType, String label) {
+        CompletableFuture<SendResult<String, Object>> future = kafkaTemplate.send(topic, key, payload);
+        if (future != null) {
+            future.whenComplete((result, ex) -> {
+                if (ex != null) {
+                    log.error("Failed to deliver {} for {} (topic={}, key={}): {}",
+                            eventType, label, topic, key, ex.getMessage(), ex);
+                } else if (result != null) {
+                    log.debug("Delivered {} for {} to topic={}, partition={}, offset={}",
+                            eventType, label, topic,
+                            result.getRecordMetadata().partition(),
+                            result.getRecordMetadata().offset());
+                }
+            });
+        }
+        log.info("Published {} for {} (topic={}, key={})", eventType, label, topic, key);
+    }
 
-        log.info(
-                "Published WorkflowExecutionPausedEvent for {}",
-                event.getWorkflowName()
-        );
+    private String resolveKey(Long workflowId) {
+        return workflowId != null ? String.valueOf(workflowId) : null;
     }
 }
