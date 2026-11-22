@@ -62,8 +62,19 @@ class JwtAuthenticationFilterTest {
             "/api/v1/plans",
             "/api/v1/users/profile",
             "/api/v1/users/admin",
+            "/actuator",
             "/actuator/env",
-            "/actuator/beans"
+            "/actuator/configprops",
+            "/actuator/beans",
+            "/actuator/mappings",
+            "/actuator/heapdump",
+            "/actuator/threaddump",
+            "/actuator/loggers",
+            "/actuator/conditions",
+            "/actuator/scheduledtasks",
+            "/actuator/shutdown",
+            "/actuator/gateway/routes",
+            "/actuator/health/custom"
     })
     @DisplayName("Should reject anonymous request to protected endpoint with 401")
     void shouldRejectAnonymousRequestToProtectedEndpoints(String path) {
@@ -84,6 +95,7 @@ class JwtAuthenticationFilterTest {
             "/api/v1/users/login",
             "/api/v1/platform/health",
             "/actuator/health",
+            "/actuator/health/liveness",
             "/actuator/health/readiness",
             "/ws",
             "/ws/info"
