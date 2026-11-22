@@ -29,9 +29,14 @@ public class UserContextFilter extends OncePerRequestFilter {
     public static final String HEADER_USER_EMAIL = "X-User-Email";
 
     private static final List<String> PUBLIC_PATH_PREFIXES = List.of(
-            "/actuator",
             "/api/v1/platform",
             "/ws"
+    );
+
+    private static final List<String> EXACT_PUBLIC_PATHS = List.of(
+            "/actuator/health",
+            "/actuator/health/liveness",
+            "/actuator/health/readiness"
     );
 
     private final OrchestratorJwtService orchestratorJwtService;
@@ -125,6 +130,9 @@ public class UserContextFilter extends OncePerRequestFilter {
     private boolean isPublicPath(String path) {
         if (path == null) {
             return false;
+        }
+        if (EXACT_PUBLIC_PATHS.contains(path)) {
+            return true;
         }
         for (String prefix : PUBLIC_PATH_PREFIXES) {
             if (path.startsWith(prefix)) {

@@ -7,6 +7,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.time.Instant;
 
@@ -49,6 +50,20 @@ public class GlobalExceptionHandler {
                         .timestamp(Instant.now().toString())
                         .status(HttpStatus.BAD_REQUEST.value())
                         .error(ex.getMessage())
+                        .path(request.getRequestURI())
+                        .requestId(request.getHeader("X-Request-ID"))
+                        .build()
+        );
+    }
+
+    @ExceptionHandler(NoResourceFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public ResponseEntity<ApiErrorResponse> handleNoResourceFound(NoResourceFoundException ex, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+                ApiErrorResponse.builder()
+                        .timestamp(Instant.now().toString())
+                        .status(HttpStatus.NOT_FOUND.value())
+                        .error("Resource not found")
                         .path(request.getRequestURI())
                         .requestId(request.getHeader("X-Request-ID"))
                         .build()
