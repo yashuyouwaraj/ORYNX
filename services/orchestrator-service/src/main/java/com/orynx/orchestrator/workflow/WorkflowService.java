@@ -30,6 +30,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -168,6 +169,9 @@ public class WorkflowService {
                         .workflowId(workflow.getId())
                         .workflowName(workflow.getName())
                         .tasks(taskRequests)
+                        .eventId(UUID.randomUUID().toString())
+                        .executionId(execution.getId())
+                        .resume(false)
                         .build()
         );
 
@@ -458,6 +462,7 @@ public class WorkflowService {
                 WorkflowCancelledEvent.builder()
                         .workflowId(workflow.getId())
                         .workflowName(workflow.getName())
+                        .eventId(UUID.randomUUID().toString())
                         .build()
         );
 
@@ -521,6 +526,7 @@ public class WorkflowService {
                 WorkflowPausedEvent.builder()
                         .workflowId(updatedWorkflow.getId())
                         .workflowName(updatedWorkflow.getName())
+                        .eventId(UUID.randomUUID().toString())
                         .build()
         );
 
@@ -615,6 +621,7 @@ public class WorkflowService {
                 WorkflowResumedEvent.builder()
                         .workflowId(updatedWorkflow.getId())
                         .workflowName(updatedWorkflow.getName())
+                        .eventId(UUID.randomUUID().toString())
                         .build()
         );
 
@@ -623,6 +630,9 @@ public class WorkflowService {
                         .workflowId(updatedWorkflow.getId())
                         .workflowName(updatedWorkflow.getName())
                         .tasks(remainingTasks)
+                        .eventId(UUID.randomUUID().toString())
+                        .executionId(execution.getId())
+                        .resume(true)
                         .build()
         );
 
@@ -686,12 +696,20 @@ public class WorkflowService {
 
         workflowTaskRepository.saveAll(workflowTasks);
 
+        Optional<WorkflowExecution> priorExecutionOpt =
+                workflowExecutionRepository.findFirstByWorkflowIdOrderByStartedAtDesc(workflowId);
+        Long nextExecutionGeneration = priorExecutionOpt
+                .map(WorkflowExecution::getExecutionGeneration)
+                .map(gen -> gen + 1L)
+                .orElse(null);
+
         WorkflowExecution execution =
                 WorkflowExecution.builder()
                         .workflow(updatedWorkflow)
                         .status(WorkflowStatus.RUNNING)
                         .startedAt(System.currentTimeMillis())
                         .lastCompletedExecutionOrder(null)
+                        .executionGeneration(nextExecutionGeneration)
                         .build();
 
         workflowExecutionRepository.save(execution);
@@ -712,6 +730,9 @@ public class WorkflowService {
                         .workflowId(updatedWorkflow.getId())
                         .workflowName(updatedWorkflow.getName())
                         .tasks(taskRequests)
+                        .eventId(UUID.randomUUID().toString())
+                        .executionId(execution.getId())
+                        .resume(false)
                         .build()
         );
 

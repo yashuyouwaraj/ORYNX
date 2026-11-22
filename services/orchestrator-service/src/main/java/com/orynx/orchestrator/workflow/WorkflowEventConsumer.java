@@ -34,6 +34,10 @@ public class WorkflowEventConsumer {
     public void consume(
             WorkflowRealtimeEvent event
     ) {
+        if (event == null) {
+            log.warn("Received null WorkflowRealtimeEvent. Ignoring.");
+            return;
+        }
 
         log.info(
                 "Workflow Event: {}",

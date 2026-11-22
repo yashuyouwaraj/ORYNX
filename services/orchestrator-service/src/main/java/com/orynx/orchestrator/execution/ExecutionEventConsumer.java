@@ -17,6 +17,7 @@ import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Objects;
 import java.util.Optional;
 
 @Component
@@ -35,46 +36,75 @@ public class ExecutionEventConsumer {
                     "spring.json.use.type.headers=false"
             }
     )
-    public void consumeTaskStarted(TaskStartedEvent event){
-        log.info("Task Started -> Workflow: {}, Task: {}", event.getWorkflowName(),event.getTaskName());
+    @Transactional
+    public void consumeTaskStarted(TaskStartedEvent event) {
+        if (event == null || event.getWorkflowId() == null) {
+            log.warn("Received null or malformed TaskStartedEvent. Ignoring.");
+            return;
+        }
+        log.info("Task Started -> Workflow: {}, Task: {}, gen={}",
+                event.getWorkflowName(), event.getTaskName(), event.getGeneration());
 
-        Optional<WorkflowTask> taskOptional  = workflowTaskRepository.findByWorkflowIdAndExecutionOrder(
+        Optional<WorkflowTask> taskOptional = workflowTaskRepository.findByWorkflowIdAndExecutionOrder(
                 event.getWorkflowId(),
                 event.getExecutionOrder()
         );
 
-        if (taskOptional.isPresent()) {
-
-            WorkflowTask task = taskOptional.get();
-
-            Optional<Workflow> workflowOptional = workflowRepository.findById(event.getWorkflowId());
-            if (workflowOptional.isPresent()) {
-                WorkflowStatus wfStatus = workflowOptional.get().getStatus();
-                if (wfStatus == WorkflowStatus.CANCELLED || wfStatus == WorkflowStatus.PAUSED) {
-                    log.info("Workflow {} is in state {}. Suppressing task-started event for task {}.",
-                            event.getWorkflowId(), wfStatus, task.getName());
-                    return;
-                }
-            }
-
-            task.setStatus(TaskStatus.RUNNING);
-            task.setStartedAt(System.currentTimeMillis());
-
-            workflowTaskRepository.save(task);
-
-            log.info(
-                    "Task {} marked RUNNING",
-                    task.getName()
-            );
-
-        } else {
-
+        if (taskOptional.isEmpty()) {
             log.warn(
                     "Task not found for workflow {} order {}",
                     event.getWorkflowId(),
                     event.getExecutionOrder()
             );
+            return;
         }
+
+        WorkflowTask task = taskOptional.get();
+
+        Optional<Workflow> workflowOptional = workflowRepository.findById(event.getWorkflowId());
+        if (workflowOptional.isPresent()) {
+            WorkflowStatus wfStatus = workflowOptional.get().getStatus();
+            if (wfStatus == WorkflowStatus.CANCELLED
+                    || wfStatus == WorkflowStatus.PAUSED
+                    || wfStatus == WorkflowStatus.COMPLETED
+                    || wfStatus == WorkflowStatus.FAILED) {
+                log.info("Workflow {} is in state {}. Suppressing task-started event for task {}.",
+                        event.getWorkflowId(), wfStatus, task.getName());
+                return;
+            }
+        }
+
+        Optional<WorkflowExecution> executionOptional =
+                workflowExecutionRepository.findFirstByWorkflowIdOrderByStartedAtDesc(event.getWorkflowId());
+        if (executionOptional.isPresent()) {
+            WorkflowExecution execution = executionOptional.get();
+            Long beforeGen = execution.getExecutionGeneration();
+            if (isStaleGeneration(execution, event.getGeneration(), event.getWorkflowId(), "task-started")) {
+                return;
+            }
+            if (!Objects.equals(beforeGen, execution.getExecutionGeneration())) {
+                workflowExecutionRepository.save(execution);
+            }
+        }
+
+        if (task.getStatus() == TaskStatus.COMPLETED || task.getStatus() == TaskStatus.FAILED) {
+            log.info("Task {} for workflow {} is already in terminal state {}. Suppressing out-of-order task-started event.",
+                    task.getName(), event.getWorkflowId(), task.getStatus());
+            return;
+        }
+
+        if (task.getStatus() == TaskStatus.RUNNING && task.getStartedAt() != null) {
+            log.info("Task {} for workflow {} is already RUNNING. Suppressing duplicate task-started event.",
+                    task.getName(), event.getWorkflowId());
+            return;
+        }
+
+        task.setStatus(TaskStatus.RUNNING);
+        task.setStartedAt(System.currentTimeMillis());
+
+        workflowTaskRepository.save(task);
+
+        log.info("Task {} marked RUNNING", task.getName());
     }
 
     @KafkaListener(
@@ -85,13 +115,19 @@ public class ExecutionEventConsumer {
                     "spring.json.use.type.headers=false"
             }
     )
+    @Transactional
     public void consumeTaskCompleted(TaskCompletedEvent event) {
+        if (event == null || event.getWorkflowId() == null) {
+            log.warn("Received null or malformed TaskCompletedEvent. Ignoring.");
+            return;
+        }
 
         log.info(
-                "Task Completed -> Workflow: {}, Task: {}, Success: {}",
+                "Task Completed -> Workflow: {}, Task: {}, Success: {}, gen={}",
                 event.getWorkflowName(),
                 event.getTaskName(),
-                event.isSuccess()
+                event.isSuccess(),
+                event.getGeneration()
         );
 
         Optional<WorkflowTask> taskOptional =
@@ -100,78 +136,89 @@ public class ExecutionEventConsumer {
                         event.getExecutionOrder()
                 );
 
-        if (taskOptional.isPresent()) {
-
-            WorkflowTask task = taskOptional.get();
-
-            task.setStatus(
-                    event.isSuccess()
-                            ? TaskStatus.COMPLETED
-                            : TaskStatus.FAILED
-            );
-
-            task.setCompletedAt(System.currentTimeMillis());
-
-            workflowTaskRepository.save(task);
-
-            log.info(
-                    "Task {} marked {}",
-                    task.getName(),
-                    task.getStatus()
-            );
-
-            /*
-             * Update workflow execution progress.
-             *
-             * We only move the checkpoint forward when the task
-             * actually succeeds.
-             */
-            if (event.isSuccess()) {
-
-                Optional<WorkflowExecution> executionOptional =
-                        workflowExecutionRepository
-                                .findFirstByWorkflowIdOrderByStartedAtDesc(
-                                        event.getWorkflowId()
-                                );
-
-                if (executionOptional.isPresent()) {
-
-                    WorkflowExecution execution =
-                            executionOptional.get();
-
-                    if (execution.getStatus() != WorkflowStatus.CANCELLED) {
-                        if (execution.getLastCompletedExecutionOrder() == null ||
-                                event.getExecutionOrder() > execution.getLastCompletedExecutionOrder()) {
-                            execution.setLastCompletedExecutionOrder(
-                                    event.getExecutionOrder()
-                            );
-
-                            workflowExecutionRepository.save(execution);
-
-                            log.info(
-                                    "Workflow {} last completed execution order updated to {}",
-                                    event.getWorkflowId(),
-                                    event.getExecutionOrder()
-                            );
-                        }
-                    }
-
-                } else {
-
-                    log.warn(
-                            "Execution record not found for workflow {}",
-                            event.getWorkflowId()
-                    );
-                }
-            }
-
-        } else {
-
+        if (taskOptional.isEmpty()) {
             log.warn(
                     "Task not found for workflow {} order {}",
                     event.getWorkflowId(),
                     event.getExecutionOrder()
             );
+            return;
+        }
+
+        Optional<Workflow> workflowOptional = workflowRepository.findById(event.getWorkflowId());
+        if (workflowOptional.isPresent()) {
+            WorkflowStatus wfStatus = workflowOptional.get().getStatus();
+            if (wfStatus == WorkflowStatus.CANCELLED || wfStatus == WorkflowStatus.COMPLETED) {
+                log.info("Workflow {} is in terminal state {}. Suppressing late task-completed event for order {}.",
+                        event.getWorkflowId(), wfStatus, event.getExecutionOrder());
+                return;
+            }
+        }
+
+        Optional<WorkflowExecution> executionOptional =
+                workflowExecutionRepository.findFirstByWorkflowIdOrderByStartedAtDesc(
+                        event.getWorkflowId()
+                );
+
+        boolean executionModified = false;
+        WorkflowExecution execution = null;
+        if (executionOptional.isPresent()) {
+            execution = executionOptional.get();
+            Long beforeGen = execution.getExecutionGeneration();
+            if (isStaleGeneration(execution, event.getGeneration(), event.getWorkflowId(), "task-completed")) {
+                return;
+            }
+            if (!Objects.equals(beforeGen, execution.getExecutionGeneration())) {
+                executionModified = true;
+            }
+        }
+
+        WorkflowTask task = taskOptional.get();
+        TaskStatus targetStatus = event.isSuccess() ? TaskStatus.COMPLETED : TaskStatus.FAILED;
+
+        if (task.getStatus() == TaskStatus.COMPLETED && !event.isSuccess()) {
+            log.warn("Task {} for workflow {} is already COMPLETED. Suppressing regression to FAILED.",
+                    task.getName(), event.getWorkflowId());
+            return;
+        }
+
+        if (task.getStatus() == targetStatus && task.getCompletedAt() != null) {
+            log.info("Task {} for workflow {} already marked {}. Suppressing duplicate task-completed update.",
+                    task.getName(), event.getWorkflowId(), targetStatus);
+        } else {
+            task.setStatus(targetStatus);
+            task.setCompletedAt(System.currentTimeMillis());
+            if (event.getAttempts() > 0) {
+                task.setRetryCount(Math.max(0, event.getAttempts() - 1));
+            }
+            workflowTaskRepository.save(task);
+            log.info("Task {} marked {}", task.getName(), task.getStatus());
+        }
+
+        if (event.isSuccess()) {
+            if (execution != null) {
+                if (execution.getStatus() != WorkflowStatus.CANCELLED
+                        && execution.getStatus() != WorkflowStatus.COMPLETED
+                        && execution.getStatus() != WorkflowStatus.FAILED) {
+                    if (execution.getLastCompletedExecutionOrder() == null ||
+                            event.getExecutionOrder() > execution.getLastCompletedExecutionOrder()) {
+                        execution.setLastCompletedExecutionOrder(event.getExecutionOrder());
+                        executionModified = true;
+                        log.info(
+                                "Workflow {} last completed execution order updated to {}",
+                                event.getWorkflowId(),
+                                event.getExecutionOrder()
+                        );
+                    }
+                }
+            } else {
+                log.warn("Execution record not found for workflow {}", event.getWorkflowId());
+            }
+        }
+
+        if (executionModified && execution != null
+                && execution.getStatus() != WorkflowStatus.CANCELLED) {
+            workflowExecutionRepository.save(execution);
         }
     }
 
@@ -183,113 +230,133 @@ public class ExecutionEventConsumer {
                     "spring.json.use.type.headers=false"
             }
     )
+    @Transactional
     public void consumeWorkflowCompleted(WorkflowCompletedEvent event) {
+        if (event == null || event.getWorkflowId() == null) {
+            log.warn("Received null or malformed WorkflowCompletedEvent. Ignoring.");
+            return;
+        }
 
         log.info(
-                "Workflow Completed -> {}",
-                event.getWorkflowName()
+                "Workflow Completed -> {} (success={}, gen={})",
+                event.getWorkflowName(),
+                event.isSuccess(),
+                event.getGeneration()
         );
 
         Optional<Workflow> workflowOptional =
                 workflowRepository.findById(event.getWorkflowId());
 
-        if (workflowOptional.isPresent()) {
+        if (workflowOptional.isEmpty()) {
+            log.warn("Workflow {} not found", event.getWorkflowId());
+            return;
+        }
 
-            Workflow workflow = workflowOptional.get();
+        Workflow workflow = workflowOptional.get();
 
-            if (workflow.getStatus() == WorkflowStatus.CANCELLED) {
+        if (workflow.getStatus() == WorkflowStatus.CANCELLED) {
+            log.info(
+                    "Workflow {} is in terminal state CANCELLED. Suppressing late workflow-completed event.",
+                    workflow.getName()
+            );
+            return;
+        }
+
+        if (workflow.getStatus() == WorkflowStatus.COMPLETED) {
+            log.info(
+                    "Workflow {} is already in terminal state COMPLETED. Suppressing duplicate completion event.",
+                    workflow.getName()
+            );
+            return;
+        }
+
+        if (workflow.getStatus() == WorkflowStatus.FAILED) {
+            log.info(
+                    "Workflow {} is already in terminal state FAILED. Suppressing duplicate/late workflow-completed event.",
+                    workflow.getName()
+            );
+            return;
+        }
+
+        if (workflow.getStatus() == WorkflowStatus.PAUSED) {
+            log.warn(
+                    "Workflow {} is in state PAUSED. Suppressing late workflow-completed event.",
+                    workflow.getName()
+            );
+            return;
+        }
+
+        Optional<WorkflowExecution> executionOptional =
+                workflowExecutionRepository.findFirstByWorkflowIdOrderByStartedAtDesc(
+                        workflow.getId()
+                );
+
+        if (executionOptional.isPresent()
+                && isStaleGeneration(executionOptional.get(), event.getGeneration(), workflow.getId(), "workflow-completed")) {
+            return;
+        }
+
+        WorkflowStatus targetStatus = event.isSuccess()
+                ? WorkflowStatus.COMPLETED
+                : WorkflowStatus.FAILED;
+
+        if (!WorkflowStateValidator.isValidTransition(workflow.getStatus(), targetStatus)) {
+            log.warn("Ignoring invalid workflow-completed transition {} -> {} for workflow {}",
+                    workflow.getStatus(), targetStatus, workflow.getId());
+            return;
+        }
+
+        workflow.setStatus(targetStatus);
+        workflow.setCompletedAt(System.currentTimeMillis());
+
+        workflowRepository.save(workflow);
+
+        if (executionOptional.isPresent()) {
+
+            WorkflowExecution execution = executionOptional.get();
+
+            if (execution.getStatus() == WorkflowStatus.CANCELLED) {
                 log.info(
-                        "Workflow {} is in terminal state CANCELLED. Suppressing late workflow-completed event.",
+                        "Execution history for workflow {} is in terminal state CANCELLED. Preserving status.",
                         workflow.getName()
                 );
                 return;
             }
 
-            if (workflow.getStatus() == WorkflowStatus.COMPLETED) {
+            if (execution.getStatus() == WorkflowStatus.COMPLETED
+                    || execution.getStatus() == WorkflowStatus.FAILED) {
                 log.info(
-                        "Workflow {} is already in terminal state COMPLETED. Suppressing duplicate completion event.",
-                        workflow.getName()
+                        "Execution history for workflow {} is already in terminal state {}. Preserving status.",
+                        workflow.getName(),
+                        execution.getStatus()
                 );
                 return;
             }
 
-            if (workflow.getStatus() == WorkflowStatus.PAUSED) {
-                log.warn(
-                        "Workflow {} is in state PAUSED. Suppressing late workflow-completed event.",
-                        workflow.getName()
-                );
-                return;
-            }
+            execution.setStatus(workflow.getStatus());
+            long completedTime = System.currentTimeMillis();
 
-            WorkflowStatus targetStatus = event.isSuccess()
-                    ? WorkflowStatus.COMPLETED
-                    : WorkflowStatus.FAILED;
+            execution.setCompletedAt(completedTime);
 
-            WorkflowStateValidator.validateTransition(workflow.getStatus(), targetStatus, "complete");
-
-            workflow.setStatus(targetStatus);
-            workflow.setCompletedAt(System.currentTimeMillis());
-
-            workflowRepository.save(workflow);
-
-            Optional<WorkflowExecution> executionOptional =
-                    workflowExecutionRepository.findFirstByWorkflowIdOrderByStartedAtDesc(
-                            workflow.getId()
-                    );
-
-            if (executionOptional.isPresent()) {
-
-                WorkflowExecution execution = executionOptional.get();
-
-                if (execution.getStatus() == WorkflowStatus.CANCELLED) {
-                    log.info(
-                            "Execution history for workflow {} is in terminal state CANCELLED. Preserving status.",
-                            workflow.getName()
-                    );
-                    return;
-                }
-
-                if (execution.getStatus() == WorkflowStatus.COMPLETED) {
-                    log.info(
-                            "Execution history for workflow {} is already in terminal state COMPLETED. Preserving status.",
-                            workflow.getName()
-                    );
-                    return;
-                }
-
-                execution.setStatus(workflow.getStatus());
-                long completedTime = System.currentTimeMillis();
-
-                execution.setCompletedAt(completedTime);
-
-                if (execution.getStartedAt() != null) {
-                    execution.setDurationMs(
-                            completedTime - execution.getStartedAt()
-                    );
-                }
-
-                workflowExecutionRepository.save(execution);
-
-                log.info(
-                        "Execution history updated for workflow {}",
-                        workflow.getName()
+            if (execution.getStartedAt() != null) {
+                execution.setDurationMs(
+                        completedTime - execution.getStartedAt()
                 );
             }
+
+            workflowExecutionRepository.save(execution);
 
             log.info(
-                    "Workflow {} marked {}",
-                    workflow.getName(),
-                    workflow.getStatus()
+                    "Execution history updated for workflow {}",
+                    workflow.getName()
             );
-
-        } else {
-
-            log.warn(
-                    "Workflow {} not found",
-                    event.getWorkflowId()
-            );
-
         }
+
+        log.info(
+                "Workflow {} marked {}",
+                workflow.getName(),
+                workflow.getStatus()
+        );
     }
 
     @KafkaListener(
@@ -304,12 +371,17 @@ public class ExecutionEventConsumer {
     public void consumeWorkflowExecutionPaused(
             WorkflowExecutionPausedEvent event
     ) {
+        if (event == null || event.getWorkflowId() == null) {
+            log.warn("Received null or malformed WorkflowExecutionPausedEvent. Ignoring.");
+            return;
+        }
 
         log.info(
-                "Workflow Execution Paused -> Id: {}, Workflow: {}, Last Completed Task: {}",
+                "Workflow Execution Paused -> Id: {}, Workflow: {}, Last Completed Task: {}, gen={}",
                 event.getWorkflowId(),
                 event.getWorkflowName(),
-                event.getLastCompletedExecutionOrder()
+                event.getLastCompletedExecutionOrder(),
+                event.getGeneration()
         );
 
         Optional<WorkflowExecution> executionOptional =
@@ -318,50 +390,76 @@ public class ExecutionEventConsumer {
                                 event.getWorkflowId()
                         );
 
-        if (executionOptional.isPresent()) {
+        if (executionOptional.isEmpty()) {
+            log.warn("Execution not found for workflow {}", event.getWorkflowId());
+            return;
+        }
 
-            WorkflowExecution execution = executionOptional.get();
+        WorkflowExecution execution = executionOptional.get();
 
-            if (execution.getStatus() == WorkflowStatus.CANCELLED) {
-                log.info(
-                        "Execution {} is in terminal state CANCELLED. Suppressing late pause event.",
-                        execution.getId()
-                );
-                return;
-            }
+        if (isStaleGeneration(execution, event.getGeneration(), event.getWorkflowId(), "workflow-execution-paused")) {
+            return;
+        }
 
-            if (execution.getStatus() == WorkflowStatus.COMPLETED) {
-                log.info(
-                        "Execution {} is in terminal state COMPLETED. Suppressing late pause event.",
-                        execution.getId()
-                );
-                return;
-            }
-
-            execution.setStatus(WorkflowStatus.PAUSED);
-
-            if (event.getLastCompletedExecutionOrder() != null) {
-                if (execution.getLastCompletedExecutionOrder() == null ||
-                        event.getLastCompletedExecutionOrder() > execution.getLastCompletedExecutionOrder()) {
-                    execution.setLastCompletedExecutionOrder(
-                            event.getLastCompletedExecutionOrder()
-                    );
-                }
-            }
-
-            workflowExecutionRepository.save(execution);
-
+        if (execution.getStatus() == WorkflowStatus.CANCELLED) {
             log.info(
-                    "Workflow execution {} marked PAUSED",
+                    "Execution {} is in terminal state CANCELLED. Suppressing late pause event.",
                     execution.getId()
             );
-
-        } else {
-
-            log.warn(
-                    "Execution not found for workflow {}",
-                    event.getWorkflowId()
-            );
+            return;
         }
+
+        if (execution.getStatus() == WorkflowStatus.COMPLETED
+                || execution.getStatus() == WorkflowStatus.FAILED) {
+            log.info(
+                    "Execution {} is in terminal state {}. Suppressing late pause event.",
+                    execution.getId(),
+                    execution.getStatus()
+            );
+            return;
+        }
+
+        execution.setStatus(WorkflowStatus.PAUSED);
+
+        if (event.getLastCompletedExecutionOrder() != null) {
+            if (execution.getLastCompletedExecutionOrder() == null ||
+                    event.getLastCompletedExecutionOrder() > execution.getLastCompletedExecutionOrder()) {
+                execution.setLastCompletedExecutionOrder(
+                        event.getLastCompletedExecutionOrder()
+                );
+            }
+        }
+
+        workflowExecutionRepository.save(execution);
+
+        log.info(
+                "Workflow execution {} marked PAUSED",
+                execution.getId()
+        );
+    }
+
+    private boolean isStaleGeneration(
+            WorkflowExecution execution,
+            Long eventGeneration,
+            Long workflowId,
+            String eventType
+    ) {
+        if (execution == null || eventGeneration == null) {
+            return false;
+        }
+        Long currentGen = execution.getExecutionGeneration();
+        if (currentGen == null) {
+            execution.setExecutionGeneration(eventGeneration);
+            return false;
+        }
+        if (eventGeneration < currentGen) {
+            log.warn("Suppressing stale {} event for workflow {}: eventGen={} < activeExecutionGen={}",
+                    eventType, workflowId, eventGeneration, currentGen);
+            return true;
+        }
+        if (eventGeneration > currentGen) {
+            execution.setExecutionGeneration(eventGeneration);
+        }
+        return false;
     }
 }

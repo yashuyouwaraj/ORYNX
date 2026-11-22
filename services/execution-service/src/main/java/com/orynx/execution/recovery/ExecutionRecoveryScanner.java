@@ -66,11 +66,14 @@ public class ExecutionRecoveryScanner {
         if (result.outcome() == ExecutionCoordinationService.RecoveryOutcome.FAILED_EXCEEDED_ATTEMPTS) {
             log.error("Workflow {} (id={}) exceeded maximum recovery attempts. Emitting workflow failure event.",
                     workflowName, workflowId);
+            Long gen = result.coordination() != null ? result.coordination().getGeneration() : c.getGeneration();
             executionEventProducer.publishWorkflowCompleted(
                     WorkflowCompletedEvent.builder()
                             .workflowId(workflowId)
                             .workflowName(workflowName)
                             .success(false)
+                            .generation(gen)
+                            .eventId("wf:" + workflowId + ":gen:" + gen + ":workflow-completed")
                             .build()
             );
         } else if (result.outcome() == ExecutionCoordinationService.RecoveryOutcome.RECLAIMED) {
@@ -91,11 +94,14 @@ public class ExecutionRecoveryScanner {
                 log.warn("Abandoned workflow {} (id={}) has no stored payload; cannot auto-redispatch. Marking FAILED.",
                         workflowName, workflowId);
                 coordinationService.markCompleted(workflowId, false);
+                Long gen = reclaimed.getGeneration();
                 executionEventProducer.publishWorkflowCompleted(
                         WorkflowCompletedEvent.builder()
                                 .workflowId(workflowId)
                                 .workflowName(workflowName)
                                 .success(false)
+                                .generation(gen)
+                                .eventId("wf:" + workflowId + ":gen:" + gen + ":workflow-completed")
                                 .build()
                 );
             }

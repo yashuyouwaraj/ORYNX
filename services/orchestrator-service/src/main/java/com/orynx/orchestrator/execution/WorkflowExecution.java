@@ -31,4 +31,7 @@ public class WorkflowExecution {
     private Long durationMs;
 
     private Integer lastCompletedExecutionOrder;
+
+    @Column(name = "execution_generation")
+    private Long executionGeneration;
 }

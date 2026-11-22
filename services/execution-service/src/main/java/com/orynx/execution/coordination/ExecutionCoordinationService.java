@@ -43,8 +43,20 @@ public class ExecutionCoordinationService {
             long leaseDurationSeconds,
             String payloadJson
     ) {
+        return tryAcquireLease(workflowId, workflowName, instanceId, leaseDurationSeconds, payloadJson, false);
+    }
+
+    @Transactional
+    public ExecutionLeaseAcquisitionResult tryAcquireLease(
+            Long workflowId,
+            String workflowName,
+            String instanceId,
+            long leaseDurationSeconds,
+            String payloadJson,
+            boolean isResumeRequest
+    ) {
         try {
-            return doAcquireLease(workflowId, workflowName, instanceId, leaseDurationSeconds, payloadJson);
+            return doAcquireLease(workflowId, workflowName, instanceId, leaseDurationSeconds, payloadJson, isResumeRequest);
         } catch (DataIntegrityViolationException e) {
             log.warn(
                     "Concurrent lease creation race detected for workflow {} on instance {}. Treating as duplicate active lease.",
@@ -66,7 +78,8 @@ public class ExecutionCoordinationService {
             String workflowName,
             String instanceId,
             long leaseDurationSeconds,
-            String payloadJson
+            String payloadJson,
+            boolean isResumeRequest
     ) {
         Optional<WorkflowExecutionCoordination> existingOpt = repository.findByWorkflowIdForUpdate(workflowId);
 
@@ -106,16 +119,25 @@ public class ExecutionCoordinationService {
             return ExecutionLeaseAcquisitionResult.duplicateTerminal(coordination);
         }
 
-        if (currentStatus == ExecutionCoordinationStatus.PAUSED) {
-            log.warn(
-                    "Workflow {} is currently PAUSED on instance {}. Rejecting duplicate execution request without resume.",
-                    workflowId,
-                    coordination.getInstanceId()
-            );
-            return ExecutionLeaseAcquisitionResult.paused(coordination);
-        }
-
         long nextGeneration = (coordination.getGeneration() != null ? coordination.getGeneration() : 1L) + 1L;
+
+        if (currentStatus == ExecutionCoordinationStatus.PAUSED) {
+            if (!isResumeRequest) {
+                log.warn(
+                        "Workflow {} is currently PAUSED on instance {}. Rejecting duplicate execution request without resume.",
+                        workflowId,
+                        coordination.getInstanceId()
+                );
+                return ExecutionLeaseAcquisitionResult.paused(coordination);
+            }
+            log.info(
+                    "Workflow {} reclaiming lease from PAUSED on instance {} for resumed execution on instance {} (newGen={}).",
+                    workflowId,
+                    coordination.getInstanceId(),
+                    instanceId,
+                    nextGeneration
+            );
+        }
 
         if (currentStatus == ExecutionCoordinationStatus.DISPATCHED ||
                 currentStatus == ExecutionCoordinationStatus.RUNNING) {
@@ -301,6 +323,21 @@ public class ExecutionCoordinationService {
                 coordination.setLeaseExpiresAt(null);
                 repository.save(coordination);
                 log.info("Marked workflow {} as CANCELLED in coordination record", workflowId);
+            }
+        });
+    }
+
+    @Transactional
+    public void markResumed(Long workflowId) {
+        repository.findByWorkflowIdForUpdate(workflowId).ifPresent(coordination -> {
+            if (coordination.getStatus() == ExecutionCoordinationStatus.PAUSED) {
+                Instant now = Instant.now();
+                coordination.setStatus(ExecutionCoordinationStatus.DISPATCHED);
+                coordination.setUpdatedAt(now);
+                coordination.setLeaseExpiresAt(Instant.EPOCH);
+                repository.save(coordination);
+                log.info("Marked workflow {} resumable (PAUSED -> DISPATCHED) in coordination record (gen={})",
+                        workflowId, coordination.getGeneration());
             }
         });
     }

@@ -40,6 +40,10 @@ public class ActiveExecutionTracker {
             paused.set(true);
         }
 
+        public void clearPause() {
+            paused.set(false);
+        }
+
         public void fence() {
             fenced.set(true);
             interruptThread("fenced/stale");
@@ -94,6 +98,13 @@ public class ActiveExecutionTracker {
         ActiveExecutionHandle handle = activeExecutions.get(workflowId);
         if (handle != null) {
             handle.pause();
+        }
+    }
+
+    public void clearPause(Long workflowId) {
+        ActiveExecutionHandle handle = activeExecutions.get(workflowId);
+        if (handle != null) {
+            handle.clearPause();
         }
     }
 

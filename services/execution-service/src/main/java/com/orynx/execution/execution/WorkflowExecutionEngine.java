@@ -95,6 +95,8 @@ public class WorkflowExecutionEngine {
                                     .workflowName(workflowName)
                                     .taskName(task.getName())
                                     .executionOrder(task.getExecutionOrder())
+                                    .generation(generation)
+                                    .eventId("wf:" + workflowId + ":gen:" + generation + ":task-started:" + task.getExecutionOrder())
                                     .build()
                     );
                 } else {
@@ -118,6 +120,8 @@ public class WorkflowExecutionEngine {
                                 .executionOrder(task.getExecutionOrder())
                                 .success(result.isSuccess())
                                 .attempts(result.getAttempts())
+                                .generation(generation)
+                                .eventId("wf:" + workflowId + ":gen:" + generation + ":task-completed:" + task.getExecutionOrder())
                                 .build()
                 );
 
@@ -163,6 +167,8 @@ public class WorkflowExecutionEngine {
                                         .workflowId(workflowId)
                                         .workflowName(workflowName)
                                         .success(false)
+                                        .generation(generation)
+                                        .eventId("wf:" + workflowId + ":gen:" + generation + ":workflow-completed")
                                         .build()
                         );
                     }
@@ -207,6 +213,8 @@ public class WorkflowExecutionEngine {
                         .workflowId(workflowId)
                         .workflowName(workflowName)
                         .success(true)
+                        .generation(generation)
+                        .eventId("wf:" + workflowId + ":gen:" + generation + ":workflow-completed")
                         .build()
         );
 
@@ -270,6 +278,9 @@ public class WorkflowExecutionEngine {
                         .workflowId(workflowId)
                         .workflowName(event.getWorkflowName())
                         .lastCompletedExecutionOrder(lastCompletedExecutionOrder)
+                        .generation(generation)
+                        .eventId("wf:" + workflowId + ":gen:" + generation + ":workflow-paused:" +
+                                (lastCompletedExecutionOrder != null ? lastCompletedExecutionOrder : 0))
                         .build()
         );
     }

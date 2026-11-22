@@ -11,12 +11,15 @@ public class KafkaConsumer {
 
     @KafkaListener(
             topics = "user-registered",
-            groupId = "orynx-group"
+            groupId = "orynx-auth-group"
     )
     public void consume(
             UserRegisteredEvent event
     ) {
-
+        if (event == null) {
+            log.warn("Received null UserRegisteredEvent. Ignoring.");
+            return;
+        }
         log.info("Received Event: {}", event.getEmail());
     }
 }
