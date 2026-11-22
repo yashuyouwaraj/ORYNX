@@ -12,4 +12,6 @@ public class TaskExecutionEvent {
     private Long taskId;
     private String taskName;
     private String status;
+    private Long generation;
+    private String eventId;
 }

@@ -24,4 +24,8 @@ public class ExecutionEvent {
     private String status;
 
     private Long timestamp;
+
+    private Long generation;
+
+    private String eventId;
 }

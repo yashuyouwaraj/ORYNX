@@ -12,5 +12,9 @@ public interface ExecutionEventRepository extends JpaRepository<ExecutionEvent, 
 
     Optional<ExecutionEvent> findFirstByWorkflowIdAndTaskIdOrderByIdDesc(Long workflowId, Long taskId);
 
+    Optional<ExecutionEvent> findFirstByWorkflowIdAndTaskIdIsNullAndTaskNameOrderByIdDesc(Long workflowId, String taskName);
+
     Optional<ExecutionEvent> findFirstByWorkflowIdAndTaskNameOrderByIdDesc(Long workflowId, String taskName);
+
+    boolean existsByWorkflowIdAndEventId(Long workflowId, String eventId);
 }

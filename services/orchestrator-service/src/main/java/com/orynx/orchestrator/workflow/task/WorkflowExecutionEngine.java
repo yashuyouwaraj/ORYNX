@@ -1,17 +1,18 @@
 package com.orynx.orchestrator.workflow.task;
 
+import com.orynx.orchestrator.execution.WorkflowExecution;
+import com.orynx.orchestrator.execution.WorkflowExecutionRepository;
 import com.orynx.orchestrator.workflow.*;
 import com.orynx.orchestrator.workflow.dto.WorkflowRealtimeEvent;
 import com.orynx.orchestrator.workflow.task.dto.TaskExecutionEvent;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class WorkflowExecutionEngine {
 
@@ -19,6 +20,31 @@ public class WorkflowExecutionEngine {
     private final TaskEventProducer taskEventProducer;
     private final WorkflowRepository workflowRepository;
     private final WorkflowEventProducer workflowEventProducer;
+    private final WorkflowExecutionRepository workflowExecutionRepository;
+
+    public WorkflowExecutionEngine(
+            WorkflowTaskRepository workflowTaskRepository,
+            TaskEventProducer taskEventProducer,
+            WorkflowRepository workflowRepository,
+            WorkflowEventProducer workflowEventProducer
+    ) {
+        this(workflowTaskRepository, taskEventProducer, workflowRepository, workflowEventProducer, null);
+    }
+
+    @Autowired
+    public WorkflowExecutionEngine(
+            WorkflowTaskRepository workflowTaskRepository,
+            TaskEventProducer taskEventProducer,
+            WorkflowRepository workflowRepository,
+            WorkflowEventProducer workflowEventProducer,
+            WorkflowExecutionRepository workflowExecutionRepository
+    ) {
+        this.workflowTaskRepository = workflowTaskRepository;
+        this.taskEventProducer = taskEventProducer;
+        this.workflowRepository = workflowRepository;
+        this.workflowEventProducer = workflowEventProducer;
+        this.workflowExecutionRepository = workflowExecutionRepository;
+    }
 
     @Async("workflowExecutor")
     public void executeWorkflowAsync(Long workflowId) {
@@ -78,6 +104,7 @@ public class WorkflowExecutionEngine {
     private void executeTask(Workflow workflow, Long workflowId, WorkflowTask task) {
         log.info("Executing task {}", task.getName());
 
+        Long generation = resolveGeneration(workflowId);
         task.setStartedAt(System.currentTimeMillis());
         task.setRetryCount(0);
 
@@ -101,6 +128,8 @@ public class WorkflowExecutionEngine {
                             .taskId(task.getId())
                             .taskName(task.getName())
                             .status("RUNNING")
+                            .generation(generation)
+                            .eventId(buildTaskEventId(workflowId, generation, task.getId(), attempt, "RUNNING"))
                             .build()
             );
 
@@ -126,6 +155,8 @@ public class WorkflowExecutionEngine {
                                 .taskId(task.getId())
                                 .taskName(task.getName())
                                 .status("COMPLETED")
+                                .generation(generation)
+                                .eventId(buildTaskEventId(workflowId, generation, task.getId(), attempt, "COMPLETED"))
                                 .build()
                 );
 
@@ -143,6 +174,8 @@ public class WorkflowExecutionEngine {
                             .taskId(task.getId())
                             .taskName(task.getName())
                             .status("RETRYING")
+                            .generation(generation)
+                            .eventId(buildTaskEventId(workflowId, generation, task.getId(), attempt, "RETRYING"))
                             .build()
             );
 
@@ -158,11 +191,26 @@ public class WorkflowExecutionEngine {
                         .taskId(task.getId())
                         .taskName(task.getName())
                         .status("FAILED")
+                        .generation(generation)
+                        .eventId(buildTaskEventId(workflowId, generation, task.getId(), maxAttempts, "FAILED"))
                         .build()
         );
 
         markWorkflowFailed(workflow, "Task failed after " + maxAttempts + " attempts: " + task.getName());
         log.error("Workflow failed because task {} exhausted all retries", task.getName());
+    }
+
+    private Long resolveGeneration(Long workflowId) {
+        if (workflowExecutionRepository == null || workflowId == null) {
+            return 1L;
+        }
+        return workflowExecutionRepository.findFirstByWorkflowIdOrderByStartedAtDesc(workflowId)
+                .map(WorkflowExecution::getExecutionGeneration)
+                .orElse(1L);
+    }
+
+    private String buildTaskEventId(Long workflowId, Long generation, Long taskId, int attempt, String status) {
+        return "wf:" + workflowId + ":gen:" + generation + ":task:" + taskId + ":attempt:" + attempt + ":" + status;
     }
 
     private boolean simulateTaskSuccess(int attempt, int maxAttempts) {
