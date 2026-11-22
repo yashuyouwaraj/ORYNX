@@ -16,6 +16,7 @@ import org.springframework.mock.web.server.MockServerWebExchange;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
 import java.util.Date;
@@ -64,6 +65,10 @@ class JwtAuthenticationFilterTest {
             "/api/v1/users/admin",
             "/actuator",
             "/actuator/env",
+            "/actuator/env/",
+            "//actuator/env",
+            "/ACTUATOR/env",
+            "/actuator;param=1/env",
             "/actuator/configprops",
             "/actuator/beans",
             "/actuator/mappings",
@@ -78,7 +83,20 @@ class JwtAuthenticationFilterTest {
     })
     @DisplayName("Should reject anonymous request to protected endpoint with 401")
     void shouldRejectAnonymousRequestToProtectedEndpoints(String path) {
-        MockServerHttpRequest request = MockServerHttpRequest.get(path).build();
+        MockServerHttpRequest request = MockServerHttpRequest.get(URI.create("http://localhost" + path).toString()).build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+
+        GatewayFilterChain chain = ex -> Mono.empty();
+
+        filter.filter(exchange, chain).block();
+
+        assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    @Test
+    @DisplayName("Should reject anonymous POST request to /actuator/health with 401")
+    void shouldRejectAnonymousPostToHealthEndpoint() {
+        MockServerHttpRequest request = MockServerHttpRequest.post("/actuator/health").build();
         MockServerWebExchange exchange = MockServerWebExchange.from(request);
 
         GatewayFilterChain chain = ex -> Mono.empty();

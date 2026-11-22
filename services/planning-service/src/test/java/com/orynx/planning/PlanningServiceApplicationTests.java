@@ -6,6 +6,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.actuate.autoconfigure.endpoint.web.WebEndpointProperties;
+import org.springframework.boot.autoconfigure.web.ServerProperties;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.web.servlet.MockMvc;
@@ -25,8 +26,12 @@ class PlanningServiceApplicationTests {
 	@Autowired
 	private WebEndpointProperties webEndpointProperties;
 
+	@Autowired
+	private ServerProperties serverProperties;
+
 	@Test
 	void contextLoads() {
+		assertThat(serverProperties.getPort()).isEqualTo(8083);
 		assertThat(webEndpointProperties.getExposure().getInclude())
 				.containsExactly("health")
 				.doesNotContain("*");

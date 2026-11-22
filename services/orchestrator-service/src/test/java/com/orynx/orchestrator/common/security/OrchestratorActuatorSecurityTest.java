@@ -15,11 +15,13 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
 import java.util.Date;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -97,6 +99,10 @@ class OrchestratorActuatorSecurityTest {
     @ValueSource(strings = {
             "/actuator",
             "/actuator/env",
+            "/actuator/env/",
+            "//actuator/env",
+            "/ACTUATOR/env",
+            "/actuator;param=1/env",
             "/actuator/configprops",
             "/actuator/beans",
             "/actuator/mappings",
@@ -110,9 +116,37 @@ class OrchestratorActuatorSecurityTest {
     })
     @DisplayName("UserContextFilter rejects anonymous requests to non-health Actuator paths with 401")
     void userContextFilterRejectsAnonymousSensitiveActuatorRequests(String path) throws Exception {
-        mockMvc.perform(get(path))
+        mockMvc.perform(get(URI.create("http://localhost" + path)))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.error").value("Unauthorized"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "/actuator",
+            "/actuator/env",
+            "/actuator/env/",
+            "//actuator/env",
+            "/ACTUATOR/env",
+            "/actuator;param=1/env",
+            "/actuator/health/custom"
+    })
+    @DisplayName("UserContextFilter blocks authenticated requests to non-health Actuator paths with 404")
+    void userContextFilterBlocksAuthenticatedSensitiveActuatorRequests(String path) throws Exception {
+        mockMvc.perform(get(URI.create("http://localhost" + path))
+                        .header("Authorization", "Bearer " + generateToken()))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("UserContextFilter rejects anonymous POST /actuator/health with 401 and blocks authenticated POST with 404")
+    void userContextFilterBlocksNonGetHealthRequests() throws Exception {
+        mockMvc.perform(post("/actuator/health"))
+                .andExpect(status().isUnauthorized());
+
+        mockMvc.perform(post("/actuator/health")
+                        .header("Authorization", "Bearer " + generateToken()))
+                .andExpect(status().isNotFound());
     }
 
     @Test

@@ -6,12 +6,16 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.actuate.autoconfigure.endpoint.web.WebEndpointProperties;
+import org.springframework.boot.autoconfigure.web.ServerProperties;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.net.URI;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -25,8 +29,12 @@ class ExecutionServiceApplicationTests {
 	@Autowired
 	private WebEndpointProperties webEndpointProperties;
 
+	@Autowired
+	private ServerProperties serverProperties;
+
 	@Test
 	void contextLoads() {
+		assertThat(serverProperties.getPort()).isEqualTo(8084);
 		assertThat(webEndpointProperties.getExposure().getInclude())
 				.containsExactly("health")
 				.doesNotContain("*");
@@ -53,6 +61,10 @@ class ExecutionServiceApplicationTests {
 	@ValueSource(strings = {
 			"/actuator",
 			"/actuator/env",
+			"/actuator/env/",
+			"//actuator/env",
+			"/ACTUATOR/env",
+			"/actuator;v=1/env",
 			"/actuator/configprops",
 			"/actuator/beans",
 			"/actuator/mappings",
@@ -64,7 +76,14 @@ class ExecutionServiceApplicationTests {
 	})
 	@DisplayName("execution-service does not expose sensitive Actuator endpoints")
 	void sensitiveActuatorEndpointsReturnNotFound(String path) throws Exception {
-		mockMvc.perform(get(path))
+		mockMvc.perform(get(URI.create("http://localhost" + path)))
+				.andExpect(status().isNotFound());
+	}
+
+	@Test
+	@DisplayName("execution-service blocks non-GET methods on health probe")
+	void postToHealthEndpointReturnsNotFound() throws Exception {
+		mockMvc.perform(post("/actuator/health"))
 				.andExpect(status().isNotFound());
 	}
 }

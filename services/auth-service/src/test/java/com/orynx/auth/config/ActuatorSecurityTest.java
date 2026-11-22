@@ -6,6 +6,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.actuate.autoconfigure.endpoint.web.WebEndpointProperties;
+import org.springframework.boot.autoconfigure.web.ServerProperties;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.security.test.context.support.WithMockUser;
@@ -32,9 +33,13 @@ class ActuatorSecurityTest {
     @Autowired
     private WebEndpointProperties webEndpointProperties;
 
+    @Autowired
+    private ServerProperties serverProperties;
+
     @Test
     @DisplayName("auth-service exposes only health endpoint with no wildcard")
     void authServiceExposesOnlyHealth() {
+        assertThat(serverProperties.getPort()).isEqualTo(8081);
         assertThat(webEndpointProperties.getExposure().getInclude())
                 .containsExactly("health")
                 .doesNotContain("*");
@@ -62,6 +67,8 @@ class ActuatorSecurityTest {
     @ValueSource(strings = {
             "/actuator",
             "/actuator/env",
+            "/actuator/env/",
+            "/ACTUATOR/env",
             "/actuator/configprops",
             "/actuator/beans",
             "/actuator/mappings",
@@ -81,10 +88,22 @@ class ActuatorSecurityTest {
         assertThat(statusCode).isIn(401, 403);
     }
 
+    @Test
+    @DisplayName("Anonymous non-GET requests to /actuator/health are rejected")
+    void anonymousPostToHealthEndpointIsRejected() throws Exception {
+        int statusCode = mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/actuator/health"))
+                .andReturn()
+                .getResponse()
+                .getStatus();
+        assertThat(statusCode).isIn(401, 403);
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {
             "/actuator",
             "/actuator/env",
+            "/actuator/env/",
+            "/ACTUATOR/env",
             "/actuator/configprops",
             "/actuator/beans",
             "/actuator/mappings",
@@ -99,6 +118,14 @@ class ActuatorSecurityTest {
     @DisplayName("Authenticated requests confirm sensitive Actuator endpoints are disabled (404)")
     void sensitiveActuatorEndpointsReturnNotFoundEvenWhenAuthenticated(String path) throws Exception {
         mockMvc.perform(get(path))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @WithMockUser(username = "user@orynx.io")
+    @DisplayName("Authenticated POST /actuator/health returns 404")
+    void authenticatedPostToHealthEndpointReturnsNotFound() throws Exception {
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/actuator/health"))
                 .andExpect(status().isNotFound());
     }
 
@@ -141,6 +168,9 @@ class ActuatorSecurityTest {
             assertThat(props.getProperty("management.endpoints.web.discovery.enabled"))
                     .as("%s must disable Actuator discovery index", service)
                     .isEqualTo("false");
+            assertThat(props.getProperty("server.address"))
+                    .as("%s must not pin container interface to loopback", service)
+                    .isNull();
         }
     }
 }

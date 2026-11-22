@@ -81,6 +81,9 @@ class ActuatorSecurityIntegrationTest {
     @ValueSource(strings = {
             "/actuator",
             "/actuator/env",
+            "/actuator/env/",
+            "/ACTUATOR/env",
+            "/actuator;param=1/env",
             "/actuator/configprops",
             "/actuator/beans",
             "/actuator/mappings",
@@ -102,10 +105,22 @@ class ActuatorSecurityIntegrationTest {
                 .expectStatus().isUnauthorized();
     }
 
+    @Test
+    @DisplayName("Anonymous non-GET requests to health endpoint are rejected with 401")
+    void anonymousPostToHealthEndpointIsRejected() {
+        webTestClient.post()
+                .uri("/actuator/health")
+                .exchange()
+                .expectStatus().isUnauthorized();
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {
             "/actuator",
             "/actuator/env",
+            "/actuator/env/",
+            "/ACTUATOR/env",
+            "/actuator;param=1/env",
             "/actuator/configprops",
             "/actuator/beans",
             "/actuator/mappings",
@@ -122,6 +137,16 @@ class ActuatorSecurityIntegrationTest {
     void sensitiveActuatorEndpointsAreNotExposedEvenWhenAuthenticated(String path) {
         webTestClient.get()
                 .uri(path)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + generateValidToken())
+                .exchange()
+                .expectStatus().isNotFound();
+    }
+
+    @Test
+    @DisplayName("Authenticated non-GET request to health endpoint is blocked with 404")
+    void authenticatedPostToHealthEndpointReturnsNotFound() {
+        webTestClient.post()
+                .uri("/actuator/health")
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + generateValidToken())
                 .exchange()
                 .expectStatus().isNotFound();

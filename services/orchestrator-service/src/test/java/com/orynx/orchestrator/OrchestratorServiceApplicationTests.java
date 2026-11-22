@@ -10,6 +10,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.actuate.autoconfigure.endpoint.web.WebEndpointProperties;
+import org.springframework.boot.autoconfigure.web.ServerProperties;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpHeaders;
@@ -34,11 +35,15 @@ class OrchestratorServiceApplicationTests {
 	@Autowired
 	private WebEndpointProperties webEndpointProperties;
 
+	@Autowired
+	private ServerProperties serverProperties;
+
 	@Value("${jwt.secret:}")
 	private String jwtSecret;
 
 	@Test
 	void contextLoads() {
+		assertThat(serverProperties.getPort()).isEqualTo(8082);
 		assertThat(webEndpointProperties.getExposure().getInclude())
 				.containsExactly("health")
 				.doesNotContain("*");
@@ -65,6 +70,8 @@ class OrchestratorServiceApplicationTests {
 	@ValueSource(strings = {
 			"/actuator",
 			"/actuator/env",
+			"/actuator/env/",
+			"/ACTUATOR/env",
 			"/actuator/configprops",
 			"/actuator/beans",
 			"/actuator/mappings",
@@ -92,5 +99,12 @@ class OrchestratorServiceApplicationTests {
 			mockMvc.perform(get(path).header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
 					.andExpect(status().isNotFound());
 		}
+	}
+
+	@Test
+	@DisplayName("orchestrator-service rejects non-GET requests to /actuator/health")
+	void nonGetHealthProbeIsRejected() throws Exception {
+		mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/actuator/health"))
+				.andExpect(status().isUnauthorized());
 	}
 }
