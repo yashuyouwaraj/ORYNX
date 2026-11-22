@@ -65,7 +65,12 @@ To persist permanently, add the export statements above to your `~/.bashrc` or `
 
 ---
 
-## 4. Security Guardrails
+## 4. Network Boundary & Actuator Hardening Defaults
+
+- **Container Interface Binding vs. Host Port Publishing**: Backend services (`8081`–`8084`) bind their default container interfaces (`0.0.0.0` inside containers) so container-to-container traffic over internal Docker networks (configured via `AUTH_SERVICE_URL`, `ORCHESTRATOR_SERVICE_URL`, and `PLANNING_SERVICE_URL`, e.g. `http://auth-service:8081`) functions reliably. Host access is controlled strictly at the port-publishing boundary: `docker-compose.yml` binds PostgreSQL, Redis, and Kafka host ports exclusively to `127.0.0.1`, and containerized backend services should use `expose` (or `127.0.0.1:<port>:<port>` only when host loopback debugging is needed). Only `gateway-service` (`8080`) should publish external ingress.
+- **Actuator Immutability**: All five services enforce `include=health`, `discovery.enabled=false`, and `show-details=never` / `show-components=never` (including health probe groups) both via `application.properties` and runtime `ActuatorSecurityEnforcer` / path-normalizing boundary filters, preventing accidental `MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE=*` deployment overrides.
+
+## 5. Security Guardrails
 - **NEVER** commit `.env` or any file containing real passwords or keys to Git.
 - Root `.gitignore` automatically ignores `.env`, `.env.*`, and `*.env`.
 - Any missing required variable will cause services to fail fast on startup with an explicit placeholder resolution error.

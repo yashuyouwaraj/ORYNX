@@ -9,14 +9,14 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
 
   redis:
     image: redis:7
     container_name: orynx-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
 
   kafka:
     image: apache/kafka:latest
@@ -24,8 +24,8 @@ services:
     restart: unless-stopped
 
     ports:
-      - "9092:9092"
-      - "29092:29092"
+      - "127.0.0.1:9092:9092"
+      - "127.0.0.1:29092:29092"
 
     environment:
       KAFKA_NODE_ID: 1
@@ -62,8 +62,12 @@ services:
 
   #   restart: unless-stopped
 
-  #   ports:
-  #     - "8081:8081"
+  #   # Internal container-to-container networking uses expose without host port publishing.
+  #   # If host ports are published for local debugging on backend services (8081-8084),
+  #   # bind strictly to host loopback (e.g. "127.0.0.1:8081:8081"); only gateway-service (8080)
+  #   # should publish external ingress.
+  #   expose:
+  #     - "8081"
 
   #   depends_on:
   #     - postgres
