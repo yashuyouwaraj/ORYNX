@@ -25,7 +25,8 @@ public class ExecutionEventProducer {
     private final KafkaTemplate<String, Object> kafkaTemplate;
 
     public void publishTaskStarted(TaskStartedEvent event) {
-        if (event == null) {
+        if (event == null || event.getWorkflowId() == null) {
+            log.warn("Attempted to publish null or unkeyed TaskStartedEvent (workflowId=null). Skipping.");
             return;
         }
         String key = resolveKey(event.getWorkflowId());
@@ -33,7 +34,8 @@ public class ExecutionEventProducer {
     }
 
     public void publishTaskCompleted(TaskCompletedEvent event) {
-        if (event == null) {
+        if (event == null || event.getWorkflowId() == null) {
+            log.warn("Attempted to publish null or unkeyed TaskCompletedEvent (workflowId=null). Skipping.");
             return;
         }
         String key = resolveKey(event.getWorkflowId());
@@ -41,7 +43,8 @@ public class ExecutionEventProducer {
     }
 
     public void publishWorkflowCompleted(WorkflowCompletedEvent event) {
-        if (event == null) {
+        if (event == null || event.getWorkflowId() == null) {
+            log.warn("Attempted to publish null or unkeyed WorkflowCompletedEvent (workflowId=null). Skipping.");
             return;
         }
         String key = resolveKey(event.getWorkflowId());
@@ -49,7 +52,8 @@ public class ExecutionEventProducer {
     }
 
     public void publishWorkflowExecutionPaused(WorkflowExecutionPausedEvent event) {
-        if (event == null) {
+        if (event == null || event.getWorkflowId() == null) {
+            log.warn("Attempted to publish null or unkeyed WorkflowExecutionPausedEvent (workflowId=null). Skipping.");
             return;
         }
         String key = resolveKey(event.getWorkflowId());

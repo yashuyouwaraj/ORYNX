@@ -19,8 +19,8 @@ public class KafkaProducer {
     private final KafkaTemplate<String, UserRegisteredEvent> kafkaTemplate;
 
     public void publishUserRegisteredEvent(UserRegisteredEvent event) {
-        if (event == null) {
-            log.warn("Attempted to publish null UserRegisteredEvent. Skipping.");
+        if (event == null || (event.getUserId() == null && (event.getEmail() == null || event.getEmail().isBlank()))) {
+            log.warn("Attempted to publish null or unkeyed UserRegisteredEvent. Skipping.");
             return;
         }
         String key = event.getUserId() != null ? String.valueOf(event.getUserId()) : event.getEmail();

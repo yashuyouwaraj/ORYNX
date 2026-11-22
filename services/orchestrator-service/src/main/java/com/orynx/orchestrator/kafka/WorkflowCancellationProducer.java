@@ -18,8 +18,8 @@ public class WorkflowCancellationProducer {
     private final KafkaTemplate<String, Object> kafkaTemplate;
 
     public void publishWorkflowCancelled(WorkflowCancelledEvent event) {
-        if (event == null) {
-            log.warn("Attempted to publish null WorkflowCancelledEvent. Skipping.");
+        if (event == null || event.getWorkflowId() == null) {
+            log.warn("Attempted to publish null or unkeyed WorkflowCancelledEvent (workflowId=null). Skipping.");
             return;
         }
         String key = event.getWorkflowId() != null ? String.valueOf(event.getWorkflowId()) : null;

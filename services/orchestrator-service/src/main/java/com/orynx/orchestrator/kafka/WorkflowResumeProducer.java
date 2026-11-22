@@ -18,8 +18,8 @@ public class WorkflowResumeProducer {
     private final KafkaTemplate<String, Object> kafkaTemplate;
 
     public void publishWorkflowResumed(WorkflowResumedEvent event) {
-        if (event == null) {
-            log.warn("Attempted to publish null WorkflowResumedEvent. Skipping.");
+        if (event == null || event.getWorkflowId() == null) {
+            log.warn("Attempted to publish null or unkeyed WorkflowResumedEvent (workflowId=null). Skipping.");
             return;
         }
         String key = event.getWorkflowId() != null ? String.valueOf(event.getWorkflowId()) : null;

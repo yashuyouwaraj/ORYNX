@@ -18,7 +18,8 @@ public class WorkflowEventProducer {
     private final KafkaTemplate<String, WorkflowRealtimeEvent> kafkaTemplate;
 
     public void publishWorkflowEvent(WorkflowRealtimeEvent event) {
-        if (event == null) {
+        if (event == null || event.getWorkflowId() == null) {
+            log.warn("Attempted to publish null or unkeyed WorkflowRealtimeEvent (workflowId=null). Skipping.");
             return;
         }
         String key = event.getWorkflowId() != null ? String.valueOf(event.getWorkflowId()) : null;

@@ -18,8 +18,8 @@ public class ExecutionRequestProducer {
     public static final String TOPIC = "workflow-execution";
 
     public void publishExecutionRequest(WorkflowExecutionRequestEvent event) {
-        if (event == null) {
-            log.warn("Attempted to publish null WorkflowExecutionRequestEvent. Skipping.");
+        if (event == null || event.getWorkflowId() == null) {
+            log.warn("Attempted to publish null or unkeyed WorkflowExecutionRequestEvent (workflowId=null). Skipping.");
             return;
         }
         String key = resolveKey(event.getWorkflowId());

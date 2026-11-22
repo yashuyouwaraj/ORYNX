@@ -18,8 +18,8 @@ public class WorkflowPauseProducer {
     private final KafkaTemplate<String, Object> kafkaTemplate;
 
     public void publishWorkflowPaused(WorkflowPausedEvent event) {
-        if (event == null) {
-            log.warn("Attempted to publish null WorkflowPausedEvent. Skipping.");
+        if (event == null || event.getWorkflowId() == null) {
+            log.warn("Attempted to publish null or unkeyed WorkflowPausedEvent (workflowId=null). Skipping.");
             return;
         }
         String key = event.getWorkflowId() != null ? String.valueOf(event.getWorkflowId()) : null;
