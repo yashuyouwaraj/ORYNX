@@ -9,31 +9,43 @@ import com.orynx.execution.coordination.WorkflowExecutionCoordination;
 import com.orynx.execution.coordination.WorkflowExecutionCoordinationRepository;
 import com.orynx.execution.event.dto.TaskCompletedEvent;
 import com.orynx.execution.event.dto.TaskStartedEvent;
+import com.orynx.execution.event.dto.WorkflowCancelledEvent;
 import com.orynx.execution.event.dto.WorkflowCompletedEvent;
 import com.orynx.execution.event.dto.WorkflowExecutionPausedEvent;
+import com.orynx.execution.event.dto.WorkflowPausedEvent;
 import com.orynx.execution.event.dto.WorkflowResumedEvent;
 import com.orynx.execution.execution.*;
 import com.orynx.execution.execution.dto.TaskExecutionResult;
+import com.orynx.execution.recovery.ExecutionRecoveryScanner;
 import com.orynx.execution.worker.ExecutionWorkerProperties;
+import com.orynx.execution.worker.WorkerQueueFullException;
 import com.orynx.execution.workflow.event.WorkflowExecutionRequestEvent;
 import com.orynx.execution.workflow.event.dto.TaskExecutionRequest;
+import org.apache.kafka.clients.consumer.Consumer;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.CommonErrorHandler;
 import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.listener.MessageListenerContainer;
 import org.springframework.kafka.support.Acknowledgment;
+import org.springframework.kafka.support.serializer.DeserializationException;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
@@ -200,7 +212,7 @@ class ExecutionKafkaReliabilityAndIdempotencyTest {
     }
 
     @Test
-    @DisplayName("WorkflowResumedEvent arriving first unlocks PAUSED coordination record for subsequent execution request")
+    @DisplayName("WorkflowResumedEvent preserves PAUSED coordination status against recovery hijack until explicit resume=true claims lease")
     void workflowResumedEventUnlocksCoordinationRecordWhenArrivingFirst() {
         ExecutionCoordinationService coordinationService = new ExecutionCoordinationService(coordinationRepository);
         WorkflowExecutionCoordination paused = WorkflowExecutionCoordination.builder()
@@ -224,20 +236,213 @@ class ExecutionKafkaReliabilityAndIdempotencyTest {
                 .workflowId(78L).workflowName("PauseResumeOrderB").eventId("evt-r-2").build(), acknowledgment);
 
         assertThat(pauseRegistry.isPaused(78L)).isFalse();
-        assertThat(paused.getStatus()).isEqualTo(ExecutionCoordinationStatus.DISPATCHED);
-        assertThat(paused.getLeaseExpiresAt()).isEqualTo(Instant.EPOCH);
+        assertThat(paused.getStatus()).isEqualTo(ExecutionCoordinationStatus.PAUSED);
+        assertThat(paused.getLeaseExpiresAt()).isNull();
 
+        // Recovery scanner must NOT hijack a resumed-in-flight PAUSED record
+        ExecutionCoordinationService.RecoveryResult recovery =
+                coordinationService.reclaimForRecovery(78L, "scanner-node", 300L, 3);
+        assertThat(recovery.outcome()).isEqualTo(ExecutionCoordinationService.RecoveryOutcome.INELIGIBLE);
+
+        // Stale non-resume request must remain rejected while PAUSED
+        ExecutionLeaseAcquisitionResult nonResumeRejected = coordinationService.tryAcquireLease(
+                78L, "PauseResumeOrderB", "node-2", 300L, "{}", false);
+        assertThat(nonResumeRejected.isAcquired()).isFalse();
+        assertThat(nonResumeRejected.getStatus()).isEqualTo(ExecutionLeaseAcquisitionResult.Status.PAUSED);
+
+        // Explicit resume=true execution request reclaims lease and bumps generation
         ExecutionLeaseAcquisitionResult acquired = coordinationService.tryAcquireLease(
-                78L, "PauseResumeOrderB", "node-2", 300L, "{}", true);
+                78L, "PauseResumeOrderB", "node-2", 300L, "{}", true, 2L);
         assertThat(acquired.isAcquired()).isTrue();
         assertThat(acquired.getGeneration()).isEqualTo(2L);
+        assertThat(paused.getStatus()).isEqualTo(ExecutionCoordinationStatus.DISPATCHED);
     }
 
     @Test
-    @DisplayName("Execution KafkaReliabilityConfig builds bounded DefaultErrorHandler")
+    @DisplayName("Duplicate DISPATCHED execution request on same instance is rejected while lease is active")
+    void duplicateSameInstanceRequestWhileDispatchedIsRejected() {
+        ExecutionCoordinationService coordinationService = new ExecutionCoordinationService(coordinationRepository);
+        WorkflowExecutionCoordination activeDispatched = WorkflowExecutionCoordination.builder()
+                .workflowId(79L)
+                .workflowName("SameNodeDup")
+                .status(ExecutionCoordinationStatus.DISPATCHED)
+                .instanceId("node-1")
+                .generation(1L)
+                .acquiredAt(Instant.now().minusSeconds(5))
+                .leaseExpiresAt(Instant.now().plusSeconds(295))
+                .build();
+        when(coordinationRepository.findByWorkflowIdForUpdate(79L)).thenReturn(Optional.of(activeDispatched));
+
+        ExecutionLeaseAcquisitionResult dup = coordinationService.tryAcquireLease(
+                79L, "SameNodeDup", "node-1", 300L, "{}");
+        assertThat(dup.isAcquired()).isFalse();
+        assertThat(dup.getStatus()).isEqualTo(ExecutionLeaseAcquisitionResult.Status.DUPLICATE_ACTIVE);
+        verify(coordinationRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("Queue saturation preserves coordination metadata, checkpoint, and generation continuity for retry and recovery")
+    void queueSaturationReleasesLeaseWhilePreservingCoordinationStateForRetryAndRecovery() {
+        ExecutionCoordinationService coordinationService = new ExecutionCoordinationService(coordinationRepository);
+        AtomicReference<WorkflowExecutionCoordination> stored = new AtomicReference<>(
+                WorkflowExecutionCoordination.builder()
+                        .workflowId(88L)
+                        .workflowName("QueueFullWorkflow")
+                        .status(ExecutionCoordinationStatus.PAUSED)
+                        .instanceId("node-1")
+                        .generation(1L)
+                        .lastCompletedExecutionOrder(2)
+                        .acquiredAt(Instant.now().minusSeconds(60))
+                        .payloadJson("{\"workflowId\":88,\"resume\":true}")
+                        .build()
+        );
+        when(coordinationRepository.findByWorkflowIdForUpdate(88L)).thenAnswer(inv -> Optional.of(stored.get()));
+        when(coordinationRepository.save(any(WorkflowExecutionCoordination.class))).thenAnswer(inv -> {
+            WorkflowExecutionCoordination c = inv.getArgument(0);
+            stored.set(c);
+            return c;
+        });
+
+        ExecutionWorkerProperties workerProperties = new ExecutionWorkerProperties();
+        when(dispatcher.getInstanceId()).thenReturn("node-2");
+        WorkflowExecutionRequestEvent resumeReq = WorkflowExecutionRequestEvent.builder()
+                .workflowId(88L)
+                .workflowName("QueueFullWorkflow")
+                .resume(true)
+                .generation(2L)
+                .eventId("evt-qf-88")
+                .tasks(List.of(TaskExecutionRequest.builder().name("Task 3").executionOrder(3).maxRetries(0).build()))
+                .build();
+
+        doThrow(new WorkerQueueFullException("Queue saturated"))
+                .when(executionService).executeWorkflow(eq(resumeReq), eq(2L));
+
+        ExecutionRequestConsumer requestConsumer = new ExecutionRequestConsumer(
+                executionService, coordinationService, dispatcher, workerProperties, new ObjectMapper());
+
+        assertThatThrownBy(() -> requestConsumer.consume(resumeReq, acknowledgment))
+                .isInstanceOf(WorkerQueueFullException.class);
+
+        verify(acknowledgment, never()).acknowledge();
+        verify(coordinationRepository, never()).delete(any());
+        assertThat(stored.get().getStatus()).isEqualTo(ExecutionCoordinationStatus.DISPATCHED);
+        assertThat(stored.get().getGeneration()).isEqualTo(1L);
+        assertThat(stored.get().getLeaseExpiresAt()).isEqualTo(Instant.EPOCH);
+        assertThat(stored.get().getLastCompletedExecutionOrder()).isEqualTo(2);
+        assertThat(stored.get().getPayloadJson()).contains("\"workflowId\":88");
+
+        // Subsequent retry re-acquires exact generation 2 and succeeds
+        doNothing().when(executionService).executeWorkflow(eq(resumeReq), eq(2L));
+        requestConsumer.consume(resumeReq, acknowledgment);
+        assertThat(stored.get().getGeneration()).isEqualTo(2L);
+        verify(acknowledgment).acknowledge();
+
+        // Recovery scanner hitting WorkerQueueFullException also releases lease without losing row
+        stored.get().setLeaseExpiresAt(Instant.now().minusSeconds(10));
+        stored.get().setGeneration(2L);
+        doThrow(new WorkerQueueFullException("Still saturated")).when(dispatcher).dispatch(any(), anyLong());
+        ExecutionRecoveryScanner scanner = new ExecutionRecoveryScanner(
+                coordinationService, dispatcher, mock(ExecutionEventProducer.class), workerProperties, new ObjectMapper());
+        scanner.recoverExecution(stored.get());
+        assertThat(stored.get().getLeaseExpiresAt()).isEqualTo(Instant.EPOCH);
+        assertThat(stored.get().getGeneration()).isEqualTo(2L);
+    }
+
+    @Test
+    @DisplayName("Delayed WorkflowPausedEvent cannot overwrite CANCELLED/COMPLETED/FAILED coordination states or set pause flags")
+    void cancellationAndPauseRacePreservesTerminalState() {
+        ExecutionCoordinationService coordinationService = new ExecutionCoordinationService(coordinationRepository);
+        WorkflowExecutionCoordination cancelled = WorkflowExecutionCoordination.builder()
+                .workflowId(90L)
+                .workflowName("CancelledRace")
+                .status(ExecutionCoordinationStatus.CANCELLED)
+                .generation(1L)
+                .acquiredAt(Instant.now())
+                .build();
+        when(coordinationRepository.findByWorkflowIdForUpdate(90L)).thenReturn(Optional.of(cancelled));
+        when(coordinationRepository.findById(90L)).thenReturn(Optional.of(cancelled));
+
+        coordinationService.markPaused(90L, 2);
+        assertThat(cancelled.getStatus()).isEqualTo(ExecutionCoordinationStatus.CANCELLED);
+
+        WorkflowPauseRegistry pauseRegistry = new WorkflowPauseRegistry();
+        ActiveExecutionTracker tracker = new ActiveExecutionTracker();
+        WorkflowPauseConsumer pauseConsumer = new WorkflowPauseConsumer(pauseRegistry, tracker, coordinationService);
+        pauseConsumer.consume(WorkflowPausedEvent.builder().workflowId(90L).workflowName("CancelledRace").build(), acknowledgment);
+
+        assertThat(pauseRegistry.isPaused(90L)).isFalse();
+        verify(acknowledgment).acknowledge();
+        verify(coordinationRepository, never()).save(any());
+
+        // FAILED must also remain terminal against late pause or cancel
+        WorkflowExecutionCoordination failed = WorkflowExecutionCoordination.builder()
+                .workflowId(91L)
+                .status(ExecutionCoordinationStatus.FAILED)
+                .generation(1L)
+                .acquiredAt(Instant.now())
+                .build();
+        when(coordinationRepository.findByWorkflowIdForUpdate(91L)).thenReturn(Optional.of(failed));
+        coordinationService.markPaused(91L, 1);
+        coordinationService.markCancelled(91L);
+        assertThat(failed.getStatus()).isEqualTo(ExecutionCoordinationStatus.FAILED);
+    }
+
+    @Test
+    @DisplayName("ExecutionCoordinationService honors requestedGeneration on initial and reclaim lease acquisitions")
+    void coordinationServiceSynchronizesWithRequestedGeneration() {
+        ExecutionCoordinationService coordinationService = new ExecutionCoordinationService(coordinationRepository);
+        when(coordinationRepository.findByWorkflowIdForUpdate(95L)).thenReturn(Optional.empty());
+        when(coordinationRepository.save(any(WorkflowExecutionCoordination.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        ExecutionLeaseAcquisitionResult initial = coordinationService.tryAcquireLease(
+                95L, "SyncedGen", "node-1", 300L, "{}", false, 3L);
+        assertThat(initial.isAcquired()).isTrue();
+        assertThat(initial.getGeneration()).isEqualTo(3L);
+
+        WorkflowExecutionCoordination failed = WorkflowExecutionCoordination.builder()
+                .workflowId(96L)
+                .status(ExecutionCoordinationStatus.FAILED)
+                .generation(1L)
+                .acquiredAt(Instant.now())
+                .build();
+        when(coordinationRepository.findByWorkflowIdForUpdate(96L)).thenReturn(Optional.of(failed));
+        ExecutionLeaseAcquisitionResult retried = coordinationService.tryAcquireLease(
+                96L, "SyncedRetry", "node-2", 300L, "{}", false, 5L);
+        assertThat(retried.isAcquired()).isTrue();
+        assertThat(retried.getGeneration()).isEqualTo(5L);
+    }
+
+    @Test
+    @DisplayName("Execution KafkaReliabilityConfig retries IllegalArgumentException and forwards DeserializationException to DLT")
     void executionKafkaReliabilityConfigBuildsDefaultErrorHandler() {
-        KafkaReliabilityConfig config = new KafkaReliabilityConfig();
-        CommonErrorHandler handler = config.kafkaCommonErrorHandler(500L, 3L);
+        @SuppressWarnings("unchecked")
+        ObjectProvider<KafkaTemplate<?, ?>> provider = mock(ObjectProvider.class);
+        doReturn(kafkaTemplate).when(provider).getIfAvailable();
+
+        KafkaReliabilityConfig config = new KafkaReliabilityConfig(provider);
+        CommonErrorHandler handler = config.kafkaCommonErrorHandler(0L, 1L);
         assertThat(handler).isInstanceOf(DefaultErrorHandler.class);
+
+        Consumer<?, ?> consumerMock = mock(Consumer.class);
+        MessageListenerContainer containerMock = mock(MessageListenerContainer.class);
+        ConsumerRecord<String, Object> record = new ConsumerRecord<>("workflow-execution", 0, 4L, "95", null);
+
+        try {
+            handler.handleOne(new IllegalArgumentException("retryable app error"), record, consumerMock, containerMock);
+        } catch (Exception ignored) {
+        }
+        verifyNoInteractions(kafkaTemplate);
+
+        DeserializationException deserEx = new DeserializationException(
+                "bad", "{broken".getBytes(StandardCharsets.UTF_8), false, new RuntimeException("parse"));
+        handler.handleOne(new RuntimeException(deserEx), record, consumerMock, containerMock);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> dltCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(kafkaTemplate).send(eq("workflow-execution.DLT"), eq("95"), dltCaptor.capture());
+        assertThat(dltCaptor.getValue())
+                .containsEntry("originalTopic", "workflow-execution")
+                .containsEntry("key", "95")
+                .containsEntry("rawPayload", "{broken");
     }
 }

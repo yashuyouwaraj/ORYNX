@@ -16,31 +16,41 @@ import com.orynx.orchestrator.workflow.dto.WorkflowRealtimeEvent;
 import com.orynx.orchestrator.workflow.event.ExecutionEvent;
 import com.orynx.orchestrator.workflow.event.ExecutionEventRepository;
 import com.orynx.orchestrator.workflow.event.WorkflowCreatedEvent;
+import com.orynx.orchestrator.workflow.event.WorkflowExecutionEvent;
 import com.orynx.orchestrator.workflow.event.WorkflowExecutionRequestEvent;
 import com.orynx.orchestrator.workflow.task.TaskEventConsumer;
 import com.orynx.orchestrator.workflow.task.TaskEventProducer;
 import com.orynx.orchestrator.workflow.task.TaskStatus;
+import com.orynx.orchestrator.workflow.task.WorkflowExecutionEngine;
 import com.orynx.orchestrator.workflow.task.WorkflowTask;
 import com.orynx.orchestrator.workflow.task.WorkflowTaskRepository;
 import com.orynx.orchestrator.workflow.task.dto.TaskExecutionEvent;
+import org.apache.kafka.clients.consumer.Consumer;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.utils.Utils;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.CommonErrorHandler;
 import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.listener.MessageListenerContainer;
 import org.springframework.kafka.support.serializer.DeserializationException;
 import org.springframework.messaging.converter.MessageConversionException;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 
 import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
@@ -140,13 +150,19 @@ class OrchestratorKafkaKeyAndIdempotencyTest {
         verify(realtimeKafkaTemplate).send("workflow-events", "42", realtime);
         verify(taskEventKafkaTemplate).send("task-execution-events", "42", taskEvt);
 
-        // Null guards must avoid invoking KafkaTemplate
+        // Null and unkeyed guards must avoid invoking KafkaTemplate
         requestProducer.publishExecutionRequest(null);
+        requestProducer.publishExecutionRequest(WorkflowExecutionRequestEvent.builder().workflowName("NoId").build());
         cancelProducer.publishWorkflowCancelled(null);
+        cancelProducer.publishWorkflowCancelled(WorkflowCancelledEvent.builder().workflowName("NoId").build());
         pauseProducer.publishWorkflowPaused(null);
+        pauseProducer.publishWorkflowPaused(WorkflowPausedEvent.builder().workflowName("NoId").build());
         resumeProducer.publishWorkflowResumed(null);
+        resumeProducer.publishWorkflowResumed(WorkflowResumedEvent.builder().workflowName("NoId").build());
         createdProducer.publishWorkflowCreatedEvent(null);
+        createdProducer.publishWorkflowCreatedEvent(WorkflowCreatedEvent.builder().workflowName("NoId").build());
         realtimeProducer.publishWorkflowEvent(null);
+        realtimeProducer.publishWorkflowEvent(WorkflowRealtimeEvent.builder().workflowName("NoId").build());
         taskProducer.publishTaskEvent(null);
         verifyNoMoreInteractions(requestKafkaTemplate, objectKafkaTemplate, createdKafkaTemplate, realtimeKafkaTemplate, taskEventKafkaTemplate);
     }
@@ -349,12 +365,207 @@ class OrchestratorKafkaKeyAndIdempotencyTest {
     }
 
     @Test
-    @DisplayName("KafkaReliabilityConfig configures DefaultErrorHandler with non-retryable poison exceptions")
+    @DisplayName("TaskEventConsumer allows retried generation transitions and blocks stale previous-generation events")
+    void taskEventConsumerSupportsRetryAcrossGenerationsAndBlocksStaleEvents() {
+        TaskEventConsumer consumer = new TaskEventConsumer(
+                messagingTemplate, executionEventRepository, workflowExecutionRepository);
+
+        WorkflowExecution activeExec = WorkflowExecution.builder()
+                .id(10L)
+                .status(WorkflowStatus.RUNNING)
+                .executionGeneration(1L)
+                .build();
+        when(workflowExecutionRepository.findFirstByWorkflowIdOrderByStartedAtDesc(21L))
+                .thenReturn(Optional.of(activeExec));
+        when(executionEventRepository.existsByWorkflowIdAndEventId(anyLong(), anyString())).thenReturn(false);
+
+        // Generation 1 ends COMPLETED
+        ExecutionEvent gen1Completed = ExecutionEvent.builder()
+                .id(100L).workflowId(21L).taskId(301L).taskName("Analyze").status("COMPLETED").generation(1L).build();
+        when(executionEventRepository.findFirstByWorkflowIdAndTaskIdOrderByIdDesc(21L, 301L))
+                .thenReturn(Optional.of(gen1Completed));
+
+        // After retryWorkflow, active generation becomes 2 -> gen=2 RUNNING and COMPLETED MUST be accepted
+        activeExec.setExecutionGeneration(2L);
+        TaskExecutionEvent gen2Running = TaskExecutionEvent.builder()
+                .workflowId(21L).taskId(301L).taskName("Analyze").status("RUNNING")
+                .generation(2L).eventId("wf:21:gen:2:task:301:RUNNING").build();
+        consumer.consume(gen2Running);
+        verify(executionEventRepository, times(1)).save(argThat(evt ->
+                Long.valueOf(2L).equals(evt.getGeneration()) && "RUNNING".equals(evt.getStatus())));
+
+        ExecutionEvent gen2RunningSaved = ExecutionEvent.builder()
+                .id(101L).workflowId(21L).taskId(301L).taskName("Analyze").status("RUNNING").generation(2L).build();
+        when(executionEventRepository.findFirstByWorkflowIdAndTaskIdOrderByIdDesc(21L, 301L))
+                .thenReturn(Optional.of(gen2RunningSaved));
+
+        TaskExecutionEvent gen2Completed = TaskExecutionEvent.builder()
+                .workflowId(21L).taskId(301L).taskName("Analyze").status("COMPLETED")
+                .generation(2L).eventId("wf:21:gen:2:task:301:COMPLETED").build();
+        consumer.consume(gen2Completed);
+        verify(executionEventRepository, times(1)).save(argThat(evt ->
+                Long.valueOf(2L).equals(evt.getGeneration()) && "COMPLETED".equals(evt.getStatus())));
+
+        // Stale gen=1 event arriving late during gen=2 must be suppressed without saving
+        TaskExecutionEvent staleGen1Failed = TaskExecutionEvent.builder()
+                .workflowId(21L).taskId(301L).taskName("Analyze").status("FAILED")
+                .generation(1L).eventId("wf:21:gen:1:task:301:FAILED").build();
+        consumer.consume(staleGen1Failed);
+        verify(executionEventRepository, times(2)).save(any(ExecutionEvent.class));
+    }
+
+    @Test
+    @DisplayName("TaskEventConsumer deduplicates by eventId, blocks post-FAILED regression, and avoids taskId-null conflation")
+    void taskEventConsumerDeduplicatesByEventIdBlocksPostFailedAndAvoidsNullTaskIdConflation() {
+        TaskEventConsumer consumer = new TaskEventConsumer(
+                messagingTemplate, executionEventRepository, workflowExecutionRepository);
+        when(workflowExecutionRepository.findFirstByWorkflowIdOrderByStartedAtDesc(22L))
+                .thenReturn(Optional.empty());
+
+        // 1. Duplicate eventId suppressed immediately
+        TaskExecutionEvent dupById = TaskExecutionEvent.builder()
+                .workflowId(22L).taskId(401L).taskName("Build").status("RUNNING")
+                .generation(1L).eventId("evt-dup-1").build();
+        when(executionEventRepository.existsByWorkflowIdAndEventId(22L, "evt-dup-1")).thenReturn(true);
+        consumer.consume(dupById);
+        verify(executionEventRepository, never()).save(any());
+
+        // 2. FAILED terminal status within same generation blocks late RUNNING regression
+        ExecutionEvent failedGen1 = ExecutionEvent.builder()
+                .id(200L).workflowId(22L).taskId(401L).taskName("Build").status("FAILED").generation(1L).build();
+        when(executionEventRepository.findFirstByWorkflowIdAndTaskIdOrderByIdDesc(22L, 401L))
+                .thenReturn(Optional.of(failedGen1));
+        consumer.consume(TaskExecutionEvent.builder()
+                .workflowId(22L).taskId(401L).taskName("Build").status("RUNNING")
+                .generation(1L).eventId("evt-late-run").build());
+        verify(executionEventRepository, never()).save(any());
+
+        // 3. taskId == null uses taskIdIsNull lookup so it does not conflate with taskId != null rows
+        when(executionEventRepository.findFirstByWorkflowIdAndTaskIdIsNullAndTaskNameOrderByIdDesc(22L, "Build"))
+                .thenReturn(Optional.empty());
+        consumer.consume(TaskExecutionEvent.builder()
+                .workflowId(22L).taskId(null).taskName("Build").status("RUNNING")
+                .generation(1L).eventId("evt-null-taskid").build());
+        verify(executionEventRepository, times(1)).save(any());
+        verify(executionEventRepository).findFirstByWorkflowIdAndTaskIdIsNullAndTaskNameOrderByIdDesc(22L, "Build");
+
+        // 4. Malformed event with both taskId == null and blank taskName is ignored
+        consumer.consume(TaskExecutionEvent.builder()
+                .workflowId(22L).taskId(null).taskName("   ").status("RUNNING").build());
+        verify(executionEventRepository, times(1)).save(any());
+    }
+
+    @Test
+    @DisplayName("WorkflowService synchronizes generation across start, resume, and retry and blocks late pre-resume pause events")
+    void workflowServiceSynchronizesGenerationAcrossStartResumeAndRetryAndBlocksLatePause() {
+        ExecutionRequestProducer execReqProducer = mock(ExecutionRequestProducer.class);
+        WorkflowService service = new WorkflowService(
+                workflowRepository,
+                mock(KafkaProducer.class),
+                mock(WorkflowEventPublisher.class),
+                workflowTaskRepository,
+                mock(WorkflowExecutionEngine.class),
+                execReqProducer,
+                workflowExecutionRepository,
+                mock(WorkflowCancellationProducer.class),
+                mock(WorkflowPauseProducer.class),
+                mock(WorkflowResumeProducer.class)
+        );
+
+        // 1. startWorkflow initializes executionGeneration=1L on WorkflowExecution and WorkflowExecutionRequestEvent
+        Workflow wfCreated = Workflow.builder()
+                .id(60L).name("GenSyncWF").status(WorkflowStatus.CREATED).userId(100L).build();
+        AtomicReference<WorkflowExecution> latestExecution = new AtomicReference<>();
+        when(workflowRepository.findByIdAndUserIdForUpdate(60L, 100L)).thenReturn(Optional.of(wfCreated));
+        when(workflowRepository.save(any(Workflow.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(workflowTaskRepository.findByWorkflowIdOrderByExecutionOrder(60L)).thenReturn(List.of(
+                WorkflowTask.builder().id(601L).name("Step 1").executionOrder(1).maxRetries(0).status(TaskStatus.PENDING).workflow(wfCreated).build(),
+                WorkflowTask.builder().id(602L).name("Step 2").executionOrder(2).maxRetries(0).status(TaskStatus.PENDING).workflow(wfCreated).build()
+        ));
+        when(workflowExecutionRepository.save(any(WorkflowExecution.class))).thenAnswer(inv -> {
+            WorkflowExecution exec = inv.getArgument(0);
+            if (exec.getId() == null) {
+                exec.setId(500L);
+            }
+            latestExecution.set(exec);
+            return exec;
+        });
+
+        service.startWorkflow(60L, 100L);
+
+        assertThat(latestExecution.get().getExecutionGeneration()).isEqualTo(1L);
+        ArgumentCaptor<WorkflowExecutionRequestEvent> reqCaptor = ArgumentCaptor.forClass(WorkflowExecutionRequestEvent.class);
+        verify(execReqProducer).publishExecutionRequest(reqCaptor.capture());
+        assertThat(reqCaptor.getValue().getGeneration()).isEqualTo(1L);
+        assertThat(reqCaptor.getValue().getResume()).isFalse();
+
+        // 2. resumeWorkflow bumps generation 1 -> 2 and blocks late gen=1 WorkflowExecutionPausedEvent
+        wfCreated.setStatus(WorkflowStatus.PAUSED);
+        latestExecution.get().setStatus(WorkflowStatus.PAUSED);
+        latestExecution.get().setLastCompletedExecutionOrder(1);
+        when(workflowExecutionRepository.findFirstByWorkflowIdOrderByStartedAtDesc(60L))
+                .thenAnswer(inv -> Optional.ofNullable(latestExecution.get()));
+
+        service.resumeWorkflow(60L, 100L);
+
+        assertThat(latestExecution.get().getExecutionGeneration()).isEqualTo(2L);
+        assertThat(latestExecution.get().getStatus()).isEqualTo(WorkflowStatus.RUNNING);
+        verify(execReqProducer, times(2)).publishExecutionRequest(reqCaptor.capture());
+        assertThat(reqCaptor.getValue().getGeneration()).isEqualTo(2L);
+        assertThat(reqCaptor.getValue().getResume()).isTrue();
+
+        ExecutionEventConsumer executionEventConsumer = new ExecutionEventConsumer(
+                workflowRepository, workflowTaskRepository, workflowExecutionRepository);
+        executionEventConsumer.consumeWorkflowExecutionPaused(WorkflowExecutionPausedEvent.builder()
+                .workflowId(60L).workflowName("GenSyncWF").lastCompletedExecutionOrder(1).generation(1L).build());
+        assertThat(latestExecution.get().getStatus()).isEqualTo(WorkflowStatus.RUNNING);
+        assertThat(latestExecution.get().getExecutionGeneration()).isEqualTo(2L);
+
+        // 3. retryWorkflow bumps generation even if prior execution recorded null generation
+        wfCreated.setStatus(WorkflowStatus.FAILED);
+        latestExecution.get().setExecutionGeneration(null);
+        service.retryWorkflow(60L, 100L);
+        assertThat(latestExecution.get().getExecutionGeneration()).isEqualTo(2L);
+        verify(execReqProducer, times(3)).publishExecutionRequest(reqCaptor.capture());
+        assertThat(reqCaptor.getValue().getGeneration()).isEqualTo(2L);
+        assertThat(reqCaptor.getValue().getResume()).isFalse();
+    }
+
+    @Test
+    @DisplayName("KafkaReliabilityConfig retries IllegalArgumentException, forwards poison records to DLT, and commits recovered")
     void kafkaReliabilityConfigProvidesDefaultErrorHandler() {
-        KafkaReliabilityConfig config = new KafkaReliabilityConfig();
-        CommonErrorHandler handler = config.kafkaCommonErrorHandler(500L, 3L);
+        @SuppressWarnings("unchecked")
+        ObjectProvider<KafkaTemplate<?, ?>> provider = mock(ObjectProvider.class);
+        doReturn(objectKafkaTemplate).when(provider).getIfAvailable();
+
+        KafkaReliabilityConfig config = new KafkaReliabilityConfig(provider);
+        CommonErrorHandler handler = config.kafkaCommonErrorHandler(0L, 1L);
         assertThat(handler).isInstanceOf(DefaultErrorHandler.class);
         assertThat(DeserializationException.class).isNotNull();
         assertThat(MessageConversionException.class).isNotNull();
+
+        Consumer<?, ?> consumerMock = mock(Consumer.class);
+        MessageListenerContainer containerMock = mock(MessageListenerContainer.class);
+        ConsumerRecord<String, Object> record = new ConsumerRecord<>("task-started", 0, 10L, "42", null);
+
+        // IllegalArgumentException must be retried on attempt 1 rather than skipping directly to DLT
+        try {
+            handler.handleOne(new IllegalArgumentException("transient error"), record, consumerMock, containerMock);
+        } catch (Exception ignored) {
+        }
+        verifyNoInteractions(objectKafkaTemplate);
+
+        // Poison DeserializationException skips retries and forwards immediately to task-started.DLT
+        DeserializationException deserEx = new DeserializationException(
+                "bad payload", "{bad".getBytes(StandardCharsets.UTF_8), false, new RuntimeException("parse"));
+        handler.handleOne(new RuntimeException(deserEx), record, consumerMock, containerMock);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> dltCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(objectKafkaTemplate).send(eq("task-started.DLT"), eq("42"), dltCaptor.capture());
+        assertThat(dltCaptor.getValue())
+                .containsEntry("originalTopic", "task-started")
+                .containsEntry("key", "42")
+                .containsEntry("rawPayload", "{bad");
     }
 }
