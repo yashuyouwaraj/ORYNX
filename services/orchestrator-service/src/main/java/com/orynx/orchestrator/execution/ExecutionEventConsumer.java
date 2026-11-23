@@ -5,28 +5,52 @@ import com.orynx.orchestrator.execution.event.TaskCompletedEvent;
 import com.orynx.orchestrator.execution.event.TaskStartedEvent;
 import com.orynx.orchestrator.execution.event.WorkflowCompletedEvent;
 import com.orynx.orchestrator.workflow.Workflow;
+import com.orynx.orchestrator.workflow.WorkflowEventPublisher;
 import com.orynx.orchestrator.workflow.WorkflowRepository;
 import com.orynx.orchestrator.workflow.WorkflowStateValidator;
 import com.orynx.orchestrator.workflow.WorkflowStatus;
+import com.orynx.orchestrator.workflow.event.WorkflowExecutionEvent;
 import com.orynx.orchestrator.workflow.task.TaskStatus;
 import com.orynx.orchestrator.workflow.task.WorkflowTask;
 import com.orynx.orchestrator.workflow.task.WorkflowTaskRepository;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 
 @Component
 @Slf4j
-@RequiredArgsConstructor
 public class ExecutionEventConsumer {
     private final WorkflowRepository workflowRepository;
     private final WorkflowTaskRepository workflowTaskRepository;
     private final WorkflowExecutionRepository workflowExecutionRepository;
+    private final WorkflowEventPublisher workflowEventPublisher;
+
+    public ExecutionEventConsumer(
+            WorkflowRepository workflowRepository,
+            WorkflowTaskRepository workflowTaskRepository,
+            WorkflowExecutionRepository workflowExecutionRepository
+    ) {
+        this(workflowRepository, workflowTaskRepository, workflowExecutionRepository, null);
+    }
+
+    @Autowired
+    public ExecutionEventConsumer(
+            WorkflowRepository workflowRepository,
+            WorkflowTaskRepository workflowTaskRepository,
+            WorkflowExecutionRepository workflowExecutionRepository,
+            WorkflowEventPublisher workflowEventPublisher
+    ) {
+        this.workflowRepository = workflowRepository;
+        this.workflowTaskRepository = workflowTaskRepository;
+        this.workflowExecutionRepository = workflowExecutionRepository;
+        this.workflowEventPublisher = workflowEventPublisher;
+    }
 
     @KafkaListener(
             topics = "task-started",
@@ -357,6 +381,19 @@ public class ExecutionEventConsumer {
                 workflow.getName(),
                 workflow.getStatus()
         );
+
+        if (workflowEventPublisher != null) {
+            Long gen = executionOptional.map(WorkflowExecution::getExecutionGeneration).orElse(event.getGeneration());
+            workflowEventPublisher.publishWorkflowUpdate(WorkflowExecutionEvent.builder()
+                    .workflowId(workflow.getId())
+                    .workflowName(workflow.getName())
+                    .status(workflow.getStatus().name())
+                    .userId(workflow.getUserId())
+                    .generation(gen)
+                    .timestamp(System.currentTimeMillis())
+                    .eventId(UUID.randomUUID().toString())
+                    .build());
+        }
     }
 
     @KafkaListener(

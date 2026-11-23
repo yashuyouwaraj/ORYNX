@@ -92,6 +92,7 @@ public class WorkflowService {
                 .workflowId(savedWorkflow.getId())
                 .workflowName(savedWorkflow.getName())
                 .status(savedWorkflow.getStatus().name())
+                .userId(savedWorkflow.getUserId())
                 .build();
 
         workflowEventPublisher.publishWorkflowUpdate(executionEvent);
@@ -185,6 +186,8 @@ public class WorkflowService {
                 .workflowId(updatedWorkflow.getId())
                 .workflowName(updatedWorkflow.getName())
                 .status(updatedWorkflow.getStatus().name())
+                .userId(updatedWorkflow.getUserId())
+                .generation(1L)
                 .build();
 
         workflowEventPublisher.publishWorkflowUpdate(event);
@@ -558,6 +561,7 @@ public class WorkflowService {
                 .workflowId(updatedWorkflow.getId())
                 .workflowName(updatedWorkflow.getName())
                 .status(updatedWorkflow.getStatus().name())
+                .userId(updatedWorkflow.getUserId())
                 .build();
 
         workflowEventPublisher.publishWorkflowUpdate(event);
@@ -604,6 +608,7 @@ public class WorkflowService {
                 .workflowId(updatedWorkflow.getId())
                 .workflowName(updatedWorkflow.getName())
                 .status(updatedWorkflow.getStatus().name())
+                .userId(updatedWorkflow.getUserId())
                 .build();
 
         workflowEventPublisher.publishWorkflowUpdate(event);
@@ -716,6 +721,8 @@ public class WorkflowService {
                 .workflowId(updatedWorkflow.getId())
                 .workflowName(updatedWorkflow.getName())
                 .status(updatedWorkflow.getStatus().name())
+                .userId(updatedWorkflow.getUserId())
+                .generation(nextExecutionGeneration)
                 .build();
 
         workflowEventPublisher.publishWorkflowUpdate(event);
@@ -817,6 +824,8 @@ public class WorkflowService {
                 .workflowId(updatedWorkflow.getId())
                 .workflowName(updatedWorkflow.getName())
                 .status(updatedWorkflow.getStatus().name())
+                .userId(updatedWorkflow.getUserId())
+                .generation(nextExecutionGeneration)
                 .build();
 
         workflowEventPublisher.publishWorkflowUpdate(event);

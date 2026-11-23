@@ -2,6 +2,8 @@ package com.orynx.orchestrator.workflow.task;
 
 import com.orynx.orchestrator.execution.WorkflowExecution;
 import com.orynx.orchestrator.execution.WorkflowExecutionRepository;
+import com.orynx.orchestrator.workflow.Workflow;
+import com.orynx.orchestrator.workflow.WorkflowRepository;
 import com.orynx.orchestrator.workflow.WorkflowStatus;
 import com.orynx.orchestrator.workflow.event.ExecutionEvent;
 import com.orynx.orchestrator.workflow.event.ExecutionEventRepository;
@@ -23,23 +25,34 @@ public class TaskEventConsumer {
     private final SimpMessagingTemplate messagingTemplate;
     private final ExecutionEventRepository executionEventRepository;
     private final WorkflowExecutionRepository workflowExecutionRepository;
+    private final WorkflowRepository workflowRepository;
 
     public TaskEventConsumer(
             SimpMessagingTemplate messagingTemplate,
             ExecutionEventRepository executionEventRepository
     ) {
-        this(messagingTemplate, executionEventRepository, null);
+        this(messagingTemplate, executionEventRepository, null, null);
+    }
+
+    public TaskEventConsumer(
+            SimpMessagingTemplate messagingTemplate,
+            ExecutionEventRepository executionEventRepository,
+            WorkflowExecutionRepository workflowExecutionRepository
+    ) {
+        this(messagingTemplate, executionEventRepository, workflowExecutionRepository, null);
     }
 
     @Autowired
     public TaskEventConsumer(
             SimpMessagingTemplate messagingTemplate,
             ExecutionEventRepository executionEventRepository,
-            WorkflowExecutionRepository workflowExecutionRepository
+            WorkflowExecutionRepository workflowExecutionRepository,
+            WorkflowRepository workflowRepository
     ) {
         this.messagingTemplate = messagingTemplate;
         this.executionEventRepository = executionEventRepository;
         this.workflowExecutionRepository = workflowExecutionRepository;
+        this.workflowRepository = workflowRepository;
     }
 
     @KafkaListener(
@@ -130,9 +143,22 @@ public class TaskEventConsumer {
 
         executionEventRepository.save(executionEvent);
 
+        event.setGeneration(effectiveGen);
+        event.setTimestamp(executionEvent.getTimestamp());
+
         messagingTemplate.convertAndSend(
-                "/topic/tasks",
+                "/topic/workflows/" + event.getWorkflowId() + "/tasks",
                 event
         );
+
+        if (workflowRepository != null) {
+            workflowRepository.findById(event.getWorkflowId())
+                    .map(Workflow::getUserId)
+                    .ifPresent(userId -> messagingTemplate.convertAndSendToUser(
+                            String.valueOf(userId),
+                            "/queue/tasks",
+                            event
+                    ));
+        }
     }
 }

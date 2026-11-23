@@ -14,4 +14,5 @@ public class TaskExecutionEvent {
     private String status;
     private Long generation;
     private String eventId;
+    private Long timestamp;
 }
