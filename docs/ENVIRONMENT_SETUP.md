@@ -120,7 +120,24 @@ To persist permanently, add the export statements above to your `~/.bashrc` or `
 
 ---
 
-## 7. Security Guardrails
+## 7. Real-Time WebSocket Task Progress (Step 19)
+
+- **Transport & Gateway Routing**: `orchestrator-service` exposes a STOMP-over-SockJS endpoint at `/ws` (`WebSocketConfig`), proxied through `gateway-service` route `orchestrator-websocket` (`Path=/ws/**,/ws`). Allowed browser origins are restricted via `orynx.websocket.allowed-origins` (`WEBSOCKET_ALLOWED_ORIGINS`, defaulting to `http://localhost:3000,http://127.0.0.1:3000`).
+- **Authentication & Subscription Authorization**:
+  - `JwtAuthenticationFilter` (`gateway-service`) strips any client-supplied `X-User-Id` / `X-User-Email` headers on `/ws` and `/ws/**`.
+  - `WebSocketAuthChannelInterceptor` (`orchestrator-service`) validates the `Authorization: Bearer <jwt>` native STOMP header on `CONNECT` using `OrchestratorJwtService`, binding a `WebSocketPrincipal` keyed by `userId`.
+  - On `SUBSCRIBE` and `SEND`, expired or unauthenticated sessions are rejected. Global broadcast subscriptions (`/topic/workflows`, `/topic/tasks`) are blocked. Clients may subscribe only to their own user queues (`/user/queue/workflows`, `/user/queue/tasks`) or to `/topic/workflows/{workflowId}` and `/topic/workflows/{workflowId}/tasks` after verifying `workflowRepository.findByIdAndUserId(workflowId, userId)`.
+- **Event Contracts & Reliability**:
+  - `WorkflowExecutionEvent`: `{ workflowId, workflowName, status, generation, timestamp, eventId }` (published on workflow create, start, cancel, pause, resume, retry, and completion/failure).
+  - `TaskExecutionEvent`: `{ workflowId, taskId, taskName, status, generation, eventId, timestamp }` (published after Kafka deduplication and generation-fenced persistence in `TaskEventConsumer`).
+  - WebSocket delivery is a **supplementary** real-time channel; PostgreSQL remains the source of truth. The frontend (`frontend/src/services/websocket.ts`) deduplicates by `eventId`, drops stale `generation` events, cleans up subscriptions on unmount, and re-fetches authoritative REST state on reconnect.
+- **Known Limitations**:
+  - In-memory simple STOMP broker (`/topic`, `/queue`) is single-instance; horizontal multi-replica `orchestrator-service` deployments would require an external STOMP relay (e.g. RabbitMQ) or Redis pub/sub fan-out.
+  - Because WebSocket messages are sent after Kafka consumer/service processing without a transactional outbox, a process crash between DB commit and WebSocket send is recovered by client REST re-sync on reconnect.
+
+---
+
+## 8. Security Guardrails
 - **NEVER** commit `.env` or any file containing real passwords or keys to Git.
 - Root `.gitignore` automatically ignores `.env`, `.env.*`, and `*.env`.
 - Any missing required variable will cause services to fail fast on startup with an explicit placeholder resolution error.
