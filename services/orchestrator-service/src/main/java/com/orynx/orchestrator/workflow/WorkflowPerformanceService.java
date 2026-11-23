@@ -1,5 +1,7 @@
 package com.orynx.orchestrator.workflow;
 
+import com.orynx.orchestrator.common.exception.UnauthorizedException;
+import com.orynx.orchestrator.common.security.UserContext;
 import com.orynx.orchestrator.common.util.PaginationUtils;
 import com.orynx.orchestrator.workflow.dto.WorkflowHealthResponse;
 import com.orynx.orchestrator.workflow.dto.WorkflowPerformanceResponse;
@@ -16,7 +18,15 @@ public class WorkflowPerformanceService {
     private final WorkflowRepository workflowRepository;
 
     public List<WorkflowPerformanceResponse> getWorkflowPerformance() {
-        return workflowRepository.findCompletedWorkflowsOrderByDurationAsc(
+        return getWorkflowPerformance(requireUserId());
+    }
+
+    public List<WorkflowPerformanceResponse> getWorkflowPerformance(Long userId) {
+        if (userId == null) {
+            throw new UnauthorizedException("Authenticated user context is required");
+        }
+        return workflowRepository.findCompletedWorkflowsByUserIdOrderByDurationAsc(
+                        userId,
                         PageRequest.of(0, PaginationUtils.MAX_PAGE_SIZE))
                 .stream()
                 .map(workflow -> WorkflowPerformanceResponse.builder()
@@ -27,7 +37,14 @@ public class WorkflowPerformanceService {
     }
 
     public WorkflowPerformanceSummaryResponse getPerformanceSummary() {
-        List<Object[]> aggregates = workflowRepository.findCompletedWorkflowDurationAggregates();
+        return getPerformanceSummary(requireUserId());
+    }
+
+    public WorkflowPerformanceSummaryResponse getPerformanceSummary(Long userId) {
+        if (userId == null) {
+            throw new UnauthorizedException("Authenticated user context is required");
+        }
+        List<Object[]> aggregates = workflowRepository.findCompletedWorkflowDurationAggregatesByUserId(userId);
         if (aggregates == null || aggregates.isEmpty() || aggregates.get(0) == null) {
             return WorkflowPerformanceSummaryResponse.builder().build();
         }
@@ -41,9 +58,11 @@ public class WorkflowPerformanceService {
         long slowestDuration = row[2] instanceof Number n ? n.longValue() : 0L;
         double average = row[3] instanceof Number n ? n.doubleValue() : 0.0;
 
-        String fastestName = workflowRepository.findCompletedWorkflowsOrderByDurationAsc(PageRequest.of(0, 1))
+        String fastestName = workflowRepository.findCompletedWorkflowsByUserIdOrderByDurationAsc(
+                        userId, PageRequest.of(0, 1))
                 .stream().findFirst().map(Workflow::getName).orElse(null);
-        String slowestName = workflowRepository.findCompletedWorkflowsOrderByDurationDesc(PageRequest.of(0, 1))
+        String slowestName = workflowRepository.findCompletedWorkflowsByUserIdOrderByDurationDesc(
+                        userId, PageRequest.of(0, 1))
                 .stream().findFirst().map(Workflow::getName).orElse(null);
 
         return WorkflowPerformanceSummaryResponse.builder()
@@ -57,7 +76,14 @@ public class WorkflowPerformanceService {
     }
 
     public List<WorkflowHealthResponse> getWorkflowHealth() {
-        List<Object[]> aggregates = workflowRepository.findCompletedWorkflowDurationAggregates();
+        return getWorkflowHealth(requireUserId());
+    }
+
+    public List<WorkflowHealthResponse> getWorkflowHealth(Long userId) {
+        if (userId == null) {
+            throw new UnauthorizedException("Authenticated user context is required");
+        }
+        List<Object[]> aggregates = workflowRepository.findCompletedWorkflowDurationAggregatesByUserId(userId);
         if (aggregates == null || aggregates.isEmpty() || aggregates.get(0) == null) {
             return List.of();
         }
@@ -68,7 +94,8 @@ public class WorkflowPerformanceService {
         }
         double average = row[3] instanceof Number n ? n.doubleValue() : 0.0;
 
-        List<Workflow> completed = workflowRepository.findCompletedWorkflowsOrderByDurationAsc(
+        List<Workflow> completed = workflowRepository.findCompletedWorkflowsByUserIdOrderByDurationAsc(
+                userId,
                 PageRequest.of(0, PaginationUtils.MAX_PAGE_SIZE));
 
         if (completed.isEmpty()) {
@@ -101,5 +128,13 @@ public class WorkflowPerformanceService {
                             .build();
                 })
                 .toList();
+    }
+
+    private Long requireUserId() {
+        Long userId = UserContext.getUserId();
+        if (userId == null) {
+            throw new UnauthorizedException("Authenticated user context is required");
+        }
+        return userId;
     }
 }

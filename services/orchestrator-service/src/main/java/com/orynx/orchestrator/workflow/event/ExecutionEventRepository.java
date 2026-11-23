@@ -3,6 +3,8 @@ package com.orynx.orchestrator.workflow.event;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -21,4 +23,7 @@ public interface ExecutionEventRepository extends JpaRepository<ExecutionEvent, 
     Optional<ExecutionEvent> findFirstByWorkflowIdAndTaskNameOrderByIdDesc(Long workflowId, String taskName);
 
     boolean existsByWorkflowIdAndEventId(Long workflowId, String eventId);
+
+    @Query("SELECT COUNT(e) FROM ExecutionEvent e, Workflow w WHERE e.workflowId = w.id AND w.userId = :userId")
+    long countByWorkflowUserId(@Param("userId") Long userId);
 }

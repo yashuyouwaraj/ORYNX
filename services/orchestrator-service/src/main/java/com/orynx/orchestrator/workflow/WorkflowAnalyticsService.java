@@ -1,5 +1,7 @@
 package com.orynx.orchestrator.workflow;
 
+import com.orynx.orchestrator.common.exception.UnauthorizedException;
+import com.orynx.orchestrator.common.security.UserContext;
 import com.orynx.orchestrator.workflow.dto.WorkflowAnalyticsResponse;
 import com.orynx.orchestrator.workflow.event.ExecutionEventRepository;
 import com.orynx.orchestrator.workflow.task.TaskStatus;
@@ -19,10 +21,18 @@ public class WorkflowAnalyticsService {
     private final WorkflowTaskRepository workflowTaskRepository;
 
     public WorkflowAnalyticsResponse getAnalytics() {
-        long eventCount = executionEventRepository.count();
+        return getAnalytics(requireUserId());
+    }
+
+    public WorkflowAnalyticsResponse getAnalytics(Long userId) {
+        if (userId == null) {
+            throw new UnauthorizedException("Authenticated user context is required");
+        }
+
+        long eventCount = executionEventRepository.countByWorkflowUserId(userId);
 
         Map<WorkflowStatus, Long> counts = new EnumMap<>(WorkflowStatus.class);
-        List<Object[]> grouped = workflowRepository.countGroupedByStatus();
+        List<Object[]> grouped = workflowRepository.countGroupedByStatusByUserId(userId);
         long totalWorkflows = 0L;
         if (grouped != null) {
             for (Object[] row : grouped) {
@@ -45,9 +55,9 @@ public class WorkflowAnalyticsService {
             failureRate = ((double) failedWorkflows / totalWorkflows) * 100;
         }
 
-        long totalTasks = workflowTaskRepository.count();
-        long executedTaskCount = workflowTaskRepository.countByStatus(TaskStatus.COMPLETED);
-        Double avgDuration = workflowTaskRepository.findAverageCompletedDurationMs();
+        long totalTasks = workflowTaskRepository.countByWorkflowUserId(userId);
+        long executedTaskCount = workflowTaskRepository.countByWorkflowUserIdAndStatus(userId, TaskStatus.COMPLETED);
+        Double avgDuration = workflowTaskRepository.findAverageCompletedDurationMsByUserId(userId);
         double averageExecutionTime = avgDuration != null ? avgDuration : 0;
 
         return WorkflowAnalyticsResponse.builder()
@@ -61,5 +71,13 @@ public class WorkflowAnalyticsService {
                 .executedTaskCount(executedTaskCount)
                 .eventCount(eventCount)
                 .build();
+    }
+
+    private Long requireUserId() {
+        Long userId = UserContext.getUserId();
+        if (userId == null) {
+            throw new UnauthorizedException("Authenticated user context is required");
+        }
+        return userId;
     }
 }

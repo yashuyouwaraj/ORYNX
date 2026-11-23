@@ -73,6 +73,15 @@ public interface WorkflowRepository extends JpaRepository<Workflow, Long> {
     @Query("SELECT COUNT(w), MIN(w.completedAt - w.startedAt), MAX(w.completedAt - w.startedAt), AVG(w.completedAt - w.startedAt) FROM Workflow w WHERE w.startedAt IS NOT NULL AND w.completedAt IS NOT NULL")
     List<Object[]> findCompletedWorkflowDurationAggregates();
 
+    @Query("SELECT w FROM Workflow w WHERE w.userId = :userId AND w.startedAt IS NOT NULL AND w.completedAt IS NOT NULL ORDER BY (w.completedAt - w.startedAt) ASC, w.id DESC")
+    List<Workflow> findCompletedWorkflowsByUserIdOrderByDurationAsc(@Param("userId") Long userId, Pageable pageable);
+
+    @Query("SELECT w FROM Workflow w WHERE w.userId = :userId AND w.startedAt IS NOT NULL AND w.completedAt IS NOT NULL ORDER BY (w.completedAt - w.startedAt) DESC, w.id DESC")
+    List<Workflow> findCompletedWorkflowsByUserIdOrderByDurationDesc(@Param("userId") Long userId, Pageable pageable);
+
+    @Query("SELECT COUNT(w), MIN(w.completedAt - w.startedAt), MAX(w.completedAt - w.startedAt), AVG(w.completedAt - w.startedAt) FROM Workflow w WHERE w.userId = :userId AND w.startedAt IS NOT NULL AND w.completedAt IS NOT NULL")
+    List<Object[]> findCompletedWorkflowDurationAggregatesByUserId(@Param("userId") Long userId);
+
     @Query("""
             SELECT w FROM Workflow w
             WHERE w.scheduled = true
