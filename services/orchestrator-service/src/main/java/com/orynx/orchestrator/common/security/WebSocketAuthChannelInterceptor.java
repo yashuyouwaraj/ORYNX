@@ -3,8 +3,8 @@ package com.orynx.orchestrator.common.security;
 import com.orynx.orchestrator.workflow.WorkflowRepository;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
 import org.springframework.messaging.MessageDeliveryException;
@@ -21,13 +21,12 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Enforces JWT authentication on STOMP CONNECT and workflow-ownership authorization
- * on STOMP SUBSCRIBE frames. Global broadcast topics (/topic/workflows, /topic/tasks)
- * are rejected so tenants can only subscribe to /user/queue/* or their own
- * /topic/workflows/{workflowId}[/tasks] channels.
+ * Enforces JWT authentication on STOMP CONNECT, workflow-ownership authorization
+ * on STOMP SUBSCRIBE, and unconditional rejection of client STOMP SEND frames.
+ * Global broadcast topics (/topic/workflows, /topic/tasks) are rejected so tenants
+ * can only subscribe to /user/queue/* or their own /topic/workflows/{workflowId}[/tasks].
  */
 @Component
-@RequiredArgsConstructor
 @Slf4j
 public class WebSocketAuthChannelInterceptor implements ChannelInterceptor {
 
@@ -36,6 +35,25 @@ public class WebSocketAuthChannelInterceptor implements ChannelInterceptor {
 
     private final OrchestratorJwtService jwtService;
     private final WorkflowRepository workflowRepository;
+    private final WebSocketSessionRegistry sessionRegistry;
+
+    public WebSocketAuthChannelInterceptor(
+            OrchestratorJwtService jwtService,
+            WorkflowRepository workflowRepository
+    ) {
+        this(jwtService, workflowRepository, null);
+    }
+
+    @Autowired
+    public WebSocketAuthChannelInterceptor(
+            OrchestratorJwtService jwtService,
+            WorkflowRepository workflowRepository,
+            WebSocketSessionRegistry sessionRegistry
+    ) {
+        this.jwtService = jwtService;
+        this.workflowRepository = workflowRepository;
+        this.sessionRegistry = sessionRegistry;
+    }
 
     @Override
     public Message<?> preSend(Message<?> message, MessageChannel channel) {
@@ -51,7 +69,10 @@ public class WebSocketAuthChannelInterceptor implements ChannelInterceptor {
         } else if (StompCommand.SUBSCRIBE.equals(command)) {
             authorizeSubscribe(accessor);
         } else if (StompCommand.SEND.equals(command)) {
-            requireValidPrincipal(accessor);
+            log.warn("Rejected client STOMP SEND to destination={}", accessor.getDestination());
+            throw new MessageDeliveryException("Client STOMP SEND is not permitted");
+        } else if (StompCommand.DISCONNECT.equals(command) && sessionRegistry != null) {
+            sessionRegistry.removeSession(accessor.getSessionId());
         }
 
         return message;
@@ -77,7 +98,11 @@ public class WebSocketAuthChannelInterceptor implements ChannelInterceptor {
             String email = claims.getSubject();
             Date exp = claims.getExpiration();
             Instant expiresAt = exp != null ? exp.toInstant() : null;
-            accessor.setUser(new WebSocketPrincipal(userId, email, expiresAt));
+            WebSocketPrincipal principal = new WebSocketPrincipal(userId, email, expiresAt);
+            accessor.setUser(principal);
+            if (sessionRegistry != null) {
+                sessionRegistry.registerPrincipal(accessor.getSessionId(), principal);
+            }
         } catch (JwtException | IllegalArgumentException ex) {
             log.warn("Rejected WebSocket CONNECT due to invalid/expired JWT: {}", ex.getMessage());
             throw new MessageDeliveryException("Invalid or expired WebSocket token");
@@ -122,6 +147,9 @@ public class WebSocketAuthChannelInterceptor implements ChannelInterceptor {
             throw new MessageDeliveryException("Unauthenticated WebSocket session");
         }
         if (principal.isExpired()) {
+            if (sessionRegistry != null) {
+                sessionRegistry.terminateSession(accessor.getSessionId());
+            }
             throw new MessageDeliveryException("WebSocket authentication expired");
         }
         return principal;
