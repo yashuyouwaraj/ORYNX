@@ -23,10 +23,14 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
 import org.springframework.messaging.MessageDeliveryException;
+import org.springframework.messaging.simp.SimpMessageHeaderAccessor;
+import org.springframework.messaging.simp.SimpMessageType;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.messaging.simp.stomp.StompCommand;
 import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
 import org.springframework.messaging.support.MessageBuilder;
+import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.WebSocketSession;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -238,5 +242,77 @@ class WebSocketSecurityAndProgressTest {
                         && "COMPLETED".equals(ev.getStatus())
                         && Long.valueOf(101L).equals(ev.getUserId())
                         && Long.valueOf(2L).equals(ev.getGeneration())));
+    }
+
+    @Test
+    @DisplayName("STOMP SEND is unconditionally rejected across /topic, /queue, /user, and /app destinations")
+    void sendIsUnconditionallyRejectedAcrossAllDestinations() {
+        WebSocketPrincipal user = new WebSocketPrincipal(101L, "a@orynx.io", Instant.now().plusSeconds(300));
+        for (String dest : new String[]{
+                "/topic/workflows/55",
+                "/topic/workflows/55/tasks",
+                "/app/anything",
+                "/queue/tasks",
+                "/user/queue/workflows"
+        }) {
+            assertThatThrownBy(() -> interceptor.preSend(
+                    stompMessage(StompCommand.SEND, null, dest, user), messageChannel))
+                    .isInstanceOf(MessageDeliveryException.class)
+                    .hasMessageContaining("Client STOMP SEND is not permitted");
+        }
+    }
+
+    @Test
+    @DisplayName("Outbound interceptor suppresses MESSAGE delivery and terminates expired sessions without affecting valid sessions")
+    void outboundInterceptorSuppressesAndTerminatesExpiredSessionsOnly() throws Exception {
+        WebSocketSessionRegistry registry = new WebSocketSessionRegistry();
+        WebSocketOutboundAuthChannelInterceptor outbound = new WebSocketOutboundAuthChannelInterceptor(registry);
+
+        WebSocketPrincipal validPrincipal = new WebSocketPrincipal(101L, "a@orynx.io", Instant.now().plusSeconds(300));
+        WebSocketPrincipal expiredPrincipal = new WebSocketPrincipal(101L, "a@orynx.io", Instant.now().minusSeconds(5));
+
+        WebSocketSession validWs = mock(WebSocketSession.class);
+        when(validWs.getId()).thenReturn("sess-valid");
+        WebSocketSession expiredWs = mock(WebSocketSession.class);
+        when(expiredWs.getId()).thenReturn("sess-expired");
+        when(expiredWs.isOpen()).thenReturn(true);
+
+        registry.registerTransportSession(validWs);
+        registry.registerTransportSession(expiredWs);
+        registry.registerPrincipal("sess-valid", validPrincipal);
+        registry.registerPrincipal("sess-expired", expiredPrincipal);
+
+        // Build outbound MESSAGE for valid session (topic and user-queue)
+        SimpMessageHeaderAccessor validTopicAcc = SimpMessageHeaderAccessor.create(SimpMessageType.MESSAGE);
+        validTopicAcc.setSessionId("sess-valid");
+        validTopicAcc.setDestination("/topic/workflows/55");
+        Message<byte[]> validTopicMsg = MessageBuilder.createMessage(new byte[]{1}, validTopicAcc.getMessageHeaders());
+        assertThat(outbound.preSend(validTopicMsg, messageChannel)).isNotNull();
+
+        // Build outbound MESSAGE for expired session (topic and user-queue)
+        SimpMessageHeaderAccessor expiredTopicAcc = SimpMessageHeaderAccessor.create(SimpMessageType.MESSAGE);
+        expiredTopicAcc.setSessionId("sess-expired");
+        expiredTopicAcc.setDestination("/topic/workflows/55");
+        Message<byte[]> expiredTopicMsg = MessageBuilder.createMessage(new byte[]{1}, expiredTopicAcc.getMessageHeaders());
+        assertThat(outbound.preSend(expiredTopicMsg, messageChannel)).isNull();
+
+        verify(expiredWs).close(CloseStatus.POLICY_VIOLATION);
+        assertThat(registry.getPrincipal("sess-expired")).isNull();
+
+        // Valid session for the exact same user continues receiving messages unaffected
+        SimpMessageHeaderAccessor validUserAcc = SimpMessageHeaderAccessor.create(SimpMessageType.MESSAGE);
+        validUserAcc.setSessionId("sess-valid");
+        validUserAcc.setDestination("/user/queue/workflows");
+        Message<byte[]> validUserMsg = MessageBuilder.createMessage(new byte[]{1}, validUserAcc.getMessageHeaders());
+        assertThat(outbound.preSend(validUserMsg, messageChannel)).isNotNull();
+        verify(validWs, never()).close(any());
+
+        // Expired user-queue message without open transport is also suppressed
+        registry.registerPrincipal("sess-expired-2", expiredPrincipal);
+        SimpMessageHeaderAccessor expiredUserAcc = SimpMessageHeaderAccessor.create(SimpMessageType.MESSAGE);
+        expiredUserAcc.setSessionId("sess-expired-2");
+        expiredUserAcc.setDestination("/user/queue/workflows");
+        Message<byte[]> expiredUserMsg = MessageBuilder.createMessage(new byte[]{1}, expiredUserAcc.getMessageHeaders());
+        assertThat(outbound.preSend(expiredUserMsg, messageChannel)).isNull();
     }
 }

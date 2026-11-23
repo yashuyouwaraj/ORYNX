@@ -24,11 +24,14 @@ import org.springframework.web.socket.sockjs.client.WebSocketTransport;
 
 import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.Date;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -52,12 +55,19 @@ class WebSocketStompIntegrationTest {
     @Autowired
     private WorkflowEventPublisher workflowEventPublisher;
 
+    @Autowired
+    private WebSocketSessionRegistry webSocketSessionRegistry;
+
     private String generateToken(long userId) {
+        return generateTokenWithTtl(userId, 3600000L);
+    }
+
+    private String generateTokenWithTtl(long userId, long ttlMs) {
         return Jwts.builder()
                 .setSubject("ws-user-" + userId + "@orynx.test")
                 .claim("userId", userId)
                 .setIssuedAt(new Date())
-                .setExpiration(new Date(System.currentTimeMillis() + 3600000L))
+                .setExpiration(new Date(System.currentTimeMillis() + ttlMs))
                 .signWith(Keys.hmacShaKeyFor(jwtSecret.getBytes(StandardCharsets.UTF_8)), SignatureAlgorithm.HS256)
                 .compact();
     }
@@ -178,6 +188,130 @@ class WebSocketStompIntegrationTest {
             clientA.stop();
             clientB.stop();
             unauthClient.stop();
+            workflowRepository.deleteById(wfA.getId());
+        }
+    }
+
+    @Test
+    @DisplayName("Cross-tenant STOMP SEND spoofing is rejected and expired sessions stop receiving outbound messages")
+    void sendSpoofingRejectedAndExpiredSessionTerminated() throws Exception {
+        long userA = 88003L;
+        long userB = 88004L;
+
+        Workflow wfA = workflowRepository.save(Workflow.builder()
+                .name("WS-Workflow-Spoof-Target")
+                .goal("realtime")
+                .status(WorkflowStatus.CREATED)
+                .userId(userA)
+                .build());
+
+        String url = "http://localhost:" + port + "/ws";
+        WebSocketStompClient clientA = createStompClient();
+        WebSocketStompClient clientB = createStompClient();
+        WebSocketStompClient clientAExpired = createStompClient();
+
+        try {
+            StompHeaders headersA = new StompHeaders();
+            headersA.add("Authorization", "Bearer " + generateToken(userA));
+            StompSession sessionA = clientA.connectAsync(
+                    url, new WebSocketHttpHeaders(), headersA, new StompSessionHandlerAdapter() {}
+            ).get(5, TimeUnit.SECONDS);
+
+            BlockingQueue<WorkflowExecutionEvent> receivedA = new LinkedBlockingQueue<>();
+            sessionA.subscribe("/topic/workflows/" + wfA.getId(), new StompFrameHandler() {
+                @Override
+                public Type getPayloadType(StompHeaders headers) {
+                    return WorkflowExecutionEvent.class;
+                }
+
+                @Override
+                public void handleFrame(StompHeaders headers, Object payload) {
+                    receivedA.add((WorkflowExecutionEvent) payload);
+                }
+            });
+
+            // Session B connects and attempts forged SEND to User A's workflow topic
+            CountDownLatch sessionBErrorLatch = new CountDownLatch(1);
+            AtomicReference<String> sessionBErrorMessage = new AtomicReference<>();
+            StompHeaders headersB = new StompHeaders();
+            headersB.add("Authorization", "Bearer " + generateToken(userB));
+            StompSession sessionB = clientB.connectAsync(
+                    url,
+                    new WebSocketHttpHeaders(),
+                    headersB,
+                    new StompSessionHandlerAdapter() {
+                        @Override
+                        public void handleFrame(StompHeaders headers, Object payload) {
+                            sessionBErrorMessage.compareAndSet(null, headers.getFirst("message"));
+                            sessionBErrorLatch.countDown();
+                        }
+
+                        @Override
+                        public void handleTransportError(StompSession session, Throwable exception) {
+                            sessionBErrorMessage.compareAndSet(null, exception.getMessage());
+                            sessionBErrorLatch.countDown();
+                        }
+                    }
+            ).get(5, TimeUnit.SECONDS);
+
+            Thread.sleep(200);
+
+            sessionB.send("/topic/workflows/" + wfA.getId(), WorkflowExecutionEvent.builder()
+                    .workflowId(wfA.getId())
+                    .workflowName("Forged")
+                    .status("COMPLETED")
+                    .build());
+
+            assertThat(sessionBErrorLatch.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(receivedA.poll(300, TimeUnit.MILLISECONDS)).isNull();
+
+            // Also verify a second Session A whose JWT expires stops receiving outbound deliveries
+            StompHeaders headersA2 = new StompHeaders();
+            headersA2.add("Authorization", "Bearer " + generateTokenWithTtl(userA, 1200L));
+            StompSession sessionAExpired = clientAExpired.connectAsync(
+                    url, new WebSocketHttpHeaders(), headersA2, new StompSessionHandlerAdapter() {}
+            ).get(5, TimeUnit.SECONDS);
+            BlockingQueue<WorkflowExecutionEvent> receivedAExpired = new LinkedBlockingQueue<>();
+            sessionAExpired.subscribe("/topic/workflows/" + wfA.getId(), new StompFrameHandler() {
+                @Override
+                public Type getPayloadType(StompHeaders headers) {
+                    return WorkflowExecutionEvent.class;
+                }
+
+                @Override
+                public void handleFrame(StompHeaders headers, Object payload) {
+                    receivedAExpired.add((WorkflowExecutionEvent) payload);
+                }
+            });
+
+            // Wait until the 1200ms JWT has expired naturally
+            Thread.sleep(1500);
+
+            // Legitimate server-originated update reaches valid sessionA but NOT expired sessionAExpired
+            workflowEventPublisher.publishWorkflowUpdate(WorkflowExecutionEvent.builder()
+                    .workflowId(wfA.getId())
+                    .workflowName(wfA.getName())
+                    .status("RUNNING")
+                    .userId(userA)
+                    .generation(1L)
+                    .build());
+
+            WorkflowExecutionEvent legitimate = receivedA.poll(5, TimeUnit.SECONDS);
+            assertThat(legitimate).isNotNull();
+            assertThat(legitimate.getStatus()).isEqualTo("RUNNING");
+            assertThat(receivedAExpired.poll(400, TimeUnit.MILLISECONDS)).isNull();
+
+            sessionA.disconnect();
+            if (sessionB.isConnected()) {
+                sessionB.disconnect();
+            }
+            if (sessionAExpired.isConnected()) {
+                sessionAExpired.disconnect();
+            }
+        } finally {
+            clientA.stop();
+            clientB.stop();
+            clientAExpired.stop();
             workflowRepository.deleteById(wfA.getId());
         }
     }
