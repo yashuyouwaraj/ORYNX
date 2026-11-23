@@ -57,17 +57,23 @@ public class WorkflowPerformanceService {
     }
 
     public List<WorkflowHealthResponse> getWorkflowHealth() {
+        List<Object[]> aggregates = workflowRepository.findCompletedWorkflowDurationAggregates();
+        if (aggregates == null || aggregates.isEmpty() || aggregates.get(0) == null) {
+            return List.of();
+        }
+        Object[] row = aggregates.get(0);
+        long completedCount = row[0] instanceof Number n ? n.longValue() : 0L;
+        if (completedCount == 0L) {
+            return List.of();
+        }
+        double average = row[3] instanceof Number n ? n.doubleValue() : 0.0;
+
         List<Workflow> completed = workflowRepository.findCompletedWorkflowsOrderByDurationAsc(
                 PageRequest.of(0, PaginationUtils.MAX_PAGE_SIZE));
 
         if (completed.isEmpty()) {
             return List.of();
         }
-
-        double average = completed.stream()
-                .mapToLong(workflow -> workflow.getCompletedAt() - workflow.getStartedAt())
-                .average()
-                .orElse(0);
 
         return completed.stream()
                 .map(workflow -> {
