@@ -3,4 +3,7 @@ export interface TaskExecutionEvent {
   taskId: number;
   taskName: string;
   status: string;
+  generation?: number;
+  eventId?: string;
+  timestamp?: number;
 }

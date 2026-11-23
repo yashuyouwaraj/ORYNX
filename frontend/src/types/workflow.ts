@@ -16,4 +16,10 @@ export interface WorkflowEvent {
   goal?: string;
 
   status: string;
+
+  generation?: number;
+
+  timestamp?: number;
+
+  eventId?: string;
 }

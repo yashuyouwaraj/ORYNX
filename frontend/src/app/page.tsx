@@ -100,13 +100,20 @@ export default function Home() {
   const taskStatuses = useTaskStore((state) => state.taskStatuses);
 
   useEffect(() => {
+    const token =
+      typeof window !== "undefined"
+        ? (localStorage.getItem("orynx_token") ??
+          localStorage.getItem("token") ??
+          undefined)
+        : undefined;
+
     const loadData = async () => {
       try {
-        const workflowData = await getWorkflows();
-        const analyticsData = await getAnalytics();
-        const performanceData = await getPerformance();
-        const summary = await getPerformanceSummary();
-        const healthData = await getWorkflowHealth();
+        const workflowData = await getWorkflows(token);
+        const analyticsData = await getAnalytics(token);
+        const performanceData = await getPerformance(token);
+        const summary = await getPerformanceSummary(token);
+        const healthData = await getWorkflowHealth(token);
 
         setWorkflowHealth(healthData);
         setWorkflows(workflowData);
@@ -116,7 +123,7 @@ export default function Home() {
 
         if (workflowData.length > 0) {
           const latestWorkflow = workflowData[0];
-          const timelineData = await getTimeline(latestWorkflow.id);
+          const timelineData = await getTimeline(latestWorkflow.id, token);
 
           setTimeline(timelineData);
         }
@@ -129,7 +136,15 @@ export default function Home() {
 
     const disconnect = connectWebSocket(
       async (event) => {
-        setActivityFeed((prev) => [event, ...prev]);
+        setActivityFeed((prev) => {
+          if (
+            event.eventId &&
+            prev.some((existing) => existing.eventId === event.eventId)
+          ) {
+            return prev;
+          }
+          return [event, ...prev];
+        });
 
         setWorkflows((prev) => {
           const exists = prev.find(
@@ -159,10 +174,10 @@ export default function Home() {
         });
 
         try {
-          const analyticsData = await getAnalytics();
-          const timelineData = await getTimeline(event.workflowId);
-          const performanceData = await getPerformance();
-          const healthData = await getWorkflowHealth();
+          const analyticsData = await getAnalytics(token);
+          const timelineData = await getTimeline(event.workflowId, token);
+          const performanceData = await getPerformance(token);
+          const healthData = await getWorkflowHealth(token);
 
           setWorkflowHealth(healthData);
           setAnalytics(analyticsData);
@@ -174,6 +189,12 @@ export default function Home() {
       },
       (taskEvent) => {
         updateTaskStatus(taskEvent.taskId, taskEvent.status);
+      },
+      {
+        token,
+        onReconnect: () => {
+          void loadData();
+        },
       },
     );
 
