@@ -108,7 +108,14 @@ To persist permanently, add the export statements above to your `~/.bashrc` or `
 
 ---
 
-## 6. Security Guardrails
+## 6. Database Indexing & Bounded Pagination
+
+- **Query-Driven PostgreSQL Indexes**: JPA `@Table(indexes = ...)` declarations and idempotent advisory-locked startup migrations (`DatabaseIndexMigration` in `orchestrator-service` and `execution-service`) provision composite indexes across `workflows` (`user_id, id DESC`, `user_id, status, id DESC`, `status, id DESC`, `scheduled, status, scheduled_at`, `depends_on_workflow_id`), `workflow_tasks` (`workflow_id, execution_order`, `status`), `workflow_executions` (`workflow_id, started_at DESC, id DESC`), `execution_events` (`workflow_id, timestamp DESC, id DESC`, `workflow_id, task_id, id DESC`, `workflow_id, task_name, id DESC`, `workflow_id, event_id`), `workflow_execution_coordination` (`status, lease_expires_at`), and `users` (`email`).
+- **Bounded Pagination & N+1 Elimination**: `PaginationUtils` enforces default page size `20`, max page size `100`, and deterministic `id` tie-breaker sorting across `/api/v1/workflows`, `/api/v1/workflows/status/{status}`, `/api/v1/workflows/{id}/tasks`, `/api/v1/workflows/{id}/executions`, and `/api/v1/timeline/{workflowId}`. `@EntityGraph(attributePaths = "dependsOnWorkflow")` prevents lazy N+1 queries on workflow listings, and dashboard/analytics/performance endpoints use database `GROUP BY` and aggregate queries instead of `findAll()`.
+
+---
+
+## 7. Security Guardrails
 - **NEVER** commit `.env` or any file containing real passwords or keys to Git.
 - Root `.gitignore` automatically ignores `.env`, `.env.*`, and `*.env`.
 - Any missing required variable will cause services to fail fast on startup with an explicit placeholder resolution error.
