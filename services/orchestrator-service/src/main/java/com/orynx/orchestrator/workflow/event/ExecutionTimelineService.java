@@ -39,7 +39,11 @@ public class ExecutionTimelineService {
         if (workflowService != null) {
             workflowService.getWorkflow(workflowId);
         }
-        Pageable normalized = PaginationUtils.normalize(pageable, DEFAULT_TIMELINE_SORT);
+        Pageable normalized = PaginationUtils.normalize(
+                pageable,
+                DEFAULT_TIMELINE_SORT,
+                PaginationUtils.TIMELINE_SORT_FIELDS
+        );
         return executionEventRepository.findByWorkflowId(workflowId, normalized)
                 .map(event -> ExecutionTimelineResponse.builder()
                         .taskName(event.getTaskName())

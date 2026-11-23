@@ -1,8 +1,46 @@
 import type { Workflow } from "@/types/workflow";
 
-type PageEnvelope<T> = {
+export type PageEnvelope<T> = {
   content: T[];
+  number?: number;
+  size?: number;
+  totalElements?: number;
+  totalPages?: number;
+  first?: boolean;
+  last?: boolean;
   [key: string]: unknown;
+};
+
+export const DEFAULT_PAGE_SIZE = 20;
+
+const unwrapPageEnvelope = <T>(
+  data: T[] | PageEnvelope<T>,
+  page: number,
+  size: number
+): PageEnvelope<T> => {
+  if (Array.isArray(data)) {
+    return {
+      content: data,
+      number: page,
+      size,
+      totalElements: data.length,
+      totalPages: data.length === 0 ? 0 : 1,
+      first: page === 0,
+      last: true,
+    };
+  }
+  if (data && Array.isArray((data as PageEnvelope<T>).content)) {
+    return data as PageEnvelope<T>;
+  }
+  return {
+    content: [],
+    number: page,
+    size,
+    totalElements: 0,
+    totalPages: 0,
+    first: true,
+    last: true,
+  };
 };
 
 const API_BASE_URL =
@@ -18,11 +56,11 @@ const createHeaders = (token?: string): HeadersInit => {
   return headers;
 };
 
-export const getWorkflows = async (
+export const getWorkflowsPage = async (
   token?: string,
   page = 0,
-  size = 50
-): Promise<Workflow[]> => {
+  size = DEFAULT_PAGE_SIZE
+): Promise<PageEnvelope<Workflow>> => {
   const response = await fetch(
     `${API_BASE_URL}/api/v1/workflows?page=${page}&size=${size}`,
     {
@@ -35,16 +73,16 @@ export const getWorkflows = async (
   }
 
   const data = (await response.json()) as Workflow[] | PageEnvelope<Workflow>;
+  return unwrapPageEnvelope(data, page, size);
+};
 
-  if (Array.isArray(data)) {
-    return data;
-  }
-
-  if (data && Array.isArray((data as PageEnvelope<Workflow>).content)) {
-    return (data as PageEnvelope<Workflow>).content;
-  }
-
-  return [];
+export const getWorkflows = async (
+  token?: string,
+  page = 0,
+  size = DEFAULT_PAGE_SIZE
+): Promise<Workflow[]> => {
+  const pageData = await getWorkflowsPage(token, page, size);
+  return pageData.content;
 };
 
 export const getAnalytics = async (token?: string) => {
@@ -59,12 +97,13 @@ export const getAnalytics = async (token?: string) => {
   return response.json();
 };
 
-export const getTimeline = async (
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const getTimelinePage = async <T = any>(
   workflowId: number,
   token?: string,
   page = 0,
-  size = 50
-) => {
+  size = DEFAULT_PAGE_SIZE
+): Promise<PageEnvelope<T>> => {
   const response = await fetch(
     `${API_BASE_URL}/api/v1/timeline/${workflowId}?page=${page}&size=${size}`,
     {
@@ -76,14 +115,18 @@ export const getTimeline = async (
     throw new Error("Failed to fetch timeline");
   }
 
-  const data = await response.json();
-  if (Array.isArray(data)) {
-    return data;
-  }
-  if (data && Array.isArray(data.content)) {
-    return data.content;
-  }
-  return [];
+  const data = (await response.json()) as T[] | PageEnvelope<T>;
+  return unwrapPageEnvelope(data, page, size);
+};
+
+export const getTimeline = async (
+  workflowId: number,
+  token?: string,
+  page = 0,
+  size = DEFAULT_PAGE_SIZE
+) => {
+  const pageData = await getTimelinePage(workflowId, token, page, size);
+  return pageData.content;
 };
 
 export const getPerformance = async (token?: string) => {

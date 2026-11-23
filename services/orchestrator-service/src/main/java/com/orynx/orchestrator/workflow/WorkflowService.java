@@ -197,9 +197,13 @@ public class WorkflowService {
     }
 
     public Page<Workflow> getAllWorkflows(Pageable pageable, Long userId) {
-        Pageable normalized = PaginationUtils.normalize(pageable, Sort.by(Sort.Direction.DESC, "id"));
+        Pageable normalized = PaginationUtils.normalize(
+                pageable,
+                Sort.by(Sort.Direction.DESC, "id"),
+                PaginationUtils.WORKFLOW_SORT_FIELDS
+        );
         if (userId != null) {
-            return workflowRepository.findByUserIdOrderByIdDesc(userId, normalized);
+            return workflowRepository.findByUserId(userId, normalized);
         } else {
             return workflowRepository.findAll(normalized);
         }
@@ -252,7 +256,11 @@ public class WorkflowService {
     }
 
     public Page<Workflow> getWorkflowsByStatus(WorkflowStatus status, Pageable pageable, Long userId) {
-        Pageable normalized = PaginationUtils.normalize(pageable, Sort.by(Sort.Direction.DESC, "id"));
+        Pageable normalized = PaginationUtils.normalize(
+                pageable,
+                Sort.by(Sort.Direction.DESC, "id"),
+                PaginationUtils.WORKFLOW_SORT_FIELDS
+        );
         if (userId != null) {
             return workflowRepository.findByUserIdAndStatus(userId, status, normalized);
         } else {
@@ -278,7 +286,8 @@ public class WorkflowService {
         getWorkflow(workflowId, userId);
         Pageable normalized = PaginationUtils.normalize(
                 pageable,
-                Sort.by(Sort.Order.asc("executionOrder"), Sort.Order.asc("id"))
+                Sort.by(Sort.Order.asc("executionOrder"), Sort.Order.asc("id")),
+                PaginationUtils.TASK_SORT_FIELDS
         );
         return workflowTaskRepository.findByWorkflowId(workflowId, normalized);
     }
@@ -409,7 +418,8 @@ public class WorkflowService {
         getWorkflow(workflowId, userId);
         Pageable normalized = PaginationUtils.normalize(
                 pageable,
-                Sort.by(Sort.Order.desc("startedAt"), Sort.Order.desc("id"))
+                Sort.by(Sort.Order.desc("startedAt"), Sort.Order.desc("id")),
+                PaginationUtils.EXECUTION_SORT_FIELDS
         );
 
         return workflowExecutionRepository

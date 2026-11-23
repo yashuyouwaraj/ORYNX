@@ -33,10 +33,8 @@ public interface WorkflowRepository extends JpaRepository<Workflow, Long> {
     @EntityGraph(attributePaths = "dependsOnWorkflow")
     Page<Workflow> findAll(Pageable pageable);
 
-    Page<Workflow> findByUserId(Long userId, Pageable pageable);
-
     @EntityGraph(attributePaths = "dependsOnWorkflow")
-    Page<Workflow> findByUserIdOrderByIdDesc(Long userId, Pageable pageable);
+    Page<Workflow> findByUserId(Long userId, Pageable pageable);
 
     @EntityGraph(attributePaths = "dependsOnWorkflow")
     Page<Workflow> findByUserIdAndStatus(Long userId, WorkflowStatus status, Pageable pageable);
