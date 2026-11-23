@@ -341,7 +341,7 @@ class OrchestratorKafkaKeyAndIdempotencyTest {
                 .thenReturn(Optional.empty());
         consumer.consume(runningEvent);
         verify(executionEventRepository, times(1)).save(any(ExecutionEvent.class));
-        verify(messagingTemplate, times(1)).convertAndSend("/topic/tasks", runningEvent);
+        verify(messagingTemplate, times(1)).convertAndSend("/topic/workflows/20/tasks", runningEvent);
 
         // Redelivered RUNNING event suppressed
         when(executionEventRepository.findFirstByWorkflowIdAndTaskIdOrderByIdDesc(20L, 300L))
@@ -349,14 +349,14 @@ class OrchestratorKafkaKeyAndIdempotencyTest {
                         .workflowId(20L).taskId(300L).taskName("Analyze").status("RUNNING").build()));
         consumer.consume(runningEvent);
         verify(executionEventRepository, times(1)).save(any(ExecutionEvent.class));
-        verify(messagingTemplate, times(1)).convertAndSend("/topic/tasks", runningEvent);
+        verify(messagingTemplate, times(1)).convertAndSend("/topic/workflows/20/tasks", runningEvent);
 
         // COMPLETED transition accepted
         TaskExecutionEvent completedEvent = TaskExecutionEvent.builder()
                 .workflowId(20L).taskId(300L).taskName("Analyze").status("COMPLETED").build();
         consumer.consume(completedEvent);
         verify(executionEventRepository, times(2)).save(any(ExecutionEvent.class));
-        verify(messagingTemplate, times(1)).convertAndSend("/topic/tasks", completedEvent);
+        verify(messagingTemplate, times(1)).convertAndSend("/topic/workflows/20/tasks", completedEvent);
 
         // Late RUNNING after COMPLETED suppressed
         when(executionEventRepository.findFirstByWorkflowIdAndTaskIdOrderByIdDesc(20L, 300L))
