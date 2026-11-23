@@ -12,10 +12,16 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Real PostgreSQL 17 integration test verifying query-driven index creation,
- * idempotent migration execution under advisory locking, and PostgreSQL query plans.
+ * idempotent migration execution under advisory locking, non-redundancy of
+ * workflow indexes, fail-fast error handling, and planner index selection.
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class DatabaseIndexAndPaginationPostgreSqlTest {
@@ -27,9 +33,12 @@ class DatabaseIndexAndPaginationPostgreSqlTest {
     static void setUpAll() {
         DriverManagerDataSource dataSource = new DriverManagerDataSource();
         dataSource.setDriverClassName("org.postgresql.Driver");
-        dataSource.setUrl("jdbc:postgresql://localhost:5439/orynx_test");
-        dataSource.setUsername("testuser");
-        dataSource.setPassword("testpass");
+        dataSource.setUrl(System.getenv().getOrDefault(
+                "SPRING_DATASOURCE_URL",
+                "jdbc:postgresql://localhost:5439/orynx_test"
+        ));
+        dataSource.setUsername(System.getenv().getOrDefault("SPRING_DATASOURCE_USERNAME", "testuser"));
+        dataSource.setPassword(System.getenv().getOrDefault("SPRING_DATASOURCE_PASSWORD", "testpass"));
 
         jdbcTemplate = new JdbcTemplate(dataSource);
         transactionTemplate = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
@@ -37,7 +46,7 @@ class DatabaseIndexAndPaginationPostgreSqlTest {
 
     @Test
     @Order(1)
-    @DisplayName("DatabaseIndexMigration idempotently creates all orchestrator indexes on PostgreSQL")
+    @DisplayName("DatabaseIndexMigration idempotently creates all non-redundant orchestrator indexes on PostgreSQL")
     void databaseIndexMigrationCreatesAllIndexesIdempotently() {
         jdbcTemplate.execute("""
             CREATE TABLE IF NOT EXISTS workflows (
@@ -103,6 +112,10 @@ class DatabaseIndexAndPaginationPostgreSqlTest {
                 .stream()
                 .collect(Collectors.toSet());
 
+        assertThat(DatabaseIndexMigration.INDEX_DEFINITIONS)
+                .extracting(DatabaseIndexMigration.IndexDefinition::indexName)
+                .doesNotContain("idx_workflows_user_id");
+
         for (DatabaseIndexMigration.IndexDefinition def : DatabaseIndexMigration.INDEX_DEFINITIONS) {
             assertThat(existingIndexes).contains(def.indexName());
         }
@@ -110,26 +123,95 @@ class DatabaseIndexAndPaginationPostgreSqlTest {
 
     @Test
     @Order(2)
-    @DisplayName("PostgreSQL query planner utilizes composite indexes for ownership, timeline, and execution queries")
-    void postgresqlPlannerUsesIndexesWhenSeqScanDisabled() {
-        List<String> planLines = transactionTemplate.execute(status -> {
-            jdbcTemplate.execute("SET LOCAL enable_seqscan = off");
-            return jdbcTemplate.queryForList(
-                    "EXPLAIN SELECT * FROM workflows WHERE user_id = 10 ORDER BY id DESC LIMIT 20",
-                    String.class
-            );
-        });
-        assertThat(planLines).isNotNull().isNotEmpty();
-        assertThat(String.join("\n", planLines)).contains("Index");
+    @DisplayName("PostgreSQL query planner utilizes idx_workflows_user_id_id and idx_execution_events_wf_ts on selective analyzed data")
+    void postgresqlPlannerUsesSpecificCompositeIndexesOnSelectiveData() {
+        transactionTemplate.executeWithoutResult(status -> {
+            jdbcTemplate.execute("DELETE FROM execution_events WHERE workflow_id IN (99001, 99002)");
+            jdbcTemplate.execute("DELETE FROM workflows WHERE user_id IN (99001, 99002)");
 
-        List<String> timelinePlan = transactionTemplate.execute(status -> {
-            jdbcTemplate.execute("SET LOCAL enable_seqscan = off");
-            return jdbcTemplate.queryForList(
-                    "EXPLAIN SELECT * FROM execution_events WHERE workflow_id = 10 ORDER BY timestamp DESC, id DESC LIMIT 20",
+            jdbcTemplate.execute("""
+                INSERT INTO workflows (name, goal, status, scheduled, user_id)
+                SELECT 'bulk-' || g, 'goal', 'COMPLETED', false, 99002
+                FROM generate_series(1, 500) AS g
+            """);
+            jdbcTemplate.execute("""
+                INSERT INTO workflows (name, goal, status, scheduled, user_id)
+                SELECT 'target-' || g, 'goal', 'RUNNING', false, 99001
+                FROM generate_series(1, 5) AS g
+            """);
+
+            jdbcTemplate.execute("""
+                INSERT INTO execution_events (workflow_id, task_id, task_name, status, timestamp, generation, event_id)
+                SELECT 99002, g, 'T', 'COMPLETED', 1000 + g, 1, 'bulk-ev-' || g
+                FROM generate_series(1, 500) AS g
+            """);
+            jdbcTemplate.execute("""
+                INSERT INTO execution_events (workflow_id, task_id, task_name, status, timestamp, generation, event_id)
+                SELECT 99001, g, 'T', 'COMPLETED', 1000 + g, 1, 'target-ev-' || g
+                FROM generate_series(1, 5) AS g
+            """);
+        });
+
+        jdbcTemplate.execute("ANALYZE workflows");
+        jdbcTemplate.execute("ANALYZE execution_events");
+
+        try {
+            List<String> wfPlan = jdbcTemplate.queryForList(
+                    "EXPLAIN SELECT * FROM workflows WHERE user_id = 99001 ORDER BY id DESC LIMIT 20",
                     String.class
             );
-        });
-        assertThat(timelinePlan).isNotNull().isNotEmpty();
-        assertThat(String.join("\n", timelinePlan)).contains("Index");
+            String wfPlanText = String.join("\n", wfPlan);
+            assertThat(wfPlanText).doesNotContain("Seq Scan");
+            assertThat(wfPlanText).containsAnyOf("idx_workflows_user_id_id", "idx_workflows_user_status_id");
+
+            List<String> timelinePlan = jdbcTemplate.queryForList(
+                    "EXPLAIN SELECT * FROM execution_events WHERE workflow_id = 99001 ORDER BY timestamp DESC, id DESC LIMIT 20",
+                    String.class
+            );
+            String timelinePlanText = String.join("\n", timelinePlan);
+            assertThat(timelinePlanText).doesNotContain("Seq Scan");
+            assertThat(timelinePlanText).containsAnyOf(
+                    "idx_execution_events_wf_ts",
+                    "idx_execution_events_wf_task_id",
+                    "idx_execution_events_wf_task_name",
+                    "idx_execution_events_wf_event_id"
+            );
+        } finally {
+            transactionTemplate.executeWithoutResult(status -> {
+                jdbcTemplate.execute("DELETE FROM execution_events WHERE workflow_id IN (99001, 99002)");
+                jdbcTemplate.execute("DELETE FROM workflows WHERE user_id IN (99001, 99002)");
+            });
+        }
+    }
+
+    @Test
+    @Order(3)
+    @DisplayName("DatabaseIndexMigration fails startup when PostgreSQL advisory lock or DDL fails instead of swallowing")
+    void migrationFailsFastWhenPostgreSqlLockFails() {
+        JdbcTemplate failingJdbc = mock(JdbcTemplate.class);
+        when(failingJdbc.execute(any(org.springframework.jdbc.core.ConnectionCallback.class))).thenReturn(true);
+        doThrow(new org.springframework.dao.DataAccessResourceFailureException("Simulated lock failure"))
+                .when(failingJdbc)
+                .execute("SELECT pg_advisory_xact_lock(" + DatabaseIndexMigration.MIGRATION_ADVISORY_LOCK_ID + ")");
+
+        DatabaseIndexMigration failingMigration = new DatabaseIndexMigration(
+                failingJdbc,
+                new org.springframework.transaction.support.TransactionTemplate(
+                        new org.springframework.transaction.support.AbstractPlatformTransactionManager() {
+                            @Override
+                            protected Object doGetTransaction() { return new Object(); }
+                            @Override
+                            protected void doBegin(Object transaction, org.springframework.transaction.TransactionDefinition definition) {}
+                            @Override
+                            protected void doCommit(org.springframework.transaction.support.DefaultTransactionStatus status) {}
+                            @Override
+                            protected void doRollback(org.springframework.transaction.support.DefaultTransactionStatus status) {}
+                        }
+                )
+        );
+
+        assertThatThrownBy(() -> failingMigration.run(new DefaultApplicationArguments()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("orchestrator-service index migration");
     }
 }

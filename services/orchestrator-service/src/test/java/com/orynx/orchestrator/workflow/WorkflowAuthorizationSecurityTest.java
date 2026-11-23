@@ -393,7 +393,7 @@ class WorkflowAuthorizationSecurityTest {
                 .userId(USER_A_ID)
                 .build();
 
-        when(workflowRepository.findByUserIdOrderByIdDesc(eq(USER_A_ID), any()))
+        when(workflowRepository.findByUserId(eq(USER_A_ID), any()))
                 .thenReturn(new PageImpl<>(List.of(workflowA), PageRequest.of(0, 10), 1));
 
         mockMvc.perform(get("/api/v1/workflows")
@@ -402,7 +402,7 @@ class WorkflowAuthorizationSecurityTest {
                 .andExpect(jsonPath("$.content.length()").value(1))
                 .andExpect(jsonPath("$.content[0].userId").value(USER_A_ID));
 
-        verify(workflowRepository).findByUserIdOrderByIdDesc(eq(USER_A_ID), any());
+        verify(workflowRepository).findByUserId(eq(USER_A_ID), any());
     }
 
     // ==========================================

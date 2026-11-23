@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
@@ -74,12 +75,36 @@ class DatabaseIndexAndPaginationTest {
 
         Pageable oversized = PaginationUtils.normalize(
                 PageRequest.of(2, 5000, Sort.by(Sort.Direction.ASC, "name")),
-                defaultSort
+                defaultSort,
+                PaginationUtils.WORKFLOW_SORT_FIELDS
         );
         assertThat(oversized.getPageNumber()).isEqualTo(2);
         assertThat(oversized.getPageSize()).isEqualTo(PaginationUtils.MAX_PAGE_SIZE);
         assertThat(oversized.getSort().getOrderFor("name").getDirection()).isEqualTo(Sort.Direction.ASC);
         assertThat(oversized.getSort().getOrderFor("id").getDirection()).isEqualTo(Sort.Direction.DESC);
+
+        Pageable multiSort = PaginationUtils.normalize(
+                PageRequest.of(0, 10, Sort.by(Sort.Order.asc("status"), Sort.Order.desc("startedAt"))),
+                defaultSort,
+                PaginationUtils.WORKFLOW_SORT_FIELDS
+        );
+        assertThat(multiSort.getSort().getOrderFor("status").getDirection()).isEqualTo(Sort.Direction.ASC);
+        assertThat(multiSort.getSort().getOrderFor("startedAt").getDirection()).isEqualTo(Sort.Direction.DESC);
+        assertThat(multiSort.getSort().getOrderFor("id").getDirection()).isEqualTo(Sort.Direction.DESC);
+
+        assertThatThrownBy(() -> PaginationUtils.normalize(
+                PageRequest.of(0, 10, Sort.by("unknownField")),
+                defaultSort,
+                PaginationUtils.WORKFLOW_SORT_FIELDS
+        )).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Unsupported sort property");
+
+        assertThatThrownBy(() -> PaginationUtils.normalize(
+                PageRequest.of(0, 10, Sort.by("dependsOnWorkflow.name")),
+                defaultSort,
+                PaginationUtils.WORKFLOW_SORT_FIELDS
+        )).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Unsupported sort property");
     }
 
     @Test
@@ -89,12 +114,12 @@ class DatabaseIndexAndPaginationTest {
         Long userId = 10L;
         Workflow wf = Workflow.builder().id(1L).name("W1").userId(userId).status(WorkflowStatus.RUNNING).build();
 
-        when(workflowRepository.findByUserIdOrderByIdDesc(eq(userId), any(Pageable.class)))
+        when(workflowRepository.findByUserId(eq(userId), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(wf)));
         service.getAllWorkflows(PageRequest.of(0, 999), userId);
 
         ArgumentCaptor<Pageable> wfPageable = ArgumentCaptor.forClass(Pageable.class);
-        verify(workflowRepository).findByUserIdOrderByIdDesc(eq(userId), wfPageable.capture());
+        verify(workflowRepository).findByUserId(eq(userId), wfPageable.capture());
         assertThat(wfPageable.getValue().getPageSize()).isEqualTo(PaginationUtils.MAX_PAGE_SIZE);
 
         when(workflowRepository.findByUserIdAndStatus(eq(userId), eq(WorkflowStatus.RUNNING), any(Pageable.class)))
@@ -197,5 +222,17 @@ class DatabaseIndexAndPaginationTest {
         assertThat(perfSummary.getSlowestDuration()).isEqualTo(500L);
         assertThat(perfSummary.getCompletedWorkflowCount()).isEqualTo(2L);
         verify(workflowRepository, never()).findAll();
+
+        // Global average = 500.0 (not local fastest-subset average of 150.0)
+        when(workflowRepository.findCompletedWorkflowDurationAggregates())
+                .thenReturn(List.<Object[]>of(new Object[]{105L, 100L, 10000L, 500.0}));
+        when(workflowRepository.findCompletedWorkflowsOrderByDurationAsc(any()))
+                .thenReturn(List.of(
+                        Workflow.builder().id(1L).name("Fast").startedAt(100L).completedAt(200L).build(),
+                        Workflow.builder().id(2L).name("Medium").startedAt(100L).completedAt(300L).build()
+                ));
+        var health = performanceService.getWorkflowHealth();
+        assertThat(health).hasSize(2);
+        assertThat(health).allSatisfy(item -> assertThat(item.getHealth()).isEqualTo("HEALTHY"));
     }
 }
