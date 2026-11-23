@@ -6,7 +6,12 @@ import lombok.*;
 import java.time.Instant;
 
 @Entity
-@Table(name = "workflow_execution_coordination")
+@Table(
+        name = "workflow_execution_coordination",
+        indexes = {
+                @Index(name = "idx_exec_coord_status_lease", columnList = "status, lease_expires_at")
+        }
+)
 @Getter
 @Setter
 @NoArgsConstructor

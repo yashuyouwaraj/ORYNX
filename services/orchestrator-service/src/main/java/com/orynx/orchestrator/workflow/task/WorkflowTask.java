@@ -6,7 +6,13 @@ import jakarta.persistence.*;
 import lombok.*;
 
 @Entity
-@Table(name = "workflow_tasks")
+@Table(
+        name = "workflow_tasks",
+        indexes = {
+                @Index(name = "idx_workflow_tasks_wf_order", columnList = "workflow_id, execution_order"),
+                @Index(name = "idx_workflow_tasks_status", columnList = "status")
+        }
+)
 @Getter
 @Setter
 @NoArgsConstructor

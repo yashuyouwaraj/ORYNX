@@ -6,7 +6,12 @@ import jakarta.persistence.*;
 import lombok.*;
 
 @Entity
-@Table(name = "workflow_executions")
+@Table(
+        name = "workflow_executions",
+        indexes = {
+                @Index(name = "idx_workflow_executions_wf_started", columnList = "workflow_id, started_at, id")
+        }
+)
 @Getter
 @Setter
 @NoArgsConstructor

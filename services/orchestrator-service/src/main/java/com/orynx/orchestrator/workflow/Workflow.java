@@ -9,7 +9,17 @@ import jakarta.persistence.JoinColumn;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "workflows")
+@Table(
+        name = "workflows",
+        indexes = {
+                @Index(name = "idx_workflows_user_id", columnList = "user_id"),
+                @Index(name = "idx_workflows_user_id_id", columnList = "user_id, id"),
+                @Index(name = "idx_workflows_user_status_id", columnList = "user_id, status, id"),
+                @Index(name = "idx_workflows_status_id", columnList = "status, id"),
+                @Index(name = "idx_workflows_scheduled_due", columnList = "scheduled, status, scheduled_at"),
+                @Index(name = "idx_workflows_depends_on", columnList = "depends_on_workflow_id")
+        }
+)
 @Getter
 @Setter
 @NoArgsConstructor
