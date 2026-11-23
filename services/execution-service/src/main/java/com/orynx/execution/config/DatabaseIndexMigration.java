@@ -4,6 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -43,12 +44,13 @@ public class DatabaseIndexMigration implements ApplicationRunner {
 
     @Override
     public void run(ApplicationArguments args) {
+        if (!isPostgreSql()) {
+            log.debug("Skipping PostgreSQL index migration on non-PostgreSQL datasource");
+            return;
+        }
         try {
             transactionTemplate.executeWithoutResult(status -> {
-                try {
-                    jdbcTemplate.execute("SELECT pg_advisory_xact_lock(" + MIGRATION_ADVISORY_LOCK_ID + ")");
-                } catch (Exception ignored) {
-                }
+                jdbcTemplate.execute("SELECT pg_advisory_xact_lock(" + MIGRATION_ADVISORY_LOCK_ID + ")");
                 Integer count = jdbcTemplate.queryForObject(
                         """
                         SELECT COUNT(*)
@@ -65,7 +67,14 @@ public class DatabaseIndexMigration implements ApplicationRunner {
                 }
             });
         } catch (Exception ex) {
-            log.warn("Non-fatal execution-service index migration skipped: {}", ex.getMessage());
+            log.error("Failed to execute execution-service index migration: {}. Aborting startup.", ex.getMessage());
+            throw new IllegalStateException("Failed to execute execution-service index migration: " + ex.getMessage(), ex);
         }
+    }
+
+    private boolean isPostgreSql() {
+        return Boolean.TRUE.equals(jdbcTemplate.execute((ConnectionCallback<Boolean>) conn ->
+                "PostgreSQL".equalsIgnoreCase(conn.getMetaData().getDatabaseProductName())
+        ));
     }
 }

@@ -5,6 +5,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.annotation.Order;
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -32,8 +33,6 @@ public class DatabaseIndexMigration implements ApplicationRunner {
     ) {}
 
     public static final List<IndexDefinition> INDEX_DEFINITIONS = List.of(
-            new IndexDefinition("workflows", List.of("user_id"), "idx_workflows_user_id",
-                    "CREATE INDEX IF NOT EXISTS idx_workflows_user_id ON workflows (user_id)"),
             new IndexDefinition("workflows", List.of("user_id", "id"), "idx_workflows_user_id_id",
                     "CREATE INDEX IF NOT EXISTS idx_workflows_user_id_id ON workflows (user_id, id DESC)"),
             new IndexDefinition("workflows", List.of("user_id", "status", "id"), "idx_workflows_user_status_id",
@@ -81,9 +80,13 @@ public class DatabaseIndexMigration implements ApplicationRunner {
 
     @Override
     public void run(ApplicationArguments args) {
+        if (!isPostgreSql()) {
+            log.debug("Skipping PostgreSQL index migration on non-PostgreSQL datasource");
+            return;
+        }
         try {
             transactionTemplate.executeWithoutResult(status -> {
-                acquireAdvisoryLock();
+                jdbcTemplate.execute("SELECT pg_advisory_xact_lock(" + MIGRATION_ADVISORY_LOCK_ID + ")");
                 int applied = 0;
                 for (IndexDefinition def : INDEX_DEFINITIONS) {
                     if (tableExists(def.tableName()) && columnsExist(def.tableName(), def.requiredColumns())) {
@@ -94,16 +97,15 @@ public class DatabaseIndexMigration implements ApplicationRunner {
                 log.info("Verified/created {} query-driven indexes across orchestrator-service tables", applied);
             });
         } catch (Exception ex) {
-            log.warn("Non-fatal database index migration check skipped or deferred: {}", ex.getMessage());
+            log.error("Failed to execute orchestrator-service index migration: {}. Aborting startup.", ex.getMessage());
+            throw new IllegalStateException("Failed to execute orchestrator-service index migration: " + ex.getMessage(), ex);
         }
     }
 
-    private void acquireAdvisoryLock() {
-        try {
-            jdbcTemplate.execute("SELECT pg_advisory_xact_lock(" + MIGRATION_ADVISORY_LOCK_ID + ")");
-        } catch (Exception ex) {
-            log.debug("Advisory lock skipped: {}", ex.getMessage());
-        }
+    private boolean isPostgreSql() {
+        return Boolean.TRUE.equals(jdbcTemplate.execute((ConnectionCallback<Boolean>) conn ->
+                "PostgreSQL".equalsIgnoreCase(conn.getMetaData().getDatabaseProductName())
+        ));
     }
 
     private boolean tableExists(String tableName) {

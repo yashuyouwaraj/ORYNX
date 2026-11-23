@@ -12,7 +12,6 @@ import java.time.LocalDateTime;
 @Table(
         name = "workflows",
         indexes = {
-                @Index(name = "idx_workflows_user_id", columnList = "user_id"),
                 @Index(name = "idx_workflows_user_id_id", columnList = "user_id, id"),
                 @Index(name = "idx_workflows_user_status_id", columnList = "user_id, status, id"),
                 @Index(name = "idx_workflows_status_id", columnList = "status, id"),
