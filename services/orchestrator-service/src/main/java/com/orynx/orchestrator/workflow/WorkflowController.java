@@ -40,13 +40,13 @@ public class WorkflowController {
     }
 
     @GetMapping("/status/{status}")
-    public List<Workflow> getWorkflowsByStatus(@PathVariable WorkflowStatus status){
-        return workflowService.getWorkflowsByStatus(status);
+    public Page<Workflow> getWorkflowsByStatus(@PathVariable WorkflowStatus status, Pageable pageable){
+        return workflowService.getWorkflowsByStatus(status, pageable);
     }
 
     @GetMapping("/{id}/tasks")
-    public List<WorkflowTask> getWorkflowTasks(@PathVariable Long id){
-        return workflowService.getWorkflowTasks(id);
+    public Page<WorkflowTask> getWorkflowTasks(@PathVariable Long id, Pageable pageable){
+        return workflowService.getWorkflowTasks(id, pageable);
     }
 
     @GetMapping("/dashboard/summary")
@@ -55,8 +55,8 @@ public class WorkflowController {
     }
 
     @GetMapping("/{id}/executions")
-    public List<WorkflowExecutionResponse> getWorkflowExecutionHistory(@PathVariable Long id){
-        return workflowService.getWorkflowExecutionHistory(id);
+    public Page<WorkflowExecutionResponse> getWorkflowExecutionHistory(@PathVariable Long id, Pageable pageable){
+        return workflowService.getWorkflowExecutionHistory(id, pageable);
     }
 
     @GetMapping("/{id}/analytics")

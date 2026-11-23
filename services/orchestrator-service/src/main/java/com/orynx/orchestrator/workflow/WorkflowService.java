@@ -2,6 +2,7 @@ package com.orynx.orchestrator.workflow;
 
 import com.orynx.orchestrator.common.exception.WorkflowNotFoundException;
 import com.orynx.orchestrator.common.security.UserContext;
+import com.orynx.orchestrator.common.util.PaginationUtils;
 import com.orynx.orchestrator.event.dto.WorkflowCancelledEvent;
 import com.orynx.orchestrator.event.dto.WorkflowPausedEvent;
 import com.orynx.orchestrator.event.dto.WorkflowResumedEvent;
@@ -24,10 +25,13 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -193,10 +197,11 @@ public class WorkflowService {
     }
 
     public Page<Workflow> getAllWorkflows(Pageable pageable, Long userId) {
+        Pageable normalized = PaginationUtils.normalize(pageable, Sort.by(Sort.Direction.DESC, "id"));
         if (userId != null) {
-            return workflowRepository.findByUserIdOrderByIdDesc(userId, pageable);
+            return workflowRepository.findByUserIdOrderByIdDesc(userId, normalized);
         } else {
-            return workflowRepository.findAll(pageable);
+            return workflowRepository.findAll(normalized);
         }
     }
 
@@ -242,6 +247,19 @@ public class WorkflowService {
         }
     }
 
+    public Page<Workflow> getWorkflowsByStatus(WorkflowStatus status, Pageable pageable) {
+        return getWorkflowsByStatus(status, pageable, UserContext.getUserId());
+    }
+
+    public Page<Workflow> getWorkflowsByStatus(WorkflowStatus status, Pageable pageable, Long userId) {
+        Pageable normalized = PaginationUtils.normalize(pageable, Sort.by(Sort.Direction.DESC, "id"));
+        if (userId != null) {
+            return workflowRepository.findByUserIdAndStatus(userId, status, normalized);
+        } else {
+            return workflowRepository.findByStatus(status, normalized);
+        }
+    }
+
     public List<WorkflowTask> getWorkflowTasks(Long workflowId) {
         return getWorkflowTasks(workflowId, UserContext.getUserId());
     }
@@ -250,6 +268,19 @@ public class WorkflowService {
         // Enforce ownership: caller must have access to workflow
         getWorkflow(workflowId, userId);
         return workflowTaskRepository.findByWorkflowIdOrderByExecutionOrder(workflowId);
+    }
+
+    public Page<WorkflowTask> getWorkflowTasks(Long workflowId, Pageable pageable) {
+        return getWorkflowTasks(workflowId, pageable, UserContext.getUserId());
+    }
+
+    public Page<WorkflowTask> getWorkflowTasks(Long workflowId, Pageable pageable, Long userId) {
+        getWorkflow(workflowId, userId);
+        Pageable normalized = PaginationUtils.normalize(
+                pageable,
+                Sort.by(Sort.Order.asc("executionOrder"), Sort.Order.asc("id"))
+        );
+        return workflowTaskRepository.findByWorkflowId(workflowId, normalized);
     }
 
     private void createWorkflowTasks(Workflow workflow) {
@@ -322,26 +353,30 @@ public class WorkflowService {
     }
 
     public DashboardSummaryResponse getDashboardSummary(Long userId) {
-        if (userId == null) {
-            return DashboardSummaryResponse.builder()
-                    .totalWorkflows(workflowRepository.count())
-                    .runningWorkflows(workflowRepository.countByStatus(WorkflowStatus.RUNNING))
-                    .pausedWorkflows(workflowRepository.countByStatus(WorkflowStatus.PAUSED))
-                    .completedWorkflows(workflowRepository.countByStatus(WorkflowStatus.COMPLETED))
-                    .failedWorkflows(workflowRepository.countByStatus(WorkflowStatus.FAILED))
-                    .createdWorkflows(workflowRepository.countByStatus(WorkflowStatus.CREATED))
-                    .cancelledWorkflows(workflowRepository.countByStatus(WorkflowStatus.CANCELLED))
-                    .build();
+        List<Object[]> grouped = (userId == null)
+                ? workflowRepository.countGroupedByStatus()
+                : workflowRepository.countGroupedByStatusByUserId(userId);
+
+        Map<WorkflowStatus, Long> counts = new EnumMap<>(WorkflowStatus.class);
+        long total = 0L;
+        if (grouped != null) {
+            for (Object[] row : grouped) {
+                if (row != null && row.length >= 2 && row[0] instanceof WorkflowStatus status && row[1] instanceof Number num) {
+                    long count = num.longValue();
+                    counts.put(status, count);
+                    total += count;
+                }
+            }
         }
 
         return DashboardSummaryResponse.builder()
-                .totalWorkflows(workflowRepository.countByUserId(userId))
-                .runningWorkflows(workflowRepository.countByUserIdAndStatus(userId, WorkflowStatus.RUNNING))
-                .pausedWorkflows(workflowRepository.countByUserIdAndStatus(userId, WorkflowStatus.PAUSED))
-                .completedWorkflows(workflowRepository.countByUserIdAndStatus(userId, WorkflowStatus.COMPLETED))
-                .failedWorkflows(workflowRepository.countByUserIdAndStatus(userId, WorkflowStatus.FAILED))
-                .createdWorkflows(workflowRepository.countByUserIdAndStatus(userId, WorkflowStatus.CREATED))
-                .cancelledWorkflows(workflowRepository.countByUserIdAndStatus(userId, WorkflowStatus.CANCELLED))
+                .totalWorkflows(total)
+                .runningWorkflows(counts.getOrDefault(WorkflowStatus.RUNNING, 0L))
+                .pausedWorkflows(counts.getOrDefault(WorkflowStatus.PAUSED, 0L))
+                .completedWorkflows(counts.getOrDefault(WorkflowStatus.COMPLETED, 0L))
+                .failedWorkflows(counts.getOrDefault(WorkflowStatus.FAILED, 0L))
+                .createdWorkflows(counts.getOrDefault(WorkflowStatus.CREATED, 0L))
+                .cancelledWorkflows(counts.getOrDefault(WorkflowStatus.CANCELLED, 0L))
                 .build();
     }
 
@@ -364,6 +399,29 @@ public class WorkflowService {
                                 .build()
                 )
                 .toList();
+    }
+
+    public Page<WorkflowExecutionResponse> getWorkflowExecutionHistory(Long workflowId, Pageable pageable) {
+        return getWorkflowExecutionHistory(workflowId, pageable, UserContext.getUserId());
+    }
+
+    public Page<WorkflowExecutionResponse> getWorkflowExecutionHistory(Long workflowId, Pageable pageable, Long userId) {
+        getWorkflow(workflowId, userId);
+        Pageable normalized = PaginationUtils.normalize(
+                pageable,
+                Sort.by(Sort.Order.desc("startedAt"), Sort.Order.desc("id"))
+        );
+
+        return workflowExecutionRepository
+                .findByWorkflowId(workflowId, normalized)
+                .map(execution ->
+                        WorkflowExecutionResponse.builder()
+                                .id(execution.getId())
+                                .status(execution.getStatus())
+                                .startedAt(execution.getStartedAt())
+                                .completedAt(execution.getCompletedAt())
+                                .build()
+                );
     }
 
     public WorkflowAnalyticsResponse getWorkflowAnalytics(Long workflowId) {

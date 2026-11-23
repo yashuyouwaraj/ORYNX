@@ -1,7 +1,7 @@
 import type { Workflow } from "@/types/workflow";
 
-type WorkflowPage = {
-  content: Workflow[];
+type PageEnvelope<T> = {
+  content: T[];
   [key: string]: unknown;
 };
 
@@ -18,23 +18,30 @@ const createHeaders = (token?: string): HeadersInit => {
   return headers;
 };
 
-export const getWorkflows = async (token?: string): Promise<Workflow[]> => {
-  const response = await fetch(`${API_BASE_URL}/api/v1/workflows`, {
-    headers: createHeaders(token),
-  });
+export const getWorkflows = async (
+  token?: string,
+  page = 0,
+  size = 50
+): Promise<Workflow[]> => {
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/workflows?page=${page}&size=${size}`,
+    {
+      headers: createHeaders(token),
+    }
+  );
 
   if (!response.ok) {
     throw new Error("Failed to fetch workflows");
   }
 
-  const data = (await response.json()) as Workflow[] | WorkflowPage;
+  const data = (await response.json()) as Workflow[] | PageEnvelope<Workflow>;
 
   if (Array.isArray(data)) {
     return data;
   }
 
-  if (data && Array.isArray((data as WorkflowPage).content)) {
-    return (data as WorkflowPage).content;
+  if (data && Array.isArray((data as PageEnvelope<Workflow>).content)) {
+    return (data as PageEnvelope<Workflow>).content;
   }
 
   return [];
@@ -52,16 +59,31 @@ export const getAnalytics = async (token?: string) => {
   return response.json();
 };
 
-export const getTimeline = async (workflowId: number, token?: string) => {
-  const response = await fetch(`${API_BASE_URL}/api/v1/timeline/${workflowId}`, {
-    headers: createHeaders(token),
-  });
+export const getTimeline = async (
+  workflowId: number,
+  token?: string,
+  page = 0,
+  size = 50
+) => {
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/timeline/${workflowId}?page=${page}&size=${size}`,
+    {
+      headers: createHeaders(token),
+    }
+  );
 
   if (!response.ok) {
     throw new Error("Failed to fetch timeline");
   }
 
-  return response.json();
+  const data = await response.json();
+  if (Array.isArray(data)) {
+    return data;
+  }
+  if (data && Array.isArray(data.content)) {
+    return data.content;
+  }
+  return [];
 };
 
 export const getPerformance = async (token?: string) => {

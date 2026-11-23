@@ -3,6 +3,7 @@ package com.orynx.orchestrator.workflow;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
@@ -28,9 +29,20 @@ public interface WorkflowRepository extends JpaRepository<Workflow, Long> {
     @Query("SELECT w FROM Workflow w WHERE w.id = :id")
     Optional<Workflow> findByIdForUpdate(@Param("id") Long id);
 
+    @Override
+    @EntityGraph(attributePaths = "dependsOnWorkflow")
+    Page<Workflow> findAll(Pageable pageable);
+
     Page<Workflow> findByUserId(Long userId, Pageable pageable);
 
+    @EntityGraph(attributePaths = "dependsOnWorkflow")
     Page<Workflow> findByUserIdOrderByIdDesc(Long userId, Pageable pageable);
+
+    @EntityGraph(attributePaths = "dependsOnWorkflow")
+    Page<Workflow> findByUserIdAndStatus(Long userId, WorkflowStatus status, Pageable pageable);
+
+    @EntityGraph(attributePaths = "dependsOnWorkflow")
+    Page<Workflow> findByStatus(WorkflowStatus status, Pageable pageable);
 
     List<Workflow> findByUserIdOrderByIdDesc(Long userId);
 
@@ -47,6 +59,21 @@ public interface WorkflowRepository extends JpaRepository<Workflow, Long> {
     List<Workflow> findByStatusOrderByIdDesc(WorkflowStatus status);
 
     long countByStatus(WorkflowStatus status);
+
+    @Query("SELECT w.status, COUNT(w) FROM Workflow w GROUP BY w.status")
+    List<Object[]> countGroupedByStatus();
+
+    @Query("SELECT w.status, COUNT(w) FROM Workflow w WHERE w.userId = :userId GROUP BY w.status")
+    List<Object[]> countGroupedByStatusByUserId(@Param("userId") Long userId);
+
+    @Query("SELECT w FROM Workflow w WHERE w.startedAt IS NOT NULL AND w.completedAt IS NOT NULL ORDER BY (w.completedAt - w.startedAt) ASC, w.id DESC")
+    List<Workflow> findCompletedWorkflowsOrderByDurationAsc(Pageable pageable);
+
+    @Query("SELECT w FROM Workflow w WHERE w.startedAt IS NOT NULL AND w.completedAt IS NOT NULL ORDER BY (w.completedAt - w.startedAt) DESC, w.id DESC")
+    List<Workflow> findCompletedWorkflowsOrderByDurationDesc(Pageable pageable);
+
+    @Query("SELECT COUNT(w), MIN(w.completedAt - w.startedAt), MAX(w.completedAt - w.startedAt), AVG(w.completedAt - w.startedAt) FROM Workflow w WHERE w.startedAt IS NOT NULL AND w.completedAt IS NOT NULL")
+    List<Object[]> findCompletedWorkflowDurationAggregates();
 
     @Query("""
             SELECT w FROM Workflow w
