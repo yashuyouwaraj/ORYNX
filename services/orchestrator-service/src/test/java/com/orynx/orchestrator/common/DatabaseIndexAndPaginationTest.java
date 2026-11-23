@@ -185,17 +185,18 @@ class DatabaseIndexAndPaginationTest {
     void analyticsAndPerformanceServicesAvoidFindAll() {
         WorkflowAnalyticsService analyticsService = new WorkflowAnalyticsService(
                 workflowRepository, executionEventRepository, workflowTaskRepository);
-        when(executionEventRepository.count()).thenReturn(20L);
-        when(workflowRepository.countGroupedByStatus()).thenReturn(List.of(
+        Long userId = 10L;
+        when(executionEventRepository.countByWorkflowUserId(userId)).thenReturn(20L);
+        when(workflowRepository.countGroupedByStatusByUserId(userId)).thenReturn(List.of(
                 new Object[]{WorkflowStatus.COMPLETED, 3L},
                 new Object[]{WorkflowStatus.FAILED, 1L},
                 new Object[]{WorkflowStatus.RUNNING, 1L}
         ));
-        when(workflowTaskRepository.count()).thenReturn(12L);
-        when(workflowTaskRepository.countByStatus(TaskStatus.COMPLETED)).thenReturn(9L);
-        when(workflowTaskRepository.findAverageCompletedDurationMs()).thenReturn(250.0);
+        when(workflowTaskRepository.countByWorkflowUserId(userId)).thenReturn(12L);
+        when(workflowTaskRepository.countByWorkflowUserIdAndStatus(userId, TaskStatus.COMPLETED)).thenReturn(9L);
+        when(workflowTaskRepository.findAverageCompletedDurationMsByUserId(userId)).thenReturn(250.0);
 
-        WorkflowAnalyticsResponse analytics = analyticsService.getAnalytics();
+        WorkflowAnalyticsResponse analytics = analyticsService.getAnalytics(userId);
         assertThat(analytics.getTotalWorkflows()).isEqualTo(5L);
         assertThat(analytics.getCompletedWorkflows()).isEqualTo(3L);
         assertThat(analytics.getRunningWorkflows()).isEqualTo(1L);
@@ -206,16 +207,16 @@ class DatabaseIndexAndPaginationTest {
         verify(workflowTaskRepository, never()).findAll();
 
         WorkflowPerformanceService performanceService = new WorkflowPerformanceService(workflowRepository);
-        Workflow fast = Workflow.builder().id(1L).name("Fast").startedAt(100L).completedAt(200L).build();
-        Workflow slow = Workflow.builder().id(2L).name("Slow").startedAt(100L).completedAt(600L).build();
-        when(workflowRepository.findCompletedWorkflowDurationAggregates())
+        Workflow fast = Workflow.builder().id(1L).name("Fast").startedAt(100L).completedAt(200L).userId(userId).build();
+        Workflow slow = Workflow.builder().id(2L).name("Slow").startedAt(100L).completedAt(600L).userId(userId).build();
+        when(workflowRepository.findCompletedWorkflowDurationAggregatesByUserId(userId))
                 .thenReturn(List.<Object[]>of(new Object[]{2L, 100L, 500L, 300.0}));
-        when(workflowRepository.findCompletedWorkflowsOrderByDurationAsc(any()))
+        when(workflowRepository.findCompletedWorkflowsByUserIdOrderByDurationAsc(eq(userId), any()))
                 .thenReturn(List.of(fast));
-        when(workflowRepository.findCompletedWorkflowsOrderByDurationDesc(any()))
+        when(workflowRepository.findCompletedWorkflowsByUserIdOrderByDurationDesc(eq(userId), any()))
                 .thenReturn(List.of(slow));
 
-        WorkflowPerformanceSummaryResponse perfSummary = performanceService.getPerformanceSummary();
+        WorkflowPerformanceSummaryResponse perfSummary = performanceService.getPerformanceSummary(userId);
         assertThat(perfSummary.getFastestWorkflow()).isEqualTo("Fast");
         assertThat(perfSummary.getFastestDuration()).isEqualTo(100L);
         assertThat(perfSummary.getSlowestWorkflow()).isEqualTo("Slow");
@@ -223,15 +224,15 @@ class DatabaseIndexAndPaginationTest {
         assertThat(perfSummary.getCompletedWorkflowCount()).isEqualTo(2L);
         verify(workflowRepository, never()).findAll();
 
-        // Global average = 500.0 (not local fastest-subset average of 150.0)
-        when(workflowRepository.findCompletedWorkflowDurationAggregates())
+        // Global average for user = 500.0 (not local fastest-subset average of 150.0)
+        when(workflowRepository.findCompletedWorkflowDurationAggregatesByUserId(userId))
                 .thenReturn(List.<Object[]>of(new Object[]{105L, 100L, 10000L, 500.0}));
-        when(workflowRepository.findCompletedWorkflowsOrderByDurationAsc(any()))
+        when(workflowRepository.findCompletedWorkflowsByUserIdOrderByDurationAsc(eq(userId), any()))
                 .thenReturn(List.of(
-                        Workflow.builder().id(1L).name("Fast").startedAt(100L).completedAt(200L).build(),
-                        Workflow.builder().id(2L).name("Medium").startedAt(100L).completedAt(300L).build()
+                        Workflow.builder().id(1L).name("Fast").startedAt(100L).completedAt(200L).userId(userId).build(),
+                        Workflow.builder().id(2L).name("Medium").startedAt(100L).completedAt(300L).userId(userId).build()
                 ));
-        var health = performanceService.getWorkflowHealth();
+        var health = performanceService.getWorkflowHealth(userId);
         assertThat(health).hasSize(2);
         assertThat(health).allSatisfy(item -> assertThat(item.getHealth()).isEqualTo("HEALTHY"));
     }

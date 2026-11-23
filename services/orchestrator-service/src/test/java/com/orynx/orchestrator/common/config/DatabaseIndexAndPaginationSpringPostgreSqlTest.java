@@ -239,7 +239,7 @@ class DatabaseIndexAndPaginationSpringPostgreSqlTest {
                     .build());
         }
 
-        List<WorkflowHealthResponse> health = workflowPerformanceService.getWorkflowHealth();
+        List<WorkflowHealthResponse> health = workflowPerformanceService.getWorkflowHealth(userId);
         assertThat(health).hasSize(100);
         WorkflowHealthResponse target120 = health.stream()
                 .filter(h -> "Target-120ms".equals(h.getWorkflowName()))
