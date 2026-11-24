@@ -14,6 +14,7 @@ volumes:
   orynx_kafka_data:
   orynx_redis_data:
   orynx_prometheus_data:
+  orynx_alertmanager_data:
   orynx_tempo_data:
   orynx_grafana_data:
 
@@ -469,18 +470,50 @@ services:
       retries: 5
       start_period: 15s
 
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    profiles: ["observability"]
+    restart: unless-stopped
+    mem_limit: ${ALERTMANAGER_MEM_LIMIT:-128m}
+    cpus: ${ALERTMANAGER_CPU_LIMIT:-0.25}
+    environment:
+      ALERTMANAGER_WEBHOOK_URL: ${ALERTMANAGER_WEBHOOK_URL:-http://127.0.0.1:9093/-/healthy}
+    entrypoint:
+      - "/bin/sh"
+      - "-c"
+      - |
+        sed "s|http://127.0.0.1:9093/-/healthy|$${ALERTMANAGER_WEBHOOK_URL}|g" /etc/alertmanager/alertmanager.yml > /tmp/alertmanager.yml
+        exec /bin/alertmanager --config.file=/tmp/alertmanager.yml --storage.path=/alertmanager --web.listen-address=0.0.0.0:9093
+    volumes:
+      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - orynx_alertmanager_data:/alertmanager
+    ports:
+      - "127.0.0.1:9093:9093"
+    networks:
+      - orynx-monitoring
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9093/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   prometheus:
     image: prom/prometheus:v2.55.1
     profiles: ["observability"]
     restart: unless-stopped
     mem_limit: ${PROMETHEUS_MEM_LIMIT:-512m}
     cpus: ${PROMETHEUS_CPU_LIMIT:-1.0}
+    depends_on:
+      alertmanager:
+        condition: service_healthy
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
       - "--storage.tsdb.retention.time=7d"
     volumes:
       - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/rules:/etc/prometheus/rules:ro
       - orynx_prometheus_data:/prometheus
     ports:
       - "127.0.0.1:9090:9090"
@@ -501,6 +534,8 @@ services:
     cpus: ${GRAFANA_CPU_LIMIT:-0.5}
     depends_on:
       prometheus:
+        condition: service_healthy
+      alertmanager:
         condition: service_healthy
       tempo:
         condition: service_healthy

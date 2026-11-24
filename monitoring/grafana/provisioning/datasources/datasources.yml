@@ -10,6 +10,8 @@ datasources:
     editable: false
     jsonData:
       timeInterval: 15s
+      manageAlerts: true
+      alertmanagerUid: alertmanager
 
   - name: Tempo
     uid: tempo
@@ -24,3 +26,14 @@ datasources:
         datasourceUid: prometheus
       nodeGraph:
         enabled: true
+
+  - name: Alertmanager
+    uid: alertmanager
+    type: alertmanager
+    access: proxy
+    url: http://alertmanager:9093
+    isDefault: false
+    editable: false
+    jsonData:
+      implementation: prometheus
+      handleGrafanaManagedAlerts: false
