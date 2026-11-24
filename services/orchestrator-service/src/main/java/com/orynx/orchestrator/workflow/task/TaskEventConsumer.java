@@ -1,5 +1,6 @@
 package com.orynx.orchestrator.workflow.task;
 
+import com.orynx.orchestrator.common.metrics.WorkflowMetrics;
 import com.orynx.orchestrator.execution.WorkflowExecution;
 import com.orynx.orchestrator.execution.WorkflowExecutionRepository;
 import com.orynx.orchestrator.workflow.Workflow;
@@ -26,6 +27,9 @@ public class TaskEventConsumer {
     private final ExecutionEventRepository executionEventRepository;
     private final WorkflowExecutionRepository workflowExecutionRepository;
     private final WorkflowRepository workflowRepository;
+
+    @Autowired(required = false)
+    private WorkflowMetrics workflowMetrics;
 
     public TaskEventConsumer(
             SimpMessagingTemplate messagingTemplate,
@@ -142,6 +146,10 @@ public class TaskEventConsumer {
                 .build();
 
         executionEventRepository.save(executionEvent);
+
+        if (workflowMetrics != null && ("COMPLETED".equals(event.getStatus()) || "FAILED".equals(event.getStatus()))) {
+            workflowMetrics.recordTaskExecuted(event.getStatus());
+        }
 
         event.setGeneration(effectiveGen);
         event.setTimestamp(executionEvent.getTimestamp());

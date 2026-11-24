@@ -1,6 +1,7 @@
 package com.orynx.orchestrator.workflow;
 
 import com.orynx.orchestrator.common.exception.WorkflowNotFoundException;
+import com.orynx.orchestrator.common.metrics.WorkflowMetrics;
 import com.orynx.orchestrator.common.security.UserContext;
 import com.orynx.orchestrator.common.util.PaginationUtils;
 import com.orynx.orchestrator.event.dto.WorkflowCancelledEvent;
@@ -51,6 +52,9 @@ public class WorkflowService {
     private final WorkflowPauseProducer workflowPauseProducer;
     private final WorkflowResumeProducer workflowResumeProducer;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private WorkflowMetrics workflowMetrics;
+
     public Workflow createWorkflow(CreateWorkflowRequest request) {
         return createWorkflow(request, UserContext.getUserId());
     }
@@ -96,6 +100,10 @@ public class WorkflowService {
                 .build();
 
         workflowEventPublisher.publishWorkflowUpdate(executionEvent);
+
+        if (workflowMetrics != null) {
+            workflowMetrics.recordWorkflowCreated();
+        }
 
         return savedWorkflow;
     }
@@ -191,6 +199,10 @@ public class WorkflowService {
                 .build();
 
         workflowEventPublisher.publishWorkflowUpdate(event);
+
+        if (workflowMetrics != null) {
+            workflowMetrics.recordWorkflowStarted();
+        }
 
         return updatedWorkflow;
     }

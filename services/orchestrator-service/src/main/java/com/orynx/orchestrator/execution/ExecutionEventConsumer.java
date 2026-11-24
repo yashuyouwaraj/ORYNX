@@ -1,5 +1,6 @@
 package com.orynx.orchestrator.execution;
 
+import com.orynx.orchestrator.common.metrics.WorkflowMetrics;
 import com.orynx.orchestrator.event.dto.WorkflowExecutionPausedEvent;
 import com.orynx.orchestrator.execution.event.TaskCompletedEvent;
 import com.orynx.orchestrator.execution.event.TaskStartedEvent;
@@ -30,6 +31,9 @@ public class ExecutionEventConsumer {
     private final WorkflowTaskRepository workflowTaskRepository;
     private final WorkflowExecutionRepository workflowExecutionRepository;
     private final WorkflowEventPublisher workflowEventPublisher;
+
+    @Autowired(required = false)
+    private WorkflowMetrics workflowMetrics;
 
     public ExecutionEventConsumer(
             WorkflowRepository workflowRepository,
@@ -381,6 +385,13 @@ public class ExecutionEventConsumer {
                 workflow.getName(),
                 workflow.getStatus()
         );
+
+        if (workflowMetrics != null) {
+            long dur = (workflow.getStartedAt() != null && workflow.getCompletedAt() != null)
+                    ? Math.max(0L, workflow.getCompletedAt() - workflow.getStartedAt())
+                    : 0L;
+            workflowMetrics.recordWorkflowCompleted(workflow.getStatus().name(), dur);
+        }
 
         if (workflowEventPublisher != null) {
             Long gen = executionOptional.map(WorkflowExecution::getExecutionGeneration).orElse(event.getGeneration());
