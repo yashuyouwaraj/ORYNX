@@ -83,6 +83,21 @@ public class RedisDistributedLockService implements DistributedLockService {
     }
 
     @Override
+    public boolean isLockHeldBy(String lockKey, String token) {
+        if (lockKey == null || token == null) {
+            return false;
+        }
+        String fullKey = LOCK_KEY_PREFIX + lockKey;
+        try {
+            String currentVal = redisTemplate.opsForValue().get(fullKey);
+            return token.equals(currentVal);
+        } catch (Exception e) {
+            log.warn("Failed to check lock ownership for {}: {}", fullKey, e.getMessage());
+            return false;
+        }
+    }
+
+    @Override
     public <T> Optional<T> executeWithLock(String lockKey, Duration leaseDuration, Supplier<T> action) {
         String token = UUID.randomUUID().toString();
         if (!tryAcquire(lockKey, token, leaseDuration)) {

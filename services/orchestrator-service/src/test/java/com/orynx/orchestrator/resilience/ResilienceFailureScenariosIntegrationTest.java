@@ -189,7 +189,7 @@ class ResilienceFailureScenariosIntegrationTest {
                 .id("exp-scenario-b-kafka")
                 .name("Scenario B: Kafka Broker Outage")
                 .scenarioType(ScenarioType.KAFKA_INTERRUPTION)
-                .injectionLevel(InjectionLevel.APPLICATION_SCOPED)
+                .injectionLevel(InjectionLevel.SIMULATION)
                 .targetComponent("kafka")
                 .targetResource("isolated-kafka-broker-1")
                 .environmentTag("resilience-isolated")
@@ -204,7 +204,7 @@ class ResilienceFailureScenariosIntegrationTest {
         assertEquals(ExperimentResult.Outcome.PASS, expResult.getOutcome());
         assertTrue(expResult.isCleanupSuccessful());
         assertFalse(kafkaAdapter.isDropPublications());
-        assertEquals(InjectionLevel.APPLICATION_SCOPED, expResult.getInjectionLevel());
+        assertEquals(InjectionLevel.SIMULATION, expResult.getInjectionLevel());
     }
 
     @Test
@@ -214,7 +214,7 @@ class ResilienceFailureScenariosIntegrationTest {
                 .id("exp-scenario-c-postgres")
                 .name("Scenario C: Postgres Transaction Abort")
                 .scenarioType(ScenarioType.POSTGRES_INTERRUPTION)
-                .injectionLevel(InjectionLevel.APPLICATION_SCOPED)
+                .injectionLevel(InjectionLevel.SIMULATION)
                 .targetComponent("postgres")
                 .targetResource("isolated-postgres-instance")
                 .environmentTag("resilience-isolated")
@@ -229,7 +229,7 @@ class ResilienceFailureScenariosIntegrationTest {
         assertEquals(ExperimentResult.Outcome.PASS, expResult.getOutcome());
         assertTrue(expResult.isCleanupSuccessful());
         assertFalse(postgresAdapter.isTransactionAbort());
-        assertEquals(InjectionLevel.APPLICATION_SCOPED, expResult.getInjectionLevel());
+        assertEquals(InjectionLevel.SIMULATION, expResult.getInjectionLevel());
     }
 
     @Test
@@ -239,7 +239,7 @@ class ResilienceFailureScenariosIntegrationTest {
                 .id("exp-scenario-d-worker")
                 .name("Scenario D: Worker Crash and Lease Expiry")
                 .scenarioType(ScenarioType.WORKER_INTERRUPTION)
-                .injectionLevel(InjectionLevel.APPLICATION_SCOPED)
+                .injectionLevel(InjectionLevel.SIMULATION)
                 .targetComponent("worker")
                 .targetResource("isolated-worker-node-1")
                 .environmentTag("resilience-isolated")
@@ -254,7 +254,7 @@ class ResilienceFailureScenariosIntegrationTest {
         assertEquals(ExperimentResult.Outcome.PASS, expResult.getOutcome());
         assertTrue(expResult.isCleanupSuccessful());
         assertFalse(workerAdapter.isLeaseExpired());
-        assertEquals(InjectionLevel.APPLICATION_SCOPED, expResult.getInjectionLevel());
+        assertEquals(InjectionLevel.SIMULATION, expResult.getInjectionLevel());
     }
 
     @Test
@@ -264,7 +264,7 @@ class ResilienceFailureScenariosIntegrationTest {
                 .id("exp-scenario-e-orchestrator")
                 .name("Scenario E: Orchestrator Leader Lock Lost")
                 .scenarioType(ScenarioType.ORCHESTRATOR_INTERRUPTION)
-                .injectionLevel(InjectionLevel.APPLICATION_SCOPED)
+                .injectionLevel(InjectionLevel.SIMULATION)
                 .targetComponent("orchestrator")
                 .targetResource("isolated-orchestrator-instance")
                 .environmentTag("resilience-isolated")
@@ -279,7 +279,7 @@ class ResilienceFailureScenariosIntegrationTest {
         assertEquals(ExperimentResult.Outcome.PASS, expResult.getOutcome());
         assertTrue(expResult.isCleanupSuccessful());
         assertFalse(orchestratorAdapter.isLeaderLockLost());
-        assertEquals(InjectionLevel.APPLICATION_SCOPED, expResult.getInjectionLevel());
+        assertEquals(InjectionLevel.SIMULATION, expResult.getInjectionLevel());
     }
 
     @Test

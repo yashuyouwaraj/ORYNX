@@ -150,4 +150,21 @@ class ResilienceAdaptersTest {
 
         adapter.cleanup(def);
     }
+
+    @Test
+    @DisplayName("All adapters declare truthful and verified injection levels (M-01)")
+    void testAdapterInjectionLevels() {
+        assertEquals(com.orynx.orchestrator.resilience.model.InjectionLevel.APPLICATION_SCOPED,
+                new RedisInterruptionAdapter().getInjectionLevel());
+        assertEquals(com.orynx.orchestrator.resilience.model.InjectionLevel.SIMULATION,
+                new KafkaInterruptionAdapter().getInjectionLevel());
+        assertEquals(com.orynx.orchestrator.resilience.model.InjectionLevel.SIMULATION,
+                new PostgresInterruptionAdapter().getInjectionLevel());
+        assertEquals(com.orynx.orchestrator.resilience.model.InjectionLevel.SIMULATION,
+                new WorkerInterruptionAdapter().getInjectionLevel());
+        assertEquals(com.orynx.orchestrator.resilience.model.InjectionLevel.SIMULATION,
+                new OrchestratorInterruptionAdapter().getInjectionLevel());
+        assertEquals(com.orynx.orchestrator.resilience.model.InjectionLevel.SIMULATION,
+                new NetworkLatencyAdapter().getInjectionLevel());
+    }
 }

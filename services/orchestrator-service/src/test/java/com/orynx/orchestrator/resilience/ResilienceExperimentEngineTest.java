@@ -15,6 +15,9 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.data.redis.RedisConnectionFailureException;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -31,6 +34,8 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -152,6 +157,102 @@ class ResilienceExperimentEngineTest {
     }
 
     @Test
+    @DisplayName("Stale lock owner is prevented from injecting fault after ownership loss (M-02)")
+    void staleLockOwnerBlockedBeforeInjection() {
+        DistributedLockService lockService = mock(DistributedLockService.class);
+        // Initial lock acquisition succeeds
+        when(lockService.tryAcquire(eq(ResilienceExperimentEngine.RESILIENCE_LOCK_KEY), any(), any()))
+                .thenReturn(true);
+        // But lease expires / ownership lost before injection step
+        when(lockService.isLockHeldBy(eq(ResilienceExperimentEngine.RESILIENCE_LOCK_KEY), any()))
+                .thenReturn(false);
+
+        FailureInjectionAdapter adapter = mock(FailureInjectionAdapter.class);
+        when(adapter.getSupportedScenario()).thenReturn(ScenarioType.REDIS_INTERRUPTION);
+
+        ResilienceExperimentEngine staleOwnerEngine = new ResilienceExperimentEngine(
+                validator,
+                metrics,
+                registry,
+                List.of(adapter),
+                lockService,
+                null
+        );
+
+        ExperimentDefinition def = sampleDefinition("exp-stale-001");
+        ExperimentResult result = staleOwnerEngine.runExperiment(def);
+
+        assertEquals(ExperimentResult.Outcome.FAIL, result.getOutcome());
+        assertTrue(result.getVerificationErrors().stream().anyMatch(e -> e.contains("Stale lock owner detected")));
+        // Verify adapter was NEVER injected because stale owner was caught
+        verify(adapter, never()).inject(any());
+        // Verify lock release was not attempted since ownership was lost
+        verify(lockService, never()).release(any(), any());
+    }
+
+    @Test
+    @DisplayName("Stale lock owner loss during observation skips cleanup to protect active lock owner (M-02)")
+    void staleLockOwnerLossDuringExecutionSkipsCleanup() {
+        DistributedLockService lockService = mock(DistributedLockService.class);
+        when(lockService.tryAcquire(eq(ResilienceExperimentEngine.RESILIENCE_LOCK_KEY), any(), any()))
+                .thenReturn(true);
+        // Lock held at start and injection, but lost during observation
+        when(lockService.isLockHeldBy(eq(ResilienceExperimentEngine.RESILIENCE_LOCK_KEY), any()))
+                .thenReturn(true)  // check before injection: true
+                .thenReturn(false); // check before recovery & cleanup: false
+
+        FailureInjectionAdapter adapter = mock(FailureInjectionAdapter.class);
+        when(adapter.getSupportedScenario()).thenReturn(ScenarioType.REDIS_INTERRUPTION);
+        when(adapter.verifyInjected(any())).thenReturn(true);
+
+        ResilienceExperimentEngine staleOwnerEngine = new ResilienceExperimentEngine(
+                validator,
+                metrics,
+                registry,
+                List.of(adapter),
+                lockService,
+                null
+        );
+
+        ExperimentDefinition def = sampleDefinition("exp-stale-during-001").toBuilder().durationMs(50).build();
+        ExperimentResult result = staleOwnerEngine.runExperiment(def);
+
+        assertEquals(ExperimentResult.Outcome.FAIL, result.getOutcome());
+        assertTrue(result.getVerificationErrors().stream().anyMatch(e -> e.contains("Stale lock owner detected") || e.contains("skipped cleanup")));
+        // Verify adapter cleanup was SKIPPED to protect the new owner
+        verify(adapter, never()).cleanup(any());
+        verify(lockService, never()).release(any(), any());
+    }
+
+    @Test
+    @DisplayName("Quarantine verification fails closed on Redis connectivity error (M-04)")
+    void quarantineFailsClosedOnRedisError() {
+        StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
+        when(redisTemplate.hasKey(eq(ResilienceExperimentEngine.QUARANTINE_KEY)))
+                .thenThrow(new RedisConnectionFailureException("Simulated Redis connection failure"));
+
+        ResilienceExperimentEngine failClosedEngine = new ResilienceExperimentEngine(
+                validator,
+                metrics,
+                registry,
+                List.of(redisAdapter),
+                null,
+                redisTemplate
+        );
+
+        // isQuarantined must return true (fail closed)
+        assertTrue(failClosedEngine.isQuarantined());
+
+        // runExperiment must fail with SafetyValidationException
+        ExperimentDefinition def = sampleDefinition("exp-quarantine-fail-closed");
+        SafetyValidationException ex = assertThrows(SafetyValidationException.class, () ->
+                failClosedEngine.runExperiment(def)
+        );
+        assertTrue(ex.getMessage().contains("Failing closed to preserve cluster safety"));
+        assertTrue(ex.getMessage().contains("connectivity error"));
+    }
+
+    @Test
     @DisplayName("Timeout watchdog enforces timeoutMs and records TIMED_OUT outcome")
     void timeoutWatchdogEnforcesTimeout() {
         FailureInjectionAdapter hangingAdapter = mock(FailureInjectionAdapter.class);
@@ -240,5 +341,13 @@ class ResilienceExperimentEngineTest {
         boolean cleared = faultyEngine.clearQuarantine("Manual operator recovery verification");
         assertTrue(cleared);
         assertFalse(faultyEngine.isQuarantined());
+    }
+
+    @Test
+    @DisplayName("Scheduler lifecycle shutdown executes without error (M-03)")
+    void schedulerShutdownExecutesCleanly() {
+        engine.shutdown();
+        // Subsequent shutdown should be idempotent
+        engine.shutdown();
     }
 }

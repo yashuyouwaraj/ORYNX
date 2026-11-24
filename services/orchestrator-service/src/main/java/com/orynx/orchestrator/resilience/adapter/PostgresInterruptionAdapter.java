@@ -37,7 +37,7 @@ public class PostgresInterruptionAdapter implements FailureInjectionAdapter {
 
     @Override
     public InjectionLevel getInjectionLevel() {
-        return InjectionLevel.APPLICATION_SCOPED;
+        return InjectionLevel.SIMULATION;
     }
 
     @Override

@@ -67,15 +67,19 @@ This alert indicates that a resilience failure experiment executed by the `Resil
 2. **Target container/process crashed or terminated unexpectedly**: The isolated container or process was killed before cleanup could finish.
 3. **In-process fault registry not cleared**: An unexpected exception occurred inside the adapter's `cleanup()` implementation before invoking `faultRegistry.deactivateFault()`.
 4. **Permissions or locking deadlock**: An active lock on the target prevented configuration reversion.
+5. **Redis Connectivity Failure (Quarantine Fail-Closed)**: If Redis is offline or experiencing network partition, the engine's quarantine verification automatically fails closed by raising `SafetyValidationException`. This prevents experiments from running when cluster quarantine status cannot be reliably determined.
 
 ## 8. Safe Recovery & Quarantine Reset Actions
-1. **Manual Component State Reset**:
+1. **Verify Redis Connectivity**:
+   - Confirm Redis is reachable: `redis-cli ping`.
+   - If Redis was down or partitioned, restoring connectivity may clear the fail-closed condition once Redis replies.
+2. **Manual Component State Reset**:
    - For Redis: Ensure `ResilienceFaultRegistry` has deactivated any `REDIS_INTERRUPTION` faults and `RedisCoordinationProperties` retains expected production settings.
    - For Kafka: Re-enable producer dispatch and unpause consumer groups.
    - For PostgreSQL: Terminate hanging transactions or reset connection pool.
    - For Worker: Remove stale lease keys from Redis and restart worker process if necessary.
    - For Network Latency: Clear any simulated proxy delays or traffic shaping rules.
-2. **Clear Quarantine via Operator Reset**:
+3. **Clear Quarantine via Operator Reset**:
    - Once all components are verified healthy, invoke `clearQuarantine`:
      ```java
      // Programmatic invocation or via admin actuator endpoint
@@ -86,7 +90,8 @@ This alert indicates that a resilience failure experiment executed by the `Resil
      docker exec -it orynx-audit-redis redis-cli del "orynx:{admission}:resilience_quarantine"
      docker exec -it orynx-audit-redis redis-cli del "orynx:{admission}:resilience_lock"
      ```
-3. **Verify Environment Isolation**:
+   - Note: If Redis is down, `clearQuarantine` will fail loudly with `IllegalStateException` rather than silently succeeding.
+4. **Verify Environment Isolation**:
    - Confirm that no production or shared resources were affected.
 
 ## 9. Escalation Criteria

@@ -6,9 +6,12 @@ import com.orynx.orchestrator.resilience.metrics.ResilienceMetrics;
 import com.orynx.orchestrator.resilience.model.ExperimentDefinition;
 import com.orynx.orchestrator.resilience.model.ExperimentResult;
 import com.orynx.orchestrator.resilience.model.ExperimentState;
+import com.orynx.orchestrator.resilience.model.InjectionLevel;
 import com.orynx.orchestrator.resilience.model.ScenarioType;
 import com.orynx.orchestrator.resilience.safety.ExperimentSafetyValidator;
 import com.orynx.orchestrator.resilience.safety.SafetyValidationException;
+import com.orynx.orchestrator.resilience.safety.StaleLockOwnerException;
+import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -34,12 +37,14 @@ import java.util.concurrent.atomic.AtomicReference;
  * Orchestrates safety validation, state transitions, fault injection, observation,
  * recovery verification, and guaranteed cleanup with Micrometer observability.
  *
- * Remediated in Step 25.2:
- * - Distributed locking via DistributedLockService to prevent cross-node concurrency
+ * Remediated in Step 25.2 & Step 25.4:
+ * - Distributed locking via DistributedLockService with stale-owner verification
+ * - Fail-closed quarantine validation on Redis connectivity failures
  * - Scheduled timeout watchdog actively enforcing experiment timeoutMs with thread interruption
  * - Active thread interruption on operator abort
  * - Quarantine mode enforcement on cleanup failure with clearQuarantine operator reset
- * - Non-invasive context-scoped fault injection
+ * - Clean lifecycle shutdown of timeout scheduler via @PreDestroy
+ * - Truthful injection level classification in results
  */
 @Slf4j
 @Component
@@ -103,10 +108,8 @@ public class ResilienceExperimentEngine {
             throw new IllegalArgumentException("Experiment definition cannot be null");
         }
 
-        // Quarantine check (F-07)
-        if (isQuarantined()) {
-            throw new SafetyValidationException("Resilience engine is in QUARANTINE mode due to previous cleanup failure. Operator intervention required via clearQuarantine().");
-        }
+        // Quarantine check (fails closed on Redis connectivity error)
+        verifyQuarantineSafety();
 
         // JVM concurrency guard
         if (!activeExperimentId.compareAndSet(null, definition.getId())) {
@@ -169,6 +172,9 @@ public class ResilienceExperimentEngine {
 
             checkAborted(timedOut);
 
+            // Stale-owner check before injection (M-02)
+            verifyLockOwnership(lockAcquired, lockToken);
+
             // Step 2: Inject failure
             transitionState(ExperimentState.READY, ExperimentState.RUNNING);
             long injectionStart = System.currentTimeMillis();
@@ -204,6 +210,9 @@ public class ResilienceExperimentEngine {
 
             checkAborted(timedOut);
 
+            // Stale-owner check before recovery (M-02)
+            verifyLockOwnership(lockAcquired, lockToken);
+
             // Step 5: Recovery
             transitionState(ExperimentState.OBSERVING, ExperimentState.RECOVERING);
             long recoveryStart = System.currentTimeMillis();
@@ -236,6 +245,10 @@ public class ResilienceExperimentEngine {
                 verificationErrors.add("Experiment interrupted: " + ie.getMessage());
                 forceState(ExperimentState.ABORTED);
             }
+        } catch (StaleLockOwnerException sloe) {
+            outcome = ExperimentResult.Outcome.FAIL;
+            verificationErrors.add("Stale lock owner detected: " + sloe.getMessage());
+            forceState(ExperimentState.FAILED);
         } catch (SafetyValidationException sve) {
             outcome = ExperimentResult.Outcome.FAIL;
             verificationErrors.add("Safety validation failed: " + sve.getMessage());
@@ -258,8 +271,14 @@ public class ResilienceExperimentEngine {
             timeoutFuture.cancel(true);
             executingThread.set(null);
 
-            // Mandatory cleanup in finally block
-            if (adapter != null) {
+            // Stale owner verification before cleanup (M-02)
+            boolean isStaleOwner = lockAcquired && distributedLockService != null && !distributedLockService.isLockHeldBy(RESILIENCE_LOCK_KEY, lockToken);
+
+            if (isStaleOwner) {
+                log.error("[RESILIENCE] Stale lock owner detected during cleanup. Lock is no longer held by token {}. Aborting cleanup to protect active cluster owner.", lockToken);
+                verificationErrors.add("Stale owner detected: skipped cleanup to avoid interfering with new lock holder");
+                cleanupSuccessful = false;
+            } else if (adapter != null) {
                 try {
                     adapter.cleanup(definition);
                     cleanupSuccessful = true;
@@ -288,8 +307,8 @@ public class ResilienceExperimentEngine {
             resilienceMetrics.experimentEnded();
             activeExperimentId.set(null);
 
-            // Release distributed lock only if cleanup succeeded (F-03, F-07)
-            if (lockAcquired && distributedLockService != null && cleanupSuccessful) {
+            // Release distributed lock only if cleanup succeeded and we are still rightful owner (F-03, F-07, M-02)
+            if (lockAcquired && distributedLockService != null && cleanupSuccessful && !isStaleOwner) {
                 try {
                     distributedLockService.release(RESILIENCE_LOCK_KEY, lockToken);
                 } catch (Exception e) {
@@ -306,6 +325,8 @@ public class ResilienceExperimentEngine {
         metricsSnapshot.put("recoveryDurationMs", recoveryDurationMs);
         metricsSnapshot.put("cleanupSuccessful", cleanupSuccessful);
 
+        InjectionLevel resolvedLevel = adapter != null ? adapter.getInjectionLevel() : definition.getInjectionLevel();
+
         ExperimentResult result = ExperimentResult.builder()
                 .experimentId(definition.getId())
                 .outcome(outcome)
@@ -318,12 +339,12 @@ public class ResilienceExperimentEngine {
                 .verificationErrors(verificationErrors)
                 .cleanupSuccessful(cleanupSuccessful)
                 .metricsSnapshot(metricsSnapshot)
-                .injectionLevel(definition.getInjectionLevel())
+                .injectionLevel(resolvedLevel)
                 .build();
 
         experimentRegistry.recordResult(result);
-        log.info("[RESILIENCE] Experiment '{}' finished with outcome: {} (cleanup={})",
-                definition.getId(), outcome, cleanupSuccessful);
+        log.info("[RESILIENCE] Experiment '{}' finished with outcome: {} (cleanup={}, level={})",
+                definition.getId(), outcome, cleanupSuccessful, resolvedLevel);
 
         return result;
     }
@@ -349,12 +370,17 @@ public class ResilienceExperimentEngine {
             try {
                 redisTemplate.delete(QUARANTINE_KEY);
             } catch (Exception re) {
-                log.error("Failed to delete quarantine in Redis", re);
+                log.error("Failed to delete quarantine in Redis: {}", re.getMessage());
+                throw new IllegalStateException("Failed to clear quarantine in Redis due to connectivity error: " + re.getMessage(), re);
             }
         }
         return true;
     }
 
+    /**
+     * Checks whether the engine is in quarantine mode.
+     * Fails closed: if Redis cannot be contacted, treats the engine as quarantined to prevent unsafe executions.
+     */
     public boolean isQuarantined() {
         if (quarantined.get()) {
             return true;
@@ -364,10 +390,34 @@ public class ResilienceExperimentEngine {
                 Boolean hasKey = redisTemplate.hasKey(QUARANTINE_KEY);
                 return Boolean.TRUE.equals(hasKey);
             } catch (Exception e) {
-                log.warn("Failed to check quarantine in Redis", e);
+                log.error("[RESILIENCE] Redis connectivity error during quarantine check: {}. Failing closed.", e.getMessage());
+                return true;
             }
         }
         return false;
+    }
+
+    /**
+     * Authoritative check for quarantine safety before starting an experiment.
+     * Fails closed on any Redis connection failure, throwing SafetyValidationException.
+     */
+    public void verifyQuarantineSafety() {
+        if (quarantined.get()) {
+            throw new SafetyValidationException("Resilience engine is in QUARANTINE mode due to previous cleanup failure on this node. Operator intervention required via clearQuarantine().");
+        }
+        if (redisTemplate != null) {
+            try {
+                Boolean hasKey = redisTemplate.hasKey(QUARANTINE_KEY);
+                if (Boolean.TRUE.equals(hasKey)) {
+                    throw new SafetyValidationException("Resilience engine is in QUARANTINE mode due to previous cleanup failure in the cluster. Operator intervention required via clearQuarantine().");
+                }
+            } catch (SafetyValidationException sve) {
+                throw sve;
+            } catch (Exception e) {
+                log.error("[RESILIENCE] Redis connectivity error during quarantine verification: {}", e.getMessage(), e);
+                throw new SafetyValidationException("Failed to verify quarantine status in Redis due to connectivity error: " + e.getMessage() + ". Failing closed to preserve cluster safety.");
+            }
+        }
     }
 
     public ExperimentState getCurrentState() {
@@ -376,6 +426,28 @@ public class ResilienceExperimentEngine {
 
     public String getActiveExperimentId() {
         return activeExperimentId.get();
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        log.info("[RESILIENCE] Shutting down timeout scheduler...");
+        try {
+            timeoutScheduler.shutdownNow();
+            if (!timeoutScheduler.awaitTermination(2, TimeUnit.SECONDS)) {
+                log.warn("[RESILIENCE] Timeout scheduler did not terminate cleanly within 2s");
+            }
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void verifyLockOwnership(boolean lockAcquired, String lockToken) {
+        if (!lockAcquired || distributedLockService == null) {
+            return;
+        }
+        if (!distributedLockService.isLockHeldBy(RESILIENCE_LOCK_KEY, lockToken)) {
+            throw new StaleLockOwnerException("Distributed lock ownership was lost for " + RESILIENCE_LOCK_KEY + " (stale owner detected). Terminating experiment to prevent unauthorized execution.");
+        }
     }
 
     private void checkAborted(AtomicBoolean timedOut) {
