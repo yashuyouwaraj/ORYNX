@@ -34,7 +34,7 @@ Slots are automatically released at four lifecycle points:
 4. `ExecutionEventConsumer.consumeWorkflowExecutionPaused(event)`: Releases slot when execution worker yields or pauses.
 
 ### 2.3 Idempotency & Re-entrancy
-If `tryAdmit` is invoked multiple times for the same workflow (e.g., retried HTTP request or duplicate consumer call), the Lua script detects that `workflowId` is already present in `orynx:admission:active` and returns `ALREADY_ADMITTED` without incrementing global or per-user counters.
+If `tryAdmit` is invoked multiple times for the same workflow (e.g., retried HTTP request or duplicate consumer call), the Lua script detects that `workflowId` is already present in `orynx:{admission}:active_workflows` and returns `ALREADY_ADMITTED` without incrementing global or per-user counters.
 
 Similarly, `release` is completely idempotent: removing a non-existent or already-released workflow ID returns `RELEASED` without negative count side-effects.
 
@@ -47,20 +47,22 @@ All coordination properties are mapped under `orynx.admission.*` in `application
 ```properties
 # Admission Control Properties
 orynx.admission.enabled=true
-orynx.admission.global-max-concurrent-workflows=100
-orynx.admission.user-max-concurrent-workflows=20
-orynx.admission.lease-ttl-seconds=7200
+orynx.admission.max-global-concurrent-workflows=100
+orynx.admission.max-user-concurrent-workflows=10
+orynx.admission.workflow-lease-ttl-seconds=3600
 orynx.admission.failure-policy=FAIL_CLOSED
-orynx.admission.reconciliation-cron=0 */5 * * * *
+orynx.admission.reconciliation-interval-seconds=60
+orynx.admission.inflight-grace-period-seconds=60
+orynx.admission.retry-after-seconds=5
 ```
 
 ### Failure Policies: `FAIL_CLOSED` vs `FAIL_OPEN`
 
 - **`FAIL_CLOSED` (Default / Production Recommended)**:
-  - If Redis is unreachable, timeouts occur, or connection errors trigger, admission is **rejected** with a `WorkflowAdmissionException` (HTTP 503 Service Unavailable, `Retry-After: 15`).
+  - If Redis is unreachable, timeouts occur, or connection errors trigger, admission is **rejected** with a `WorkflowAdmissionException` (HTTP 503 Service Unavailable, `Retry-After: 5`).
   - Guarantees cluster resources are never overloaded during infrastructure degradation.
 - **`FAIL_OPEN`**:
-  - If Redis is unreachable, the admission controller logs an error, increments `orynx.workflow.admission.errors.total`, and **permits** the workflow to execute with a fallback token.
+  - If Redis is unreachable, the admission controller logs an error, increments failure metrics, and **permits** the workflow to execute with a fallback token.
   - Prioritizes workflow availability over strict concurrency bounds.
 
 ### Client Backpressure Response
@@ -73,7 +75,7 @@ When a workflow is rejected due to capacity or quota limits, `GlobalExceptionHan
   "error": "Too Many Requests",
   "reason": "GLOBAL_LIMIT_EXCEEDED",
   "message": "Workflow admission rejected: global execution concurrency limit reached (100/100)",
-  "retryAfterSeconds": 15,
+  "retryAfterSeconds": 5,
   "timestamp": 1732454400000
 }
 ```
@@ -81,50 +83,55 @@ When a workflow is rejected due to capacity or quota limits, `GlobalExceptionHan
 The HTTP response includes the standard header:
 ```http
 HTTP/1.1 429 Too Many Requests
-Retry-After: 15
+Retry-After: 5
 Content-Type: application/json
 ```
 
 ---
 
-## 4. Key Namespaces & Redis Data Structures
+## 4. Key Namespaces, Hash Tags & Redis Data Structures
 
-All Redis keys used by OrynX coordination are strictly namespaced:
+All Redis keys used by OrynX coordination use hash-tagging `{admission}` and `{lock}` to guarantee multi-node Redis Cluster compatibility without `CROSSSLOT` errors:
 
 | Key Pattern | Redis Type | TTL | Purpose |
 |---|---|---|---|
-| `orynx:admission:active` | `Set<String>` | None (Managed) | Set containing active workflow IDs across the cluster |
-| `orynx:admission:user:{userId}` | `Set<String>` | None (Managed) | Set containing active workflow IDs belonging to `userId` |
-| `orynx:admission:lease:{workflowId}` | `String` | Configurable (`lease-ttl-seconds`, default 2h) | Lease holding owner token and admission timestamp |
-| `orynx:lock:{lockKey}` | `String` | Explicit lease duration | Distributed mutex holding owner token |
+| `orynx:{admission}:active_workflows` | `Set<String>` | None (Managed) | Set containing active workflow IDs across the cluster |
+| `orynx:{admission}:user_workflows:{userId}` | `Set<String>` | None (Managed) | Set containing active workflow IDs belonging to `userId` |
+| `orynx:{admission}:lease:{workflowId}` | `String` | Configurable (`workflow-lease-ttl-seconds`) | Lease holding metadata `userId:leaseToken:admittedAtMs` |
+| `orynx:{admission}:initialized` | `String` | 24 Hours | Marker key indicating Redis has been populated from PostgreSQL |
+| `orynx:{lock}:{lockKey}` | `String` | Explicit lease duration | Distributed mutex holding owner token |
 
 ---
 
 ## 5. Atomic Lua Scripts
 
-To ensure strict ACID semantics in Redis across multi-key operations without distributed deadlocks or race conditions, all mutations use Redis Lua scripts compiled into `RedisScript<List<Object>>` or `RedisScript<Long>`.
+To ensure strict ACID semantics in Redis across multi-key operations without distributed deadlocks or race conditions, all mutations use Redis Lua scripts compiled into `RedisScript<List>` or `RedisScript<Long>`.
 
 ### 5.1 `admit_workflow.lua`
-- **Keys**: `orynx:admission:active`, `orynx:admission:user:{userId}`, `orynx:admission:lease:{workflowId}`
-- **Args**: `workflowId`, `userId`, `globalMax`, `userMax`, `leaseTtlSeconds`, `token`
+- **Keys**: `orynx:{admission}:active_workflows`, `orynx:{admission}:user_workflows:{userId}`, `orynx:{admission}:lease:{workflowId}`
+- **Args**: `workflowId`, `maxGlobal`, `maxUser`, `ttlSeconds`, `leaseToken`, `userId`, `admittedAtMs`
 - **Logic**:
   1. Checks if `workflowId` is already in active set (`SISMEMBER`). If so, refreshes lease TTL and returns `ALREADY_ADMITTED`.
   2. Queries current cardinality (`SCARD`) of global and user sets.
-  3. If global count >= `globalMax`, returns `GLOBAL_LIMIT_EXCEEDED`.
-  4. If user count >= `userMax`, returns `USER_LIMIT_EXCEEDED`.
-  5. Atomically adds `workflowId` to both sets (`SADD`) and writes lease key with TTL (`SETEX`).
-  6. Returns `ADMITTED` with new global and user counts.
+  3. If global count >= `maxGlobal`, returns `GLOBAL_LIMIT_EXCEEDED`.
+  4. If user count >= `maxUser`, returns `USER_LIMIT_EXCEEDED`.
+  5. Atomically adds `workflowId` to both sets (`SADD`) and writes lease key with metadata `${userId}:${leaseToken}:${admittedAtMs}` with TTL (`SETEX`).
+  6. Sets safety TTL on user set (`ttlSeconds * 2`).
+  7. Returns `ADMITTED` with new global and user counts.
 
 ### 5.2 `release_workflow.lua`
-- **Keys**: `orynx:admission:active`, `orynx:admission:user:{userId}`, `orynx:admission:lease:{workflowId}`
-- **Args**: `workflowId`, `userId`
+- **Keys**: `orynx:{admission}:active_workflows`, `orynx:{admission}:user_workflows:{fallbackUserId}`, `orynx:{admission}:lease:{workflowId}`
+- **Args**: `workflowId`
 - **Logic**:
-  1. Atomically removes `workflowId` from global set (`SREM`) and user set (`SREM`).
-  2. Deletes lease key (`DEL`).
-  3. Returns `RELEASED` with new global and user counts.
+  1. Atomically removes `workflowId` from global set (`SREM`).
+  2. Inspects `lease:{workflowId}` to extract `realUserId` from stored metadata (`userId:leaseToken:admittedAtMs`).
+  3. Removes `workflowId` from `orynx:{admission}:user_workflows:` .. realUserId (guaranteeing user quota sets never leak, even if caller passes `null` or mismatched user ID).
+  4. Removes `workflowId` from fallback user set if provided.
+  5. Deletes lease key (`DEL`).
+  6. Returns `RELEASED` with new global and user counts.
 
 ### 5.3 `release_lock.lua`
-- **Keys**: `orynx:lock:{lockKey}`
+- **Keys**: `orynx:{lock}:{lockKey}`
 - **Args**: `expectedToken`
 - **Logic**:
   1. Inspects current value of `lockKey`.
@@ -150,32 +157,38 @@ Every lock acquisition generates a unique UUID token. Releasing the lock require
 
 ---
 
-## 7. Self-Healing Background Reconciliation
+## 7. Self-Healing Background Reconciliation & Cold-Restart Recovery
 
-The `AdmissionReconciliationJob` runs on a scheduled cadence (default: every 5 minutes):
-1. Acquires a distributed lock `orynx:lock:reconciliation-leader` for 4 minutes to ensure only one orchestrator instance reconciles at a time.
-2. Scans all workflow IDs present in `orynx:admission:active`.
-3. Queries PostgreSQL for each workflow's current status in the durable repository.
-4. If PostgreSQL indicates the workflow is in a terminal state (`COMPLETED`, `FAILED`, `CANCELLED`) or missing, the job releases the admission slot in Redis.
-5. Updates the Micrometer gauges to match true PostgreSQL and Redis state.
+### 7.1 Leader Election
+`AdmissionReconciliationJob` is leader-elected using `distributedLockService.executeWithLock("admission-reconciliation-leader", ...)`. Only one orchestrator instance reconciles across the cluster at any time, preventing split-brain lock fights and redundant database loads.
+
+### 7.2 Cold-Restart State Reconstruction
+On application boot (`@EventListener(ApplicationReadyEvent.class)`) or whenever `orynx:{admission}:initialized` is absent:
+1. Acquires leader lock `"admission-recovery-leader"`.
+2. Queries PostgreSQL durable repository for all workflows currently in `WorkflowStatus.RUNNING`.
+3. Populates Redis sets (`active_workflows` and `user_workflows:{userId}`) and writes fresh lease keys.
+4. If running workflows exceed `maxGlobalConcurrentWorkflows`, logs a critical error; cluster backpressure throttles new submissions until capacity frees up.
+5. Sets `orynx:{admission}:initialized` with 24h TTL.
+
+### 7.3 In-Flight `CREATED` Workflow Grace Period
+During `startWorkflow`, a workflow is admitted in Redis while its PostgreSQL transaction is in-flight (status `CREATED`).
+To prevent reconciliation from prematurely purging in-flight starting workflows:
+- The lease key stores `admittedAtMs`.
+- If a workflow in Redis is in status `CREATED` in PostgreSQL:
+  - If `now - admittedAtMs < inflightGracePeriodSeconds` (default: 60s), the slot is **retained**.
+  - If `now - admittedAtMs >= inflightGracePeriodSeconds`, it is identified as an abandoned transaction and **purged**.
 
 ---
 
 ## 8. Observability & Alerting Integration
 
 ### Micrometer Metrics
-- `orynx.workflow.admission.active.workflows` (Gauge): Current concurrent workflows in Redis.
-- `orynx.workflow.admission.utilization` (Gauge): Global utilization ratio (`active / max`).
-- `orynx.workflow.admission.admitted.total` (Counter): Workflows admitted successfully.
-- `orynx.workflow.admission.rejected.total` (Counter, tagged `reason`): Workflows rejected due to limits.
-- `orynx.workflow.admission.errors.total` (Counter): Redis communication errors during admission.
-- `orynx.workflow.admission.reconciled.total` (Counter): Stale slots cleared by reconciliation.
-- `orynx.redis.lock.acquired.total`, `orynx.redis.lock.failed.total`, `orynx.redis.lock.released.total`.
+- `orynx.admission.active.workflows` (Gauge): Current concurrent workflows in Redis.
+- `orynx.admission.utilization` (Gauge): Global utilization ratio (`active / max`).
+- `orynx_workflow_admission_accepted_total`, `orynx_workflow_admission_rejected_total` (Counters tagged `reason`).
+- `orynx_redis_operations_total` (Counter tagged `operation`, `status`).
 
 ### Prometheus Alerts
-- `RedisCoordinationErrorsHigh`: Triggers if Redis errors occur during admission control.
-- `WorkflowAdmissionCapacitySaturated`: Triggers if global admission utilization exceeds 90% for > 5 minutes.
+- `RedisCoordinationErrorsHigh`: Triggers if Redis operations fail (>5% error rate for 2m).
+- `WorkflowAdmissionCapacitySaturated`: Triggers if global admission utilization exceeds 90% for 3m.
 - `RedisUnavailable`: Critical alert when Redis is down; runbook documents admission backpressure impact.
-
-### Grafana Dashboard
-Dashboard `orynx-slo-reliability` contains Panel 17 displaying active admission slots, capacity utilization gauge, and admission rejection breakdown.
