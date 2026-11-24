@@ -1,0 +1,10 @@
+target/
+.mvn/
+!.mvn/wrapper/
+*.log
+.env
+.env.*
+*.env
+.idea/
+.vscode/
+.git/
