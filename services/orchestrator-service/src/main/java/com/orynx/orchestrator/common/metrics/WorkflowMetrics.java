@@ -5,6 +5,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -95,6 +96,19 @@ public class WorkflowMetrics {
                 .tag("status", status)
                 .description("Workflow execution duration for a single execution attempt")
                 .publishPercentileHistogram(true)
+                .minimumExpectedValue(Duration.ofMillis(100))
+                .maximumExpectedValue(Duration.ofMinutes(15))
+                .serviceLevelObjectives(
+                        Duration.ofSeconds(1),
+                        Duration.ofSeconds(5),
+                        Duration.ofSeconds(15),
+                        Duration.ofSeconds(30),
+                        Duration.ofSeconds(45),
+                        Duration.ofSeconds(60),
+                        Duration.ofSeconds(120),
+                        Duration.ofSeconds(300),
+                        Duration.ofSeconds(600)
+                )
                 .register(meterRegistry);
     }
 

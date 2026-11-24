@@ -371,4 +371,19 @@ class ObservabilityMetricsAndConfigTest {
             server.stop();
         }
     }
+
+    @Test
+    void workflowDurationHistogram_supportsDurationsMateriallyBeyond30Seconds() {
+        metrics.recordWorkflowCompleted("COMPLETED", 30_000L);
+        metrics.recordWorkflowCompleted("COMPLETED", 60_000L);
+        metrics.recordWorkflowCompleted("COMPLETED", 120_000L);
+
+        String scrape = registry.scrape();
+        assertThat(scrape).contains("orynx_workflows_duration_seconds_bucket{status=\"COMPLETED\",le=\"30.0\"} 1");
+        assertThat(scrape).contains("orynx_workflows_duration_seconds_bucket{status=\"COMPLETED\",le=\"60.0\"} 2");
+        assertThat(scrape).contains("orynx_workflows_duration_seconds_bucket{status=\"COMPLETED\",le=\"120.0\"} 3");
+        assertThat(scrape).contains("orynx_workflows_duration_seconds_bucket{status=\"COMPLETED\",le=\"300.0\"} 3");
+        assertThat(scrape).contains("orynx_workflows_duration_seconds_bucket{status=\"COMPLETED\",le=\"900.0\"} 3");
+        assertThat(scrape).contains("orynx_workflows_duration_seconds_bucket{status=\"COMPLETED\",le=\"+Inf\"} 3");
+    }
 }
