@@ -4,7 +4,7 @@
   "tags": ["orynx", "workflows", "tasks"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "15s",
   "time": { "from": "now-1h", "to": "now" },
   "panels": [
@@ -13,7 +13,7 @@
       "type": "stat",
       "title": "Workflows Created",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
       "targets": [
         { "expr": "sum(orynx_workflows_total) or vector(0)", "refId": "A" }
       ]
@@ -23,7 +23,7 @@
       "type": "stat",
       "title": "Workflows Started",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
       "targets": [
         { "expr": "sum(orynx_workflows_started_total) or vector(0)", "refId": "A" }
       ]
@@ -31,9 +31,9 @@
     {
       "id": 3,
       "type": "stat",
-      "title": "Workflows Completed (COMPLETED)",
+      "title": "Workflows Completed",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
       "targets": [
         { "expr": "sum(orynx_workflows_completed_total{status=\"COMPLETED\"}) or vector(0)", "refId": "A" }
       ]
@@ -41,38 +41,68 @@
     {
       "id": 4,
       "type": "stat",
-      "title": "Workflows Failed (FAILED)",
+      "title": "Workflows Failed",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
       "targets": [
         { "expr": "sum(orynx_workflows_completed_total{status=\"FAILED\"}) or vector(0)", "refId": "A" }
       ]
     },
     {
       "id": 5,
-      "type": "timeseries",
-      "title": "Tasks Executed Rate by Status",
+      "type": "stat",
+      "title": "Workflows Cancelled",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
       "targets": [
-        {
-          "expr": "sum by (status) (rate(orynx_tasks_executed_total[1m]))",
-          "legendFormat": "{{status}}",
-          "refId": "A"
-        }
+        { "expr": "sum(orynx_workflows_completed_total{status=\"CANCELLED\"}) or vector(0)", "refId": "A" }
       ]
     },
     {
       "id": 6,
+      "type": "stat",
+      "title": "Workflows Retried",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "targets": [
+        { "expr": "sum(orynx_workflows_retried_total) or vector(0)", "refId": "A" }
+      ]
+    },
+    {
+      "id": 7,
       "type": "timeseries",
-      "title": "Workflow Duration Average (s)",
+      "title": "Tasks Executed by Status (Total & Rate)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        {
+          "expr": "sum by (status) (orynx_tasks_executed_total)",
+          "legendFormat": "{{status}} total",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (status) (rate(orynx_tasks_executed_total[1m]))",
+          "legendFormat": "{{status}} rate/s",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Workflow Execution Duration Average & Max (s)",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
       "targets": [
         {
-          "expr": "sum by (status) (rate(orynx_workflows_duration_seconds_sum[5m])) / sum by (status) (rate(orynx_workflows_duration_seconds_count[5m]))",
-          "legendFormat": "{{status}}",
+          "expr": "(sum by (status) (rate(orynx_workflows_duration_seconds_sum[5m])) / (sum by (status) (rate(orynx_workflows_duration_seconds_count[5m])) > 0)) or (sum by (status) (orynx_workflows_duration_seconds_sum) / (sum by (status) (orynx_workflows_duration_seconds_count) > 0)) or vector(0)",
+          "legendFormat": "{{status}} avg (s)",
           "refId": "A"
+        },
+        {
+          "expr": "max by (status) (orynx_workflows_duration_seconds_max)",
+          "legendFormat": "{{status}} max (s)",
+          "refId": "B"
         }
       ]
     }

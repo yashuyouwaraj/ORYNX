@@ -1,10 +1,10 @@
 {
   "uid": "orynx-infrastructure",
-  "title": "OrynX Infrastructure (PostgreSQL & Redis)",
-  "tags": ["orynx", "postgres", "redis"],
+  "title": "OrynX Infrastructure (PostgreSQL, Redis & OTel Collector)",
+  "tags": ["orynx", "postgres", "redis", "otel"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "15s",
   "time": { "from": "now-1h", "to": "now" },
   "panels": [
@@ -13,7 +13,7 @@
       "type": "stat",
       "title": "PostgreSQL Up",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
       "targets": [
         { "expr": "pg_up", "refId": "A" }
       ]
@@ -23,7 +23,7 @@
       "type": "stat",
       "title": "Redis Up",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
       "targets": [
         { "expr": "redis_up", "refId": "A" }
       ]
@@ -31,29 +31,49 @@
     {
       "id": 3,
       "type": "stat",
-      "title": "Redis Connected Clients",
+      "title": "OTel Collector Up",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
       "targets": [
-        { "expr": "redis_connected_clients", "refId": "A" }
+        { "expr": "up{job=\"otel-collector\"}", "refId": "A" }
       ]
     },
     {
       "id": 4,
       "type": "stat",
+      "title": "Redis Connected Clients",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "redis_connected_clients", "refId": "A" }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
       "title": "PostgreSQL Active Connections",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
       "targets": [
         { "expr": "sum(pg_stat_activity_count)", "refId": "A" }
       ]
     },
     {
-      "id": 5,
+      "id": 6,
+      "type": "stat",
+      "title": "OTel Collector Exported Spans",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "targets": [
+        { "expr": "sum(otelcol_exporter_sent_spans_total) or sum(otelcol_exporter_sent_spans) or vector(0)", "refId": "A" }
+      ]
+    },
+    {
+      "id": 7,
       "type": "timeseries",
       "title": "PostgreSQL Transactions Committed (tx/s)",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 4 },
       "targets": [
         {
           "expr": "sum by (datname) (rate(pg_stat_database_xact_commit[1m]))",
@@ -63,16 +83,40 @@
       ]
     },
     {
-      "id": 6,
+      "id": 8,
       "type": "timeseries",
       "title": "Redis Memory Used (bytes)",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 4 },
       "targets": [
         {
           "expr": "redis_memory_used_bytes",
           "legendFormat": "used_bytes",
           "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "OTel Collector Span Ingestion vs Export Rate (spans/s)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 4 },
+      "targets": [
+        {
+          "expr": "sum(rate(otelcol_receiver_accepted_spans_total[1m])) or sum(rate(otelcol_receiver_accepted_spans[1m])) or vector(0)",
+          "legendFormat": "accepted/s",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(otelcol_exporter_sent_spans_total[1m])) or sum(rate(otelcol_exporter_sent_spans[1m])) or vector(0)",
+          "legendFormat": "exported/s",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(otelcol_exporter_send_failed_spans_total[1m])) or sum(rate(otelcol_exporter_send_failed_spans[1m])) or vector(0)",
+          "legendFormat": "failed/s",
+          "refId": "C"
         }
       ]
     }

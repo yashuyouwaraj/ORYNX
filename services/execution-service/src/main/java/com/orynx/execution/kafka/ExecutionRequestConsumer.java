@@ -11,6 +11,7 @@ import com.orynx.execution.worker.ExecutionWorkerProperties;
 import com.orynx.execution.worker.WorkerQueueFullException;
 import com.orynx.execution.workflow.event.WorkflowExecutionRequestEvent;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
@@ -71,6 +72,8 @@ public class ExecutionRequestConsumer {
         String workflowName = event.getWorkflowName();
         boolean isResume = Boolean.TRUE.equals(event.getResume());
 
+        MDC.put("workflowId", String.valueOf(workflowId));
+        try {
         log.info("========================================");
         log.info("Received Workflow Execution Request (eventId={}, resume={})", event.getEventId(), isResume);
         log.info("Workflow Id   : {}", workflowId);
@@ -179,6 +182,9 @@ public class ExecutionRequestConsumer {
                 log.warn("Failed to release lease on dispatch failure for workflow {}: {}", workflowId, ex.getMessage());
             }
             throw e;
+        }
+        } finally {
+            MDC.remove("workflowId");
         }
     }
 }

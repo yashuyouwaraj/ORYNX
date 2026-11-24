@@ -15,6 +15,14 @@ processors:
     check_interval: 1s
     limit_mib: 256
     spike_limit_mib: 64
+  filter/healthchecks:
+    error_mode: ignore
+    traces:
+      span:
+        - 'IsMatch(name, ".*actuator/health.*")'
+        - 'IsMatch(attributes["url.path"], "^/actuator/health.*")'
+        - 'IsMatch(attributes["http.target"], "^/actuator/health.*")'
+        - 'IsMatch(attributes["http.route"], "^/actuator/health.*")'
   batch:
     timeout: 2s
     send_batch_size: 512
@@ -33,5 +41,5 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, batch]
+      processors: [memory_limiter, filter/healthchecks, batch]
       exporters: [otlp/tempo]

@@ -11,6 +11,7 @@ import com.orynx.execution.kafka.ExecutionEventProducer;
 import com.orynx.execution.workflow.event.WorkflowExecutionRequestEvent;
 import com.orynx.execution.workflow.event.dto.TaskExecutionRequest;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -59,6 +60,10 @@ public class WorkflowExecutionEngine {
         Long workflowId = event.getWorkflowId();
         String workflowName = event.getWorkflowName();
 
+        if (workflowId != null) {
+            MDC.put("workflowId", String.valueOf(workflowId));
+        }
+        try {
         log.info("========================================");
         log.info("WorkflowExecutionEngine Started (gen={}, instance={})", generation, instanceId);
         log.info("Workflow : {}", workflowName);
@@ -223,6 +228,9 @@ public class WorkflowExecutionEngine {
                 workflowName,
                 generation
         );
+        } finally {
+            MDC.remove("workflowId");
+        }
     }
 
     private boolean checkFenced(Long workflowId, Long generation, String instanceId) {
