@@ -477,15 +477,16 @@ services:
     mem_limit: ${ALERTMANAGER_MEM_LIMIT:-128m}
     cpus: ${ALERTMANAGER_CPU_LIMIT:-0.25}
     environment:
-      ALERTMANAGER_WEBHOOK_URL: ${ALERTMANAGER_WEBHOOK_URL:-http://127.0.0.1:9093/-/healthy}
+      ALERTMANAGER_WEBHOOK_URL: ${ALERTMANAGER_WEBHOOK_URL:-}
     entrypoint:
       - "/bin/sh"
       - "-c"
       - |
-        sed "s|http://127.0.0.1:9093/-/healthy|$${ALERTMANAGER_WEBHOOK_URL}|g" /etc/alertmanager/alertmanager.yml > /tmp/alertmanager.yml
+        tr -d '\r' < /etc/alertmanager/render-config.sh | /bin/sh
         exec /bin/alertmanager --config.file=/tmp/alertmanager.yml --storage.path=/alertmanager --web.listen-address=0.0.0.0:9093
     volumes:
       - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./monitoring/alertmanager/render-config.sh:/etc/alertmanager/render-config.sh:ro
       - orynx_alertmanager_data:/alertmanager
     ports:
       - "127.0.0.1:9093:9093"

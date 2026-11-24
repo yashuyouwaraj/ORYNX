@@ -48,6 +48,7 @@ route:
       continue: false
 
 inhibit_rules:
+  # 1. Any critical alert suppresses warning alerts for the exact same (service, category).
   - source_matchers:
       - severity = "critical"
     target_matchers:
@@ -55,40 +56,44 @@ inhibit_rules:
     equal:
       - service
       - category
+
+  # 2. Core backing-store outages (PostgreSQL/Kafka) suppress warning-level workflow/task symptoms
+  #    while keeping critical workflow, task, and SLO alerts visible.
   - source_matchers:
-      - alertname =~ "PostgreSQLUnavailable|KafkaUnavailable|RedisUnavailable"
+      - alertname =~ "PostgreSQLUnavailable|KafkaUnavailable"
     target_matchers:
-      - category =~ "workflow|task|slo"
+      - severity = "warning"
+      - category =~ "workflow|task"
     equal: []
+
+  # 3. A down backend service suppresses warning-level workflow/task/SLO symptoms for that service
+  #    while preserving critical alerts.
   - source_matchers:
       - alertname = "BackendServiceDown"
     target_matchers:
+      - severity = "warning"
       - category =~ "slo|workflow|task"
     equal:
       - service
 
+  # 4. Specific target-down alerts suppress the generic PrometheusTargetDown fallback for the same instance.
+  - source_matchers:
+      - alertname =~ "BackendServiceDown|OtelCollectorDown|PostgresExporterDown|RedisExporterDown|KafkaExporterDown|AlertmanagerDown"
+    target_matchers:
+      - alertname = "PrometheusTargetDown"
+    equal:
+      - instance
+
 receivers:
   - name: default-webhook
-    webhook_configs:
-      - url: "http://127.0.0.1:9093/-/healthy"
-        send_resolved: true
+    # __WEBHOOK_SLOT__
   - name: critical-webhook
-    webhook_configs:
-      - url: "http://127.0.0.1:9093/-/healthy"
-        send_resolved: true
+    # __WEBHOOK_SLOT__
   - name: slo-webhook
-    webhook_configs:
-      - url: "http://127.0.0.1:9093/-/healthy"
-        send_resolved: true
+    # __WEBHOOK_SLOT__
   - name: workflow-webhook
-    webhook_configs:
-      - url: "http://127.0.0.1:9093/-/healthy"
-        send_resolved: true
+    # __WEBHOOK_SLOT__
   - name: infrastructure-webhook
-    webhook_configs:
-      - url: "http://127.0.0.1:9093/-/healthy"
-        send_resolved: true
+    # __WEBHOOK_SLOT__
   - name: warning-webhook
-    webhook_configs:
-      - url: "http://127.0.0.1:9093/-/healthy"
-        send_resolved: true
+    # __WEBHOOK_SLOT__
