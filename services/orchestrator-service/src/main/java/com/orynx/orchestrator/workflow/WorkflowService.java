@@ -152,70 +152,82 @@ public class WorkflowService {
             workflowAdmissionController.tryAdmit(workflow.getId(), workflow.getUserId());
         }
 
-        ensureWorkflowTasksExist(workflow);
+        try {
+            ensureWorkflowTasksExist(workflow);
 
-        workflow.setStatus(WorkflowStatus.RUNNING);
-        workflow.setStartedAt(System.currentTimeMillis());
-        if (Boolean.TRUE.equals(workflow.getScheduled())) {
-            workflow.setScheduled(false);
+            workflow.setStatus(WorkflowStatus.RUNNING);
+            workflow.setStartedAt(System.currentTimeMillis());
+            if (Boolean.TRUE.equals(workflow.getScheduled())) {
+                workflow.setScheduled(false);
+            }
+
+            Workflow updatedWorkflow = workflowRepository.save(workflow);
+
+            WorkflowExecution execution = WorkflowExecution.builder()
+                    .workflow(updatedWorkflow)
+                    .status(WorkflowStatus.RUNNING)
+                    .startedAt(System.currentTimeMillis())
+                    .executionGeneration(1L)
+                    .build();
+
+            workflowExecutionRepository.save(execution);
+
+            log.info(
+                    "Created execution history record for workflow {}",
+                    updatedWorkflow.getName()
+            );
+
+            List<WorkflowTask> workflowTasks =
+                    workflowTaskRepository.findByWorkflowIdOrderByExecutionOrder(
+                            workflow.getId()
+                    );
+            List<TaskExecutionRequest> taskRequests = workflowTasks.stream()
+                    .map((task -> TaskExecutionRequest.builder()
+                            .name(task.getName())
+                            .executionOrder(task.getExecutionOrder())
+                            .maxRetries(task.getMaxRetries())
+                            .build()
+                    ))
+                    .toList();
+
+            executionRequestProducer.publishExecutionRequest(
+                    WorkflowExecutionRequestEvent.builder()
+                            .workflowId(workflow.getId())
+                            .workflowName(workflow.getName())
+                            .tasks(taskRequests)
+                            .eventId(UUID.randomUUID().toString())
+                            .executionId(execution.getId())
+                            .resume(false)
+                            .generation(1L)
+                            .build()
+            );
+
+            WorkflowExecutionEvent event = WorkflowExecutionEvent.builder()
+                    .workflowId(updatedWorkflow.getId())
+                    .workflowName(updatedWorkflow.getName())
+                    .status(updatedWorkflow.getStatus().name())
+                    .userId(updatedWorkflow.getUserId())
+                    .generation(1L)
+                    .build();
+
+            workflowEventPublisher.publishWorkflowUpdate(event);
+
+            if (workflowMetrics != null) {
+                workflowMetrics.recordWorkflowStarted();
+            }
+
+            return updatedWorkflow;
+        } catch (Exception e) {
+            if (workflowAdmissionController != null) {
+                try {
+                    workflowAdmissionController.release(workflow.getId(), workflow.getUserId());
+                } catch (Exception releaseEx) {
+                    log.error("Failed to release admission slot after startWorkflow failure for workflow {}: {}",
+                            workflow.getId(), releaseEx.getMessage());
+                }
+            }
+            throw e;
         }
-
-        Workflow updatedWorkflow = workflowRepository.save(workflow);
-
-        WorkflowExecution execution = WorkflowExecution.builder()
-                .workflow(updatedWorkflow)
-                .status(WorkflowStatus.RUNNING)
-                .startedAt(System.currentTimeMillis())
-                .executionGeneration(1L)
-                .build();
-
-        workflowExecutionRepository.save(execution);
-
-        log.info(
-                "Created execution history record for workflow {}",
-                updatedWorkflow.getName()
-        );
-
-        List<WorkflowTask> workflowTasks =
-                workflowTaskRepository.findByWorkflowIdOrderByExecutionOrder(
-                        workflow.getId()
-                );
-        List<TaskExecutionRequest> taskRequests = workflowTasks.stream()
-                .map((task -> TaskExecutionRequest.builder()
-                        .name(task.getName())
-                        .executionOrder(task.getExecutionOrder())
-                        .maxRetries(task.getMaxRetries())
-                        .build()
-                ))
-                .toList();
-
-        executionRequestProducer.publishExecutionRequest(
-                WorkflowExecutionRequestEvent.builder()
-                        .workflowId(workflow.getId())
-                        .workflowName(workflow.getName())
-                        .tasks(taskRequests)
-                        .eventId(UUID.randomUUID().toString())
-                        .executionId(execution.getId())
-                        .resume(false)
-                        .generation(1L)
-                        .build()
-        );
-
-        WorkflowExecutionEvent event = WorkflowExecutionEvent.builder()
-                .workflowId(updatedWorkflow.getId())
-                .workflowName(updatedWorkflow.getName())
-                .status(updatedWorkflow.getStatus().name())
-                .userId(updatedWorkflow.getUserId())
-                .generation(1L)
-                .build();
-
-        workflowEventPublisher.publishWorkflowUpdate(event);
-
-        if (workflowMetrics != null) {
-            workflowMetrics.recordWorkflowStarted();
-        }
-
-        return updatedWorkflow;
     }
 
     public Page<Workflow> getAllWorkflows(Pageable pageable) {
@@ -726,54 +738,66 @@ public class WorkflowService {
             workflowAdmissionController.tryAdmit(workflow.getId(), workflow.getUserId());
         }
 
-        workflow.setStatus(WorkflowStatus.RUNNING);
+        try {
+            workflow.setStatus(WorkflowStatus.RUNNING);
 
-        Workflow updatedWorkflow =
-                workflowRepository.save(workflow);
+            Workflow updatedWorkflow =
+                    workflowRepository.save(workflow);
 
-        execution.setStatus(WorkflowStatus.RUNNING);
-        execution.setExecutionGeneration(nextExecutionGeneration);
+            execution.setStatus(WorkflowStatus.RUNNING);
+            execution.setExecutionGeneration(nextExecutionGeneration);
 
-        workflowExecutionRepository.save(execution);
+            workflowExecutionRepository.save(execution);
 
-        workflowResumeProducer.publishWorkflowResumed(
-                WorkflowResumedEvent.builder()
-                        .workflowId(updatedWorkflow.getId())
-                        .workflowName(updatedWorkflow.getName())
-                        .eventId(UUID.randomUUID().toString())
-                        .build()
-        );
+            workflowResumeProducer.publishWorkflowResumed(
+                    WorkflowResumedEvent.builder()
+                            .workflowId(updatedWorkflow.getId())
+                            .workflowName(updatedWorkflow.getName())
+                            .eventId(UUID.randomUUID().toString())
+                            .build()
+            );
 
-        executionRequestProducer.publishExecutionRequest(
-                WorkflowExecutionRequestEvent.builder()
-                        .workflowId(updatedWorkflow.getId())
-                        .workflowName(updatedWorkflow.getName())
-                        .tasks(remainingTasks)
-                        .eventId(UUID.randomUUID().toString())
-                        .executionId(execution.getId())
-                        .resume(true)
-                        .generation(nextExecutionGeneration)
-                        .build()
-        );
+            executionRequestProducer.publishExecutionRequest(
+                    WorkflowExecutionRequestEvent.builder()
+                            .workflowId(updatedWorkflow.getId())
+                            .workflowName(updatedWorkflow.getName())
+                            .tasks(remainingTasks)
+                            .eventId(UUID.randomUUID().toString())
+                            .executionId(execution.getId())
+                            .resume(true)
+                            .generation(nextExecutionGeneration)
+                            .build()
+            );
 
-        WorkflowExecutionEvent event = WorkflowExecutionEvent.builder()
-                .workflowId(updatedWorkflow.getId())
-                .workflowName(updatedWorkflow.getName())
-                .status(updatedWorkflow.getStatus().name())
-                .userId(updatedWorkflow.getUserId())
-                .generation(nextExecutionGeneration)
-                .build();
+            WorkflowExecutionEvent event = WorkflowExecutionEvent.builder()
+                    .workflowId(updatedWorkflow.getId())
+                    .workflowName(updatedWorkflow.getName())
+                    .status(updatedWorkflow.getStatus().name())
+                    .userId(updatedWorkflow.getUserId())
+                    .generation(nextExecutionGeneration)
+                    .build();
 
-        workflowEventPublisher.publishWorkflowUpdate(event);
+            workflowEventPublisher.publishWorkflowUpdate(event);
 
-        log.info(
-                "Workflow {} resumed from execution order {}. Remaining tasks: {}",
-                updatedWorkflow.getName(),
-                resumeFromOrder + 1,
-                remainingTasks.size()
-        );
+            log.info(
+                    "Workflow {} resumed from execution order {}. Remaining tasks: {}",
+                    updatedWorkflow.getName(),
+                    resumeFromOrder + 1,
+                    remainingTasks.size()
+            );
 
-        return updatedWorkflow;
+            return updatedWorkflow;
+        } catch (Exception e) {
+            if (workflowAdmissionController != null) {
+                try {
+                    workflowAdmissionController.release(workflow.getId(), workflow.getUserId());
+                } catch (Exception releaseEx) {
+                    log.error("Failed to release admission slot after resumeWorkflow failure for workflow {}: {}",
+                            workflow.getId(), releaseEx.getMessage());
+                }
+            }
+            throw e;
+        }
     }
 
     @Transactional
@@ -803,89 +827,101 @@ public class WorkflowService {
             workflowAdmissionController.tryAdmit(workflow.getId(), workflow.getUserId());
         }
 
-        long retryStartedAt = System.currentTimeMillis();
-        workflow.setStatus(WorkflowStatus.RUNNING);
-        workflow.setStartedAt(retryStartedAt);
-        workflow.setCompletedAt(null);
+        try {
+            long retryStartedAt = System.currentTimeMillis();
+            workflow.setStatus(WorkflowStatus.RUNNING);
+            workflow.setStartedAt(retryStartedAt);
+            workflow.setCompletedAt(null);
 
-        Workflow updatedWorkflow =
-                workflowRepository.save(workflow);
+            Workflow updatedWorkflow =
+                    workflowRepository.save(workflow);
 
-        List<WorkflowTask> workflowTasks =
-                workflowTaskRepository
-                        .findByWorkflowIdOrderByExecutionOrder(workflowId);
+            List<WorkflowTask> workflowTasks =
+                    workflowTaskRepository
+                            .findByWorkflowIdOrderByExecutionOrder(workflowId);
 
-        workflowTasks.forEach(task -> {
-            task.setStatus(TaskStatus.PENDING);
-            task.setStartedAt(null);
-            task.setCompletedAt(null);
-            task.setRetryCount(0);
-        });
+            workflowTasks.forEach(task -> {
+                task.setStatus(TaskStatus.PENDING);
+                task.setStartedAt(null);
+                task.setCompletedAt(null);
+                task.setRetryCount(0);
+            });
 
-        workflowTaskRepository.saveAll(workflowTasks);
+            workflowTaskRepository.saveAll(workflowTasks);
 
-        Optional<WorkflowExecution> priorExecutionOpt =
-                workflowExecutionRepository.findFirstByWorkflowIdOrderByStartedAtDesc(workflowId);
-        long nextExecutionGeneration = priorExecutionOpt
-                .map(WorkflowExecution::getExecutionGeneration)
-                .filter(Objects::nonNull)
-                .orElse(1L) + 1L;
+            Optional<WorkflowExecution> priorExecutionOpt =
+                    workflowExecutionRepository.findFirstByWorkflowIdOrderByStartedAtDesc(workflowId);
+            long nextExecutionGeneration = priorExecutionOpt
+                    .map(WorkflowExecution::getExecutionGeneration)
+                    .filter(Objects::nonNull)
+                    .orElse(1L) + 1L;
 
-        WorkflowExecution execution =
-                WorkflowExecution.builder()
-                        .workflow(updatedWorkflow)
-                        .status(WorkflowStatus.RUNNING)
-                        .startedAt(retryStartedAt)
-                        .lastCompletedExecutionOrder(null)
-                        .executionGeneration(nextExecutionGeneration)
-                        .build();
+            WorkflowExecution execution =
+                    WorkflowExecution.builder()
+                            .workflow(updatedWorkflow)
+                            .status(WorkflowStatus.RUNNING)
+                            .startedAt(retryStartedAt)
+                            .lastCompletedExecutionOrder(null)
+                            .executionGeneration(nextExecutionGeneration)
+                            .build();
 
-        workflowExecutionRepository.save(execution);
+            workflowExecutionRepository.save(execution);
 
-        List<TaskExecutionRequest> taskRequests =
-                workflowTasks.stream()
-                        .map(task ->
-                                TaskExecutionRequest.builder()
-                                        .name(task.getName())
-                                        .executionOrder(task.getExecutionOrder())
-                                        .maxRetries(task.getMaxRetries())
-                                        .build()
-                        )
-                        .toList();
+            List<TaskExecutionRequest> taskRequests =
+                    workflowTasks.stream()
+                            .map(task ->
+                                    TaskExecutionRequest.builder()
+                                            .name(task.getName())
+                                            .executionOrder(task.getExecutionOrder())
+                                            .maxRetries(task.getMaxRetries())
+                                            .build()
+                            )
+                            .toList();
 
-        executionRequestProducer.publishExecutionRequest(
-                WorkflowExecutionRequestEvent.builder()
-                        .workflowId(updatedWorkflow.getId())
-                        .workflowName(updatedWorkflow.getName())
-                        .tasks(taskRequests)
-                        .eventId(UUID.randomUUID().toString())
-                        .executionId(execution.getId())
-                        .resume(false)
-                        .generation(nextExecutionGeneration)
-                        .build()
-        );
+            executionRequestProducer.publishExecutionRequest(
+                    WorkflowExecutionRequestEvent.builder()
+                            .workflowId(updatedWorkflow.getId())
+                            .workflowName(updatedWorkflow.getName())
+                            .tasks(taskRequests)
+                            .eventId(UUID.randomUUID().toString())
+                            .executionId(execution.getId())
+                            .resume(false)
+                            .generation(nextExecutionGeneration)
+                            .build()
+            );
 
-        WorkflowExecutionEvent event = WorkflowExecutionEvent.builder()
-                .workflowId(updatedWorkflow.getId())
-                .workflowName(updatedWorkflow.getName())
-                .status(updatedWorkflow.getStatus().name())
-                .userId(updatedWorkflow.getUserId())
-                .generation(nextExecutionGeneration)
-                .build();
+            WorkflowExecutionEvent event = WorkflowExecutionEvent.builder()
+                    .workflowId(updatedWorkflow.getId())
+                    .workflowName(updatedWorkflow.getName())
+                    .status(updatedWorkflow.getStatus().name())
+                    .userId(updatedWorkflow.getUserId())
+                    .generation(nextExecutionGeneration)
+                    .build();
 
-        workflowEventPublisher.publishWorkflowUpdate(event);
+            workflowEventPublisher.publishWorkflowUpdate(event);
 
-        if (workflowMetrics != null) {
-            workflowMetrics.recordWorkflowRetried();
-            workflowMetrics.recordWorkflowStarted();
+            if (workflowMetrics != null) {
+                workflowMetrics.recordWorkflowRetried();
+                workflowMetrics.recordWorkflowStarted();
+            }
+
+            log.info(
+                    "Workflow {} retry started with {} tasks",
+                    updatedWorkflow.getName(),
+                    taskRequests.size()
+            );
+
+            return updatedWorkflow;
+        } catch (Exception e) {
+            if (workflowAdmissionController != null) {
+                try {
+                    workflowAdmissionController.release(workflow.getId(), workflow.getUserId());
+                } catch (Exception releaseEx) {
+                    log.error("Failed to release admission slot after retryWorkflow failure for workflow {}: {}",
+                            workflow.getId(), releaseEx.getMessage());
+                }
+            }
+            throw e;
         }
-
-        log.info(
-                "Workflow {} retry started with {} tasks",
-                updatedWorkflow.getName(),
-                taskRequests.size()
-        );
-
-        return updatedWorkflow;
     }
 }

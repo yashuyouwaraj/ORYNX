@@ -56,6 +56,11 @@ public class RedisCoordinationProperties {
     private int reconciliationIntervalSeconds = 60;
 
     /**
+     * Grace period in seconds for in-flight CREATED workflows before reconciliation considers them abandoned.
+     */
+    private int inflightGracePeriodSeconds = 60;
+
+    /**
      * Default lock lease duration for distributed locks.
      */
     private Duration defaultLockLease = Duration.ofSeconds(30);
