@@ -1,8 +1,8 @@
-# OrynX Production Observability & Infrastructure Monitoring (Step 22 / 22.1)
+# OrynX Production Observability, SLOs & Alerting (Step 22 / 22.1 / 23)
 
 ## 1. Architecture Overview
 
-OrynX implements a hardened observability stack using **Prometheus** (metrics), **OpenTelemetry Java Agent + Collector + Grafana Tempo** (distributed tracing), **Logstash Logback Encoder** (structured JSON logging), **Infrastructure Exporters** (PostgreSQL, Redis, Kafka), and **Grafana** (unified dashboards & trace exploration).
+OrynX implements a hardened observability and operational reliability stack using **Prometheus** (metrics, SLO recording rules, and alert evaluation), **Alertmanager** (alert routing, grouping, deduplication, and inhibition), **OpenTelemetry Java Agent + Collector + Grafana Tempo** (distributed tracing), **Logstash Logback Encoder** (structured JSON logging), **Infrastructure Exporters** (PostgreSQL, Redis, Kafka), and **Grafana** (unified dashboards, SLO error budgets, and trace exploration).
 
 ```text
 +-------------------------------------------------------------------------+
@@ -19,7 +19,7 @@ OrynX implements a hardened observability stack using **Prometheus** (metrics), 
                     | (metrics bound strictly to 172.29.22.x:9100, OTLP :4317)
 +-------------------v-----------------------------------------------------+
 | orynx-monitoring (172.29.22.0/24)                                       |
-|   prometheus (127.0.0.1:9090 -> :9090) <--- scrapes :9100/metrics       |
+|   prometheus (127.0.0.1:9090 -> :9090) ---> alertmanager (127.0.0.1:9093)|
 |   otel-collector (:4317/:4318/:13133) ---> tempo (127.0.0.1:3200)       |
 |   postgres-exporter (:9187) | redis-exporter (:9121) | kafka-exporter   |
 |   grafana (127.0.0.1:3001 -> :3000)                                     |
@@ -29,7 +29,7 @@ OrynX implements a hardened observability stack using **Prometheus** (metrics), 
 ### Security & Network Boundary Guarantees
 - **Actuator Boundary Preservation**: Per Step 16/16.1 security controls, Spring Boot Actuator HTTP exposure on application ports (`8080`–`8084`) remains strictly locked to `health` (`ActuatorSecurityEnforcer` & `ActuatorBoundaryFilter`).
 - **Interface-Isolated Metrics Endpoint (`:9100/metrics`)**: Each Spring Boot service runs `PrometheusMetricsServer` on port `9100` (`orynx.observability.metrics.enabled=true`). In Docker Compose, `orynx-monitoring` uses subnet `${ORYNX_MONITORING_SUBNET:-172.29.22.0/24}` and each service sets `ORYNX_OBSERVABILITY_METRICS_NETWORK_PREFIX=172.29.22.`, causing `PrometheusMetricsServer` to bind **exclusively** to the container's `172.29.22.x` (`orynx-monitoring`) network interface IP (and `127.0.0.1` in local/non-Docker runs) rather than wildcard `0.0.0.0`. Consequently, `frontend` on `orynx-edge` cannot reach `gateway-service:9100/metrics` (`Connection refused`).
-- **Loopback-Restricted Host UIs**: Prometheus (`127.0.0.1:9090:9090`), Tempo (`127.0.0.1:3200:3200`), and Grafana (`127.0.0.1:3001:3000`) bind exclusively to host loopback (`127.0.0.1`) rather than `0.0.0.0`, preventing unauthenticated LAN exposure.
+- **Loopback-Restricted Host UIs**: Prometheus (`127.0.0.1:9090:9090`), Alertmanager (`127.0.0.1:9093:9093`), Tempo (`127.0.0.1:3200:3200`), and Grafana (`127.0.0.1:3001:3000`) bind exclusively to host loopback (`127.0.0.1`) rather than `0.0.0.0`, preventing unauthenticated LAN exposure.
 
 ---
 
@@ -38,6 +38,7 @@ OrynX implements a hardened observability stack using **Prometheus** (metrics), 
 | Component | Image | Container Port | Host Binding | Healthcheck | Memory / CPU Limit |
 |---|---|---:|---|---|---|
 | Prometheus | `prom/prometheus:v2.55.1` | `9090` | `127.0.0.1:9090` | `http://127.0.0.1:9090/-/healthy` | `512m` / `1.0` |
+| Alertmanager | `prom/alertmanager:v0.27.0` | `9093` | `127.0.0.1:9093` | `http://127.0.0.1:9093/-/healthy` | `128m` / `0.25` |
 | Grafana | `grafana/grafana:11.3.1` | `3000` | `127.0.0.1:3001` | `http://127.0.0.1:3000/api/health` | `256m` / `0.5` |
 | Grafana Tempo | `grafana/tempo:2.6.1` | `3200`, `4317`, `4318` | `127.0.0.1:3200` | `http://127.0.0.1:3200/ready` | `512m` / `1.0` |
 | OTel Collector | `orynx-otel-collector:0.114.0` (`otel/opentelemetry-collector-contrib:0.114.0`) | `4317`, `4318`, `8888`, `13133` | Internal only | `http://127.0.0.1:13133/` | `384m` / `0.5` |
@@ -46,7 +47,7 @@ OrynX implements a hardened observability stack using **Prometheus** (metrics), 
 | Kafka Exporter | `danielqsj/kafka-exporter:v1.8.0` | `9308` | Internal only | `http://127.0.0.1:9308/metrics` | `128m` / `0.25` |
 | Backend Metrics | Spring Boot `PrometheusMetricsServer` | `9100` | Internal (`172.29.22.x:9100`) | Scraped by Prometheus | Container JVM limit |
 
-All monitoring resource limits are configurable via `.env` (`PROMETHEUS_MEM_LIMIT`, `GRAFANA_MEM_LIMIT`, `TEMPO_MEM_LIMIT`, `OTEL_COLLECTOR_MEM_LIMIT`, `EXPORTER_MEM_LIMIT`, and corresponding `*_CPU_LIMIT` variables).
+All monitoring resource limits are configurable via `.env` (`PROMETHEUS_MEM_LIMIT`, `ALERTMANAGER_MEM_LIMIT`, `GRAFANA_MEM_LIMIT`, `TEMPO_MEM_LIMIT`, `OTEL_COLLECTOR_MEM_LIMIT`, `EXPORTER_MEM_LIMIT`, and corresponding `*_CPU_LIMIT` variables).
 
 ---
 
@@ -103,14 +104,17 @@ All 5 Spring Boot services expose:
 
 ---
 
-## 7. Provisioned Grafana Dashboards
+## 7. Provisioned Grafana Dashboards & SLO / Alerting Integration
 
-Grafana (`http://127.0.0.1:3001`) provisions **Prometheus** (default) and **Tempo** datasources and 5 dashboards under folder **OrynX**:
+Grafana (`http://127.0.0.1:3001`) provisions **Prometheus** (default), **Tempo**, and **Alertmanager** datasources and 6 dashboards under folder **OrynX**:
 1. **OrynX Platform Overview** (`orynx-platform-overview.json`): Backend services up, application HTTP RPS, 5xx error rate, and P95 latency (excluding `/actuator/health.*` probe traffic), plus workflows started.
 2. **OrynX Backend Service Health** (`orynx-backend-service-health.json`): JVM heap memory, CPU usage, live threads, and GC pause rate across all 5 services.
 3. **OrynX Workflow Execution** (`orynx-workflow-execution.json`): Workflows created (standard + AI), started, completed, failed, cancelled, and retried, plus distributed tasks executed by status (`orynx_tasks_executed_total`) and workflow execution duration average/max (`orynx_workflows_duration_seconds`).
 4. **OrynX Kafka Messaging** (`orynx-kafka-messaging.json`): Brokers, consumer group lag (`kafka_consumergroup_lag`), topic count, and message rate.
 5. **OrynX Infrastructure** (`orynx-infrastructure.json`): PostgreSQL, Redis, and OTel Collector health (`up{job="otel-collector"}`), exported spans (`otelcol_exporter_sent_spans*`), span ingestion vs export rates, active connections, committed transactions, and Redis memory.
+6. **OrynX SLO & Operational Reliability** (`orynx-slo-reliability.json`): API availability SLI (`99.9%` target), Workflow completion reliability SLI (`99.0%` target), Task execution reliability SLI (`99.0%` target), 30-day Error Budget Remaining gauges, Multi-Window Fast/Slow Burn Rates, Latency Percentiles vs SLO targets, Active Firing/Pending Alerts, and Infrastructure Health.
+
+See [docs/SLO.md](./SLO.md) for the complete SLI/SLO and error budget specification, [docs/ALERTING.md](./ALERTING.md) for the Prometheus alert catalog and Alertmanager routing/inhibition architecture, and [docs/runbooks/](./runbooks/) for incident response procedures.
 
 ---
 
@@ -124,7 +128,7 @@ docker compose up -d
 ```
 
 ### Running the Full Stack With Observability
-1. Set `GRAFANA_ADMIN_PASSWORD` and `POSTGRES_MONITOR_PASSWORD` in `.env` (if omitted, `grafana` and `postgres-exporter` fail fast with an explicit error on startup).
+1. Set `GRAFANA_ADMIN_PASSWORD` and `POSTGRES_MONITOR_PASSWORD` in `.env` (if omitted, `grafana` and `postgres-exporter` fail fast with an explicit error on startup). Optionally set `ALERTMANAGER_WEBHOOK_URL` to forward alerts to an external webhook receiver.
 2. Validate, build, and start:
    ```bash
    docker compose --profile observability config -q
@@ -133,5 +137,6 @@ docker compose up -d
    ```
 3. Access local UIs (bound to `127.0.0.1` only):
    - **Grafana**: `http://127.0.0.1:3001` (`GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD`)
-   - **Prometheus**: `http://127.0.0.1:9090/targets`
+   - **Prometheus**: `http://127.0.0.1:9090/targets` and `http://127.0.0.1:9090/alerts`
+   - **Alertmanager**: `http://127.0.0.1:9093`
    - **Tempo API**: `http://127.0.0.1:3200/api/search`

@@ -162,18 +162,19 @@ To persist permanently, add the export statements above to your `~/.bashrc` or `
 
 ---
 
-## 9. Observability & Monitoring Stack (Step 22 / 22.1)
+## 9. Observability, SLOs & Alerting Stack (Step 22 / 22.1 / 23)
 
 - **Profile-Gated Observability (`docker-compose.yml`)**:
   - The core platform (`docker compose up -d`) and dev override (`docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres redis kafka`) run without requiring `GRAFANA_ADMIN_PASSWORD` or `POSTGRES_MONITOR_PASSWORD`.
-  - Start the core platform plus Prometheus, Grafana, Tempo, OpenTelemetry Collector, and Postgres/Redis/Kafka exporters with:
+  - Start the core platform plus Prometheus, Alertmanager, Grafana, Tempo, OpenTelemetry Collector, and Postgres/Redis/Kafka exporters with:
     `docker compose --profile observability up -d --wait`
     (Requires `GRAFANA_ADMIN_PASSWORD` and `POSTGRES_MONITOR_PASSWORD` in `.env`; `grafana` and `postgres-exporter` fail fast on startup if missing.)
-  - Monitoring endpoints bind exclusively to host loopback (`127.0.0.1`): Grafana on `http://127.0.0.1:3001`, Prometheus on `http://127.0.0.1:9090`, and Tempo on `http://127.0.0.1:3200`.
+  - Monitoring endpoints bind exclusively to host loopback (`127.0.0.1`): Grafana on `http://127.0.0.1:3001`, Prometheus on `http://127.0.0.1:9090`, Alertmanager on `http://127.0.0.1:9093`, and Tempo on `http://127.0.0.1:3200`.
+  - Alertmanager defaults `ALERTMANAGER_WEBHOOK_URL` to `http://127.0.0.1:9093/-/healthy` (local loopback sink) so alerts evaluate, route, group, and inhibit without external dependencies, while allowing `.env` override for external webhook integration. Resource limits are configurable via `ALERTMANAGER_MEM_LIMIT` (`128m`) and `ALERTMANAGER_CPU_LIMIT` (`0.25`).
   - Backend services expose Prometheus metrics on port `9100` (`/metrics`) bound strictly to their `orynx-monitoring` (`172.29.22.0/24`) interface IP (unreachable from `frontend` on `orynx-edge`), preserving Actuator `health`-only boundaries on ports `8080`–`8084`.
   - `postgres-exporter` authenticates using the least-privilege `orynx_monitor` role (`pg_monitor`, `NOSUPERUSER`) provisioned via `monitoring/postgres/ensure-monitoring-user.sh`.
   - OpenTelemetry Java Agent (`v2.11.0`, SHA-256 verified at image build time) is controlled via `OTEL_JAVAAGENT_ENABLED` (default `true`) and `OTEL_TRACES_SAMPLER_ARG` (default `1.0`).
-  - See [docs/OBSERVABILITY.md](./OBSERVABILITY.md) for full architecture, metrics, tracing, structured logging, healthchecks, resource limits, and dashboard documentation.
+  - See [docs/OBSERVABILITY.md](./OBSERVABILITY.md), [docs/SLO.md](./SLO.md), [docs/ALERTING.md](./ALERTING.md), and [docs/runbooks/](./runbooks/) for full architecture, SLO/error-budget formulas, alert routing, and incident runbooks.
 
 ---
 
