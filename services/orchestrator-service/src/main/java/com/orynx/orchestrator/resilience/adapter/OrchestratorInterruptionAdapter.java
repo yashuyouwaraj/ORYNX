@@ -49,10 +49,10 @@ public class OrchestratorInterruptionAdapter implements FailureInjectionAdapter 
 
     @Override
     public void inject(ExperimentDefinition definition) {
-        log.info("[RESILIENCE] Injecting scoped Orchestrator interruption on target '{}' (duration: {}ms)",
-                definition.getTargetResource(), definition.getDurationMs());
+        log.info("[RESILIENCE] Injecting scoped Orchestrator interruption for experiment '{}' on target '{}' (duration: {}ms)",
+                definition.getId(), definition.getTargetResource(), definition.getDurationMs());
 
-        faultRegistry.activateFault(ScenarioType.ORCHESTRATOR_INTERRUPTION, definition.getTargetResource(), definition.getParameters());
+        faultRegistry.activateFault(ScenarioType.ORCHESTRATOR_INTERRUPTION, definition.getId(), definition.getTargetResource(), definition.getParameters());
         injected.set(true);
     }
 
@@ -64,7 +64,7 @@ public class OrchestratorInterruptionAdapter implements FailureInjectionAdapter 
     @Override
     public void recover(ExperimentDefinition definition) {
         log.info("[RESILIENCE] Recovering Orchestrator operations on target '{}'", definition.getTargetResource());
-        faultRegistry.deactivateFault(ScenarioType.ORCHESTRATOR_INTERRUPTION);
+        faultRegistry.deactivateFault(ScenarioType.ORCHESTRATOR_INTERRUPTION, definition.getId());
     }
 
     @Override
@@ -73,10 +73,16 @@ public class OrchestratorInterruptionAdapter implements FailureInjectionAdapter 
     }
 
     @Override
+    public void neutralizeLocalFault(ExperimentDefinition definition) {
+        log.info("[RESILIENCE] Neutralizing local Orchestrator fault for experiment '{}'", definition.getId());
+        faultRegistry.deactivateFault(ScenarioType.ORCHESTRATOR_INTERRUPTION, definition.getId());
+        injected.set(false);
+    }
+
+    @Override
     public void cleanup(ExperimentDefinition definition) {
         log.info("[RESILIENCE] Cleaning up Orchestrator interruption experiment '{}'", definition.getId());
-        faultRegistry.deactivateFault(ScenarioType.ORCHESTRATOR_INTERRUPTION);
-        injected.set(false);
+        neutralizeLocalFault(definition);
     }
 
     public boolean isLeaderLockLost() {

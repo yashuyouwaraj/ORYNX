@@ -50,10 +50,10 @@ public class KafkaInterruptionAdapter implements FailureInjectionAdapter {
 
     @Override
     public void inject(ExperimentDefinition definition) {
-        log.info("[RESILIENCE] Injecting scoped Kafka failure on target '{}' (duration: {}ms)",
-                definition.getTargetResource(), definition.getDurationMs());
+        log.info("[RESILIENCE] Injecting scoped Kafka failure for experiment '{}' on target '{}' (duration: {}ms)",
+                definition.getId(), definition.getTargetResource(), definition.getDurationMs());
 
-        faultRegistry.activateFault(ScenarioType.KAFKA_INTERRUPTION, definition.getTargetResource(), definition.getParameters());
+        faultRegistry.activateFault(ScenarioType.KAFKA_INTERRUPTION, definition.getId(), definition.getTargetResource(), definition.getParameters());
         injected.set(true);
     }
 
@@ -65,7 +65,7 @@ public class KafkaInterruptionAdapter implements FailureInjectionAdapter {
     @Override
     public void recover(ExperimentDefinition definition) {
         log.info("[RESILIENCE] Recovering Kafka operations on target '{}'", definition.getTargetResource());
-        faultRegistry.deactivateFault(ScenarioType.KAFKA_INTERRUPTION);
+        faultRegistry.deactivateFault(ScenarioType.KAFKA_INTERRUPTION, definition.getId());
     }
 
     @Override
@@ -74,10 +74,16 @@ public class KafkaInterruptionAdapter implements FailureInjectionAdapter {
     }
 
     @Override
+    public void neutralizeLocalFault(ExperimentDefinition definition) {
+        log.info("[RESILIENCE] Neutralizing local Kafka fault for experiment '{}'", definition.getId());
+        faultRegistry.deactivateFault(ScenarioType.KAFKA_INTERRUPTION, definition.getId());
+        injected.set(false);
+    }
+
+    @Override
     public void cleanup(ExperimentDefinition definition) {
         log.info("[RESILIENCE] Cleaning up Kafka interruption experiment '{}'", definition.getId());
-        faultRegistry.deactivateFault(ScenarioType.KAFKA_INTERRUPTION);
-        injected.set(false);
+        neutralizeLocalFault(definition);
     }
 
     public boolean isDropPublications() {

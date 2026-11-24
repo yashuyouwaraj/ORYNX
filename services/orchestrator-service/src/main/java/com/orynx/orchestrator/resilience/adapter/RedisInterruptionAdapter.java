@@ -44,10 +44,10 @@ public class RedisInterruptionAdapter implements FailureInjectionAdapter {
 
     @Override
     public void inject(ExperimentDefinition definition) {
-        log.info("[RESILIENCE] Injecting scoped Redis interruption on target '{}' (duration: {}ms)",
-                definition.getTargetResource(), definition.getDurationMs());
+        log.info("[RESILIENCE] Injecting scoped Redis interruption for experiment '{}' on target '{}' (duration: {}ms)",
+                definition.getId(), definition.getTargetResource(), definition.getDurationMs());
 
-        faultRegistry.activateFault(ScenarioType.REDIS_INTERRUPTION, definition.getTargetResource(), definition.getParameters());
+        faultRegistry.activateFault(ScenarioType.REDIS_INTERRUPTION, definition.getId(), definition.getTargetResource(), definition.getParameters());
         injected.set(true);
     }
 
@@ -59,7 +59,7 @@ public class RedisInterruptionAdapter implements FailureInjectionAdapter {
     @Override
     public void recover(ExperimentDefinition definition) {
         log.info("[RESILIENCE] Recovering Redis connection on target '{}'", definition.getTargetResource());
-        faultRegistry.deactivateFault(ScenarioType.REDIS_INTERRUPTION);
+        faultRegistry.deactivateFault(ScenarioType.REDIS_INTERRUPTION, definition.getId());
     }
 
     @Override
@@ -68,10 +68,16 @@ public class RedisInterruptionAdapter implements FailureInjectionAdapter {
     }
 
     @Override
+    public void neutralizeLocalFault(ExperimentDefinition definition) {
+        log.info("[RESILIENCE] Neutralizing local in-process Redis fault for experiment '{}'", definition.getId());
+        faultRegistry.deactivateFault(ScenarioType.REDIS_INTERRUPTION, definition.getId());
+        injected.set(false);
+    }
+
+    @Override
     public void cleanup(ExperimentDefinition definition) {
         log.info("[RESILIENCE] Cleaning up Redis interruption experiment '{}'", definition.getId());
-        faultRegistry.deactivateFault(ScenarioType.REDIS_INTERRUPTION);
-        injected.set(false);
+        neutralizeLocalFault(definition);
     }
 
     public boolean isSimulatedFailureActive() {

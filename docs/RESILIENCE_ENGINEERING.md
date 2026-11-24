@@ -107,13 +107,16 @@ To guarantee that failure injection never compromises shared environments or pro
    - Target resources must match regex `^[a-zA-Z0-9][a-zA-Z0-9_\-\.:]{2,63}$`.
    - Blacklisted targets (e.g. `orynx-audit-postgres`, `orynx-kafka`, `orynx-audit-redis`, `localhost:5432`, `docker.sock`) are rejected with `SafetyValidationException`.
 3. **Cluster Distributed Concurrency Lock & Stale-Owner Protection**:
-   - Cluster-wide concurrency is coordinated via Step 24's `DistributedLockService` using mutex `orynx:{admission}:resilience_lock`.
+   - Cluster-wide concurrency is coordinated via Step 24's `DistributedLockService` using mutex key `resilience-experiment-leader` (stored in Redis as `orynx:{lock}:resilience-experiment-leader`).
    - Lock lease expiration is set dynamically to `timeoutMs + 30000ms`.
    - Ensures only **1 experiment** can execute across the entire distributed cluster simultaneously.
-   - **Stale-Owner Protection**: Before injection, before recovery, and before cleanup, `ResilienceExperimentEngine` verifies active lock ownership via `distributedLockService.isLockHeldBy(lockKey, token)`.
-     - If the lock lease expired or was re-acquired by a peer orchestrator instance during a prolonged stall, the engine immediately aborts execution by throwing `StaleLockOwnerException`.
-     - Crucially, when lock ownership is lost, the engine **skips adapter cleanup** so that the stale node does not dismantle state or interfere with operations owned by the new lock holder.
-     - *Design Note*: Checking `isLockHeldBy(lockKey, token)` verifies Redis lease key presence and value identity. It protects against stale lease reuse within the engine, but is a lease validation check rather than a monotonically increasing fencing token for downstream storage systems.
+   - **Mandatory Fail-Closed Lock Contract**: `DistributedLockService.isLockHeldBy(lockKey, token)` is a mandatory abstract interface method that fails closed (`false`) if lock storage is partitioned, unverified, or token mismatches.
+   - **Separation of Local Fault Neutralization vs Shared-Resource Cleanup (Step 25.6 Remediation)**:
+     - **Local In-Process Fault Neutralization (`neutralizeLocalFault`)**: Runs **unconditionally** in the `finally` block, scoped by `definition.getId()`. It deactivates the in-memory fault in `ResilienceFaultRegistry` for this experiment, ensuring that an abandoned or stale experiment never leaves JVM-local simulated faults active or poisons normal workflow admission. Because `ResilienceFaultRegistry` tracks experiment ownership (`ActiveFault.experimentId`), stale Experiment A cannot accidentally deactivate a newer Experiment B's active fault.
+     - **Shared-Resource Cleanup (`cleanup`)**: Executed **only if distributed lock ownership is verified**. If lock lease ownership was lost (`isStaleOwner == true`), shared cleanup is aborted to prevent a stale instance from dismantling resources or interfering with an active peer node.
+     - **Outcome Consistency**: If lock ownership was lost or local neutralization failed, the experiment outcome is strictly forced to `Outcome.FAIL` (or `CLEANUP_FAILED`), preventing an unqualified `Outcome.PASS` or `COMPLETED` state.
+   - **TOCTOU Bounds & Limitations**:
+     - *Design Note*: `isLockHeldBy(lockKey, token)` verifies Redis lease key presence and token value identity at a discrete point in time. It prevents stale lease reuse within the engine, but is a point-in-time lease validation check rather than a monotonic fencing token or atomic compare-and-swap on downstream storage systems. If a JVM stall occurs between the ownership check and adapter execution, the check cannot eliminate the TOCTOU window. Bounding this risk is achieved by short phase durations, active watchdog thread interruption, dynamic lease duration (`timeoutMs + 30s`), and unconditional JVM-local fault neutralization.
 4. **Active Timeout Watchdog & Scheduler Lifecycle**:
    - A dedicated watchdog scheduler monitors `timeoutMs`. If an adapter or phase hangs, the watchdog interrupts the thread and transitions directly to cleanup.
    - Operator `abort(experimentId)` also actively interrupts the executing thread.

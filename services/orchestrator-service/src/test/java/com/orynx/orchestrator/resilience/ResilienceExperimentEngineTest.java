@@ -1,8 +1,15 @@
 package com.orynx.orchestrator.resilience;
 
+import com.orynx.orchestrator.coordination.admission.AdmissionDecision;
+import com.orynx.orchestrator.coordination.admission.AdmissionFailurePolicy;
+import com.orynx.orchestrator.coordination.admission.RedisWorkflowAdmissionController;
+import com.orynx.orchestrator.coordination.admission.WorkflowAdmissionException;
+import com.orynx.orchestrator.coordination.config.RedisCoordinationProperties;
 import com.orynx.orchestrator.coordination.lock.DistributedLockService;
+import com.orynx.orchestrator.coordination.metrics.RedisCoordinationMetrics;
 import com.orynx.orchestrator.resilience.adapter.FailureInjectionAdapter;
 import com.orynx.orchestrator.resilience.adapter.RedisInterruptionAdapter;
+import com.orynx.orchestrator.resilience.adapter.ResilienceFaultRegistry;
 import com.orynx.orchestrator.resilience.engine.ExperimentRegistry;
 import com.orynx.orchestrator.resilience.engine.ResilienceExperimentEngine;
 import com.orynx.orchestrator.resilience.metrics.ResilienceMetrics;
@@ -17,9 +24,11 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.data.redis.core.script.RedisScript;
+import org.springframework.http.HttpStatus;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -191,7 +200,7 @@ class ResilienceExperimentEngineTest {
     }
 
     @Test
-    @DisplayName("Stale lock owner loss during observation skips cleanup to protect active lock owner (M-02)")
+    @DisplayName("Stale lock owner loss during observation skips cleanup to protect active lock owner but neutralizes local fault (C-01, M-02)")
     void staleLockOwnerLossDuringExecutionSkipsCleanup() {
         DistributedLockService lockService = mock(DistributedLockService.class);
         when(lockService.tryAcquire(eq(ResilienceExperimentEngine.RESILIENCE_LOCK_KEY), any(), any()))
@@ -218,10 +227,167 @@ class ResilienceExperimentEngineTest {
         ExperimentResult result = staleOwnerEngine.runExperiment(def);
 
         assertEquals(ExperimentResult.Outcome.FAIL, result.getOutcome());
-        assertTrue(result.getVerificationErrors().stream().anyMatch(e -> e.contains("Stale lock owner detected") || e.contains("skipped cleanup")));
-        // Verify adapter cleanup was SKIPPED to protect the new owner
+        assertTrue(result.getVerificationErrors().stream().anyMatch(e -> e.contains("Stale lock owner detected") || e.contains("skipped shared cleanup")));
+        // Verify local fault neutralization was executed unconditionally (C-01)
+        verify(adapter).neutralizeLocalFault(any());
+        // Verify shared adapter cleanup was SKIPPED to protect the new owner
         verify(adapter, never()).cleanup(any());
         verify(lockService, never()).release(any(), any());
+    }
+
+    @Test
+    @DisplayName("C-01: Stale lock owner neutralizes local fault in real registry and restores live workflow admission")
+    void staleLockOwnerNeutralizesLocalFaultInRegistryAndUnblocksAdmission() {
+        DistributedLockService lockService = mock(DistributedLockService.class);
+        when(lockService.tryAcquire(eq(ResilienceExperimentEngine.RESILIENCE_LOCK_KEY), any(), any()))
+                .thenReturn(true);
+        // Lock held at start and injection, but lost during observation
+        when(lockService.isLockHeldBy(eq(ResilienceExperimentEngine.RESILIENCE_LOCK_KEY), any()))
+                .thenReturn(true)
+                .thenReturn(false);
+
+        ResilienceFaultRegistry realFaultRegistry = new ResilienceFaultRegistry();
+        RedisInterruptionAdapter realAdapter = new RedisInterruptionAdapter(realFaultRegistry);
+
+        // Setup live admission controller connected to real fault registry
+        StringRedisTemplate mockRedis = mock(StringRedisTemplate.class);
+        RedisScript<List> mockScript = mock(RedisScript.class);
+        when(mockRedis.execute(any(RedisScript.class), any(List.class), any(Object[].class))).thenReturn(
+                List.of(1L, "OK", 5L, 20L)
+        );
+        RedisCoordinationProperties props = new RedisCoordinationProperties();
+        props.setFailurePolicy(AdmissionFailurePolicy.FAIL_CLOSED);
+        props.setRetryAfterSeconds(5);
+        RedisCoordinationMetrics coordMetrics = new RedisCoordinationMetrics(new SimpleMeterRegistry());
+        RedisWorkflowAdmissionController admissionController = new RedisWorkflowAdmissionController(
+                mockRedis, mockScript, mockScript, props, coordMetrics, realFaultRegistry
+        );
+
+        ResilienceExperimentEngine engineWithRealAdapter = new ResilienceExperimentEngine(
+                validator,
+                metrics,
+                registry,
+                List.of(realAdapter),
+                lockService,
+                null
+        );
+
+        // Before experiment: admission succeeds
+        assertTrue(admissionController.tryAdmit(1001L, 2001L).admitted());
+
+        // Run experiment which encounters stale lock ownership during observation
+        ExperimentDefinition def = sampleDefinition("exp-stale-redis-neutralize-001").toBuilder().durationMs(50).build();
+        ExperimentResult result = engineWithRealAdapter.runExperiment(def);
+
+        // Experiment fails due to stale owner
+        assertEquals(ExperimentResult.Outcome.FAIL, result.getOutcome());
+        assertFalse(result.isCleanupSuccessful());
+
+        // CRITICAL INVARIANT: Local fault was neutralized despite lock loss (C-01)
+        assertFalse(realFaultRegistry.isRedisFaultActive(), "Redis fault in local registry must NOT remain active after stale lock loss");
+        assertFalse(realAdapter.isSimulatedFailureActive());
+
+        // Live admission controller is immediately unblocked and working normally!
+        AdmissionDecision afterStaleLossDecision = admissionController.tryAdmit(1002L, 2001L);
+        assertTrue(afterStaleLossDecision.admitted(), "Normal workflow admission must succeed without HTTP 503 after stale lock recovery");
+    }
+
+    @Test
+    @DisplayName("C-01: Newer experiment fault is protected from deactivation by abandoned stale experiment")
+    void newerExperimentFaultProtectedFromStaleExperimentDeactivation() {
+        ResilienceFaultRegistry faultRegistry = new ResilienceFaultRegistry();
+
+        // Stale experiment A activates fault
+        faultRegistry.activateFault(ScenarioType.REDIS_INTERRUPTION, "exp-A", "redis-node-1", Map.of("policy", "FAIL_CLOSED"));
+        assertTrue(faultRegistry.isRedisFaultActive());
+        assertEquals("exp-A", faultRegistry.getActiveRedisExperimentId());
+
+        // Newer experiment B activates fault
+        faultRegistry.activateFault(ScenarioType.REDIS_INTERRUPTION, "exp-B", "redis-node-2", Map.of("policy", "FAIL_CLOSED"));
+        assertEquals("exp-B", faultRegistry.getActiveRedisExperimentId());
+
+        // Abandoned experiment A resumes and attempts to deactivate its fault
+        boolean deactivatedByStaleA = faultRegistry.deactivateFault(ScenarioType.REDIS_INTERRUPTION, "exp-A");
+        assertFalse(deactivatedByStaleA, "Stale experiment A must NOT be allowed to deactivate newer experiment B's fault");
+
+        // Experiment B's fault remains active and protected
+        assertTrue(faultRegistry.isRedisFaultActive(), "Experiment B's fault must remain active in the registry");
+        assertEquals("exp-B", faultRegistry.getActiveRedisExperimentId());
+
+        // Experiment B cleans up normally
+        boolean deactivatedByB = faultRegistry.deactivateFault(ScenarioType.REDIS_INTERRUPTION, "exp-B");
+        assertTrue(deactivatedByB);
+        assertFalse(faultRegistry.isRedisFaultActive());
+    }
+
+    @Test
+    @DisplayName("M-01: Lock loss during recovery cannot result in a false PASS outcome")
+    void lockLossDuringRecoveryCannotProducePassOutcome() {
+        DistributedLockService lockService = mock(DistributedLockService.class);
+        when(lockService.tryAcquire(eq(ResilienceExperimentEngine.RESILIENCE_LOCK_KEY), any(), any()))
+                .thenReturn(true);
+        // Lock held at injection and recovery, but lost during recovery verification / cleanup
+        when(lockService.isLockHeldBy(eq(ResilienceExperimentEngine.RESILIENCE_LOCK_KEY), any()))
+                .thenReturn(true)  // check before injection
+                .thenReturn(true)  // check before recovery
+                .thenReturn(false); // check during finally cleanup: STALE OWNER
+
+        FailureInjectionAdapter adapter = mock(FailureInjectionAdapter.class);
+        when(adapter.getSupportedScenario()).thenReturn(ScenarioType.REDIS_INTERRUPTION);
+        when(adapter.verifyInjected(any())).thenReturn(true);
+        when(adapter.verifyRecovered(any())).thenReturn(true);
+
+        ResilienceExperimentEngine engine = new ResilienceExperimentEngine(
+                validator,
+                metrics,
+                registry,
+                List.of(adapter),
+                lockService,
+                null
+        );
+
+        ExperimentDefinition def = sampleDefinition("exp-pass-prevention-001").toBuilder().durationMs(50).build();
+        ExperimentResult result = engine.runExperiment(def);
+
+        // Outcome MUST be FAIL, NEVER PASS (M-01 remediation)
+        assertEquals(ExperimentResult.Outcome.FAIL, result.getOutcome());
+        assertFalse(result.isSuccessful());
+        assertFalse(result.isCleanupSuccessful());
+        assertTrue(result.getVerificationErrors().stream().anyMatch(e -> e.contains("Stale owner detected")));
+    }
+
+    @Test
+    @DisplayName("Local fault neutralization failure triggers quarantine mode and CLEANUP_FAILED outcome")
+    void localFaultNeutralizationFailureTriggersQuarantine() {
+        DistributedLockService lockService = mock(DistributedLockService.class);
+        when(lockService.tryAcquire(eq(ResilienceExperimentEngine.RESILIENCE_LOCK_KEY), any(), any()))
+                .thenReturn(true);
+        when(lockService.isLockHeldBy(eq(ResilienceExperimentEngine.RESILIENCE_LOCK_KEY), any()))
+                .thenReturn(true);
+
+        FailureInjectionAdapter adapter = mock(FailureInjectionAdapter.class);
+        when(adapter.getSupportedScenario()).thenReturn(ScenarioType.REDIS_INTERRUPTION);
+        when(adapter.verifyInjected(any())).thenReturn(true);
+        when(adapter.verifyRecovered(any())).thenReturn(true);
+        // Simulate failure during local fault neutralization
+        doThrow(new RuntimeException("Simulated registry corruption during neutralization"))
+                .when(adapter).neutralizeLocalFault(any());
+
+        ResilienceExperimentEngine engine = new ResilienceExperimentEngine(
+                validator,
+                metrics,
+                registry,
+                List.of(adapter),
+                lockService,
+                null
+        );
+
+        ExperimentDefinition def = sampleDefinition("exp-local-neutralize-fail-001").toBuilder().durationMs(50).build();
+        ExperimentResult result = engine.runExperiment(def);
+
+        assertEquals(ExperimentResult.Outcome.CLEANUP_FAILED, result.getOutcome());
+        assertFalse(result.isCleanupSuccessful());
+        assertTrue(engine.isQuarantined());
     }
 
     @Test

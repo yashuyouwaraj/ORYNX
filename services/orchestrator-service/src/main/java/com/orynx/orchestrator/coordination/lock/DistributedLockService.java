@@ -31,14 +31,14 @@ public interface DistributedLockService {
 
     /**
      * Verifies whether the lock is currently held by the expected owner token.
+     * Implementations MUST fail closed: if ownership cannot be verified or lock storage is unavailable,
+     * this method must return false.
      *
      * @param lockKey the identifier of the locked resource
      * @param token the unique token of the expected owner
-     * @return true if the lock is currently held by the specified token, false otherwise
+     * @return true if the lock is confirmed held by the specified token, false otherwise
      */
-    default boolean isLockHeldBy(String lockKey, String token) {
-        return true;
-    }
+    boolean isLockHeldBy(String lockKey, String token);
 
     /**
      * Executes an operation within a distributed lock boundary, automatically releasing

@@ -50,10 +50,10 @@ public class NetworkLatencyAdapter implements FailureInjectionAdapter {
     @Override
     public void inject(ExperimentDefinition definition) {
         long latency = Long.parseLong(definition.getParameter("latencyMs", "500"));
-        log.info("[RESILIENCE] Injecting simulated network latency of {}ms on target '{}' (duration: {}ms)",
-                latency, definition.getTargetResource(), definition.getDurationMs());
+        log.info("[RESILIENCE] Injecting simulated network latency of {}ms for experiment '{}' on target '{}' (duration: {}ms)",
+                latency, definition.getId(), definition.getTargetResource(), definition.getDurationMs());
 
-        faultRegistry.activateFault(ScenarioType.NETWORK_LATENCY, definition.getTargetResource(), definition.getParameters());
+        faultRegistry.activateFault(ScenarioType.NETWORK_LATENCY, definition.getId(), definition.getTargetResource(), definition.getParameters());
         injected.set(true);
     }
 
@@ -65,7 +65,7 @@ public class NetworkLatencyAdapter implements FailureInjectionAdapter {
     @Override
     public void recover(ExperimentDefinition definition) {
         log.info("[RESILIENCE] Removing simulated network latency on target '{}'", definition.getTargetResource());
-        faultRegistry.deactivateFault(ScenarioType.NETWORK_LATENCY);
+        faultRegistry.deactivateFault(ScenarioType.NETWORK_LATENCY, definition.getId());
     }
 
     @Override
@@ -74,10 +74,16 @@ public class NetworkLatencyAdapter implements FailureInjectionAdapter {
     }
 
     @Override
+    public void neutralizeLocalFault(ExperimentDefinition definition) {
+        log.info("[RESILIENCE] Neutralizing local network latency fault for experiment '{}'", definition.getId());
+        faultRegistry.deactivateFault(ScenarioType.NETWORK_LATENCY, definition.getId());
+        injected.set(false);
+    }
+
+    @Override
     public void cleanup(ExperimentDefinition definition) {
         log.info("[RESILIENCE] Cleaning up network latency experiment '{}'", definition.getId());
-        faultRegistry.deactivateFault(ScenarioType.NETWORK_LATENCY);
-        injected.set(false);
+        neutralizeLocalFault(definition);
     }
 
     public long getArtificialLatencyMs() {

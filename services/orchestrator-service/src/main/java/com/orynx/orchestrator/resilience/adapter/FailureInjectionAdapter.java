@@ -49,6 +49,16 @@ public interface FailureInjectionAdapter {
     boolean verifyRecovered(ExperimentDefinition definition);
 
     /**
+     * Unconditionally neutralizes local in-memory or in-process faults belonging to this experiment.
+     * This method MUST be safe to invoke unconditionally even if distributed lock ownership was lost,
+     * ensuring no JVM-local fault contamination persists after experiment abandonment.
+     * Must be idempotent and scoped to definition.getId().
+     */
+    default void neutralizeLocalFault(ExperimentDefinition definition) {
+        // default no-op for adapters with no in-process state
+    }
+
+    /**
      * Performs mandatory cleanup and teardown of any ephemeral resources created for the experiment.
      */
     void cleanup(ExperimentDefinition definition);

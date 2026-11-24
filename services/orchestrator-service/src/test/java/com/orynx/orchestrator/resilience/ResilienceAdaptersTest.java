@@ -167,4 +167,53 @@ class ResilienceAdaptersTest {
         assertEquals(com.orynx.orchestrator.resilience.model.InjectionLevel.SIMULATION,
                 new NetworkLatencyAdapter().getInjectionLevel());
     }
+
+    @Test
+    @DisplayName("neutralizeLocalFault deactivates fault in registry across all adapters (C-01)")
+    void testNeutralizeLocalFaultAcrossAllAdapters() {
+        com.orynx.orchestrator.resilience.adapter.ResilienceFaultRegistry registry =
+                new com.orynx.orchestrator.resilience.adapter.ResilienceFaultRegistry();
+
+        RedisInterruptionAdapter redis = new RedisInterruptionAdapter(registry);
+        ExperimentDefinition redisDef = baseDef(ScenarioType.REDIS_INTERRUPTION, Map.of("policy", "FAIL_CLOSED"));
+        redis.inject(redisDef);
+        assertTrue(registry.isRedisFaultActive());
+        redis.neutralizeLocalFault(redisDef);
+        assertFalse(registry.isRedisFaultActive());
+
+        KafkaInterruptionAdapter kafka = new KafkaInterruptionAdapter(registry);
+        ExperimentDefinition kafkaDef = baseDef(ScenarioType.KAFKA_INTERRUPTION, Map.of("mode", "PRODUCER_DROP"));
+        kafka.inject(kafkaDef);
+        assertTrue(registry.isFaultActive(ScenarioType.KAFKA_INTERRUPTION));
+        kafka.neutralizeLocalFault(kafkaDef);
+        assertFalse(registry.isFaultActive(ScenarioType.KAFKA_INTERRUPTION));
+
+        PostgresInterruptionAdapter postgres = new PostgresInterruptionAdapter(registry);
+        ExperimentDefinition pgDef = baseDef(ScenarioType.POSTGRES_INTERRUPTION, Map.of("mode", "CONNECTION_DOWN"));
+        postgres.inject(pgDef);
+        assertTrue(registry.isFaultActive(ScenarioType.POSTGRES_INTERRUPTION));
+        postgres.neutralizeLocalFault(pgDef);
+        assertFalse(registry.isFaultActive(ScenarioType.POSTGRES_INTERRUPTION));
+
+        WorkerInterruptionAdapter worker = new WorkerInterruptionAdapter(registry);
+        ExperimentDefinition workerDef = baseDef(ScenarioType.WORKER_INTERRUPTION, Map.of("mode", "WORKER_CRASH"));
+        worker.inject(workerDef);
+        assertTrue(registry.isFaultActive(ScenarioType.WORKER_INTERRUPTION));
+        worker.neutralizeLocalFault(workerDef);
+        assertFalse(registry.isFaultActive(ScenarioType.WORKER_INTERRUPTION));
+
+        OrchestratorInterruptionAdapter orch = new OrchestratorInterruptionAdapter(registry);
+        ExperimentDefinition orchDef = baseDef(ScenarioType.ORCHESTRATOR_INTERRUPTION, Map.of("mode", "LEADER_LOCK_LOST"));
+        orch.inject(orchDef);
+        assertTrue(registry.isFaultActive(ScenarioType.ORCHESTRATOR_INTERRUPTION));
+        orch.neutralizeLocalFault(orchDef);
+        assertFalse(registry.isFaultActive(ScenarioType.ORCHESTRATOR_INTERRUPTION));
+
+        NetworkLatencyAdapter net = new NetworkLatencyAdapter(registry);
+        ExperimentDefinition netDef = baseDef(ScenarioType.NETWORK_LATENCY, Map.of("latencyMs", "500"));
+        net.inject(netDef);
+        assertTrue(registry.isFaultActive(ScenarioType.NETWORK_LATENCY));
+        net.neutralizeLocalFault(netDef);
+        assertFalse(registry.isFaultActive(ScenarioType.NETWORK_LATENCY));
+    }
 }

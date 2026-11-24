@@ -118,4 +118,23 @@ class DistributedLockIntegrationTest {
         // Lock should be released automatically
         assertThat(redisTemplate.hasKey(RedisDistributedLockService.LOCK_KEY_PREFIX + LOCK_NAME)).isFalse();
     }
+
+    @Test
+    @DisplayName("isLockHeldBy verifies ownership accurately against live Redis instance")
+    void isLockHeldByVerifiesOwnershipAgainstRealRedis() {
+        String token = UUID.randomUUID().toString();
+        assertThat(lockService.isLockHeldBy(LOCK_NAME, token)).isFalse();
+
+        boolean acquired = lockService.tryAcquire(LOCK_NAME, token, Duration.ofSeconds(10));
+        assertThat(acquired).isTrue();
+
+        // Valid owner check
+        assertThat(lockService.isLockHeldBy(LOCK_NAME, token)).isTrue();
+        // Mismatched token check
+        assertThat(lockService.isLockHeldBy(LOCK_NAME, "wrong-token")).isFalse();
+
+        // After release
+        assertThat(lockService.release(LOCK_NAME, token)).isTrue();
+        assertThat(lockService.isLockHeldBy(LOCK_NAME, token)).isFalse();
+    }
 }

@@ -79,16 +79,24 @@ This alert indicates that a resilience failure experiment executed by the `Resil
    - For PostgreSQL: Terminate hanging transactions or reset connection pool.
    - For Worker: Remove stale lease keys from Redis and restart worker process if necessary.
    - For Network Latency: Clear any simulated proxy delays or traffic shaping rules.
-3. **Clear Quarantine via Operator Reset**:
+3. **Clear Quarantine & Inspect Distributed Lock via Operator Reset**:
    - Once all components are verified healthy, invoke `clearQuarantine`:
      ```java
      // Programmatic invocation or via admin actuator endpoint
      resilienceExperimentEngine.clearQuarantine("Manual operator recovery verification by SRE");
      ```
-   - Alternatively, remove the Redis quarantine flag and release the cluster lock:
+   - Alternatively, inspect the Redis keys directly. Note the exact key composition:
+     - **Quarantine Key**: `orynx:{admission}:resilience_quarantine`
+     - **Distributed Resilience Lock Key**: `orynx:{lock}:resilience-experiment-leader`
+       *(Note: RedisDistributedLockService automatically prepends prefix `orynx:{lock}:` to the engine key `resilience-experiment-leader`)*
+   - **SAFETY WARNING**: Never delete `orynx:{lock}:resilience-experiment-leader` blindly. First inspect the token:
+     ```bash
+     docker exec -it orynx-audit-redis redis-cli get "orynx:{lock}:resilience-experiment-leader"
+     ```
+     Ensure the lock does not belong to an actively executing experiment before removing:
      ```bash
      docker exec -it orynx-audit-redis redis-cli del "orynx:{admission}:resilience_quarantine"
-     docker exec -it orynx-audit-redis redis-cli del "orynx:{admission}:resilience_lock"
+     docker exec -it orynx-audit-redis redis-cli del "orynx:{lock}:resilience-experiment-leader"
      ```
    - Note: If Redis is down, `clearQuarantine` will fail loudly with `IllegalStateException` rather than silently succeeding.
 4. **Verify Environment Isolation**:

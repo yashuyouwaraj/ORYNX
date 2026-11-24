@@ -50,7 +50,7 @@ import java.util.concurrent.atomic.AtomicReference;
 @Component
 public class ResilienceExperimentEngine {
 
-    public static final String RESILIENCE_LOCK_KEY = "orynx:{admission}:resilience_lock";
+    public static final String RESILIENCE_LOCK_KEY = "resilience-experiment-leader";
     public static final String QUARANTINE_KEY = "orynx:{admission}:resilience_quarantine";
 
     private final ExperimentSafetyValidator safetyValidator;
@@ -271,21 +271,47 @@ public class ResilienceExperimentEngine {
             timeoutFuture.cancel(true);
             executingThread.set(null);
 
-            // Stale owner verification before cleanup (M-02)
-            boolean isStaleOwner = lockAcquired && distributedLockService != null && !distributedLockService.isLockHeldBy(RESILIENCE_LOCK_KEY, lockToken);
+            // Step A: UNCONDITIONALLY neutralize local in-process fault state for this experiment (C-01)
+            boolean localNeutralized = false;
+            if (adapter != null) {
+                try {
+                    adapter.neutralizeLocalFault(definition);
+                    localNeutralized = true;
+                    observedBehaviors.add("Local fault neutralized");
+                } catch (Exception localEx) {
+                    log.error("[RESILIENCE] Failed to neutralize local fault for experiment {}: {}",
+                            definition.getId(), localEx.getMessage(), localEx);
+                    verificationErrors.add("Local fault neutralization failed: " + localEx.getMessage());
+                    localNeutralized = false;
+                }
+            } else {
+                localNeutralized = true;
+            }
 
+            // Step B: Verify distributed lock ownership for shared-resource cleanup (M-01, M-02)
+            boolean isStaleOwner = false;
+            if (lockAcquired && distributedLockService != null) {
+                try {
+                    isStaleOwner = !distributedLockService.isLockHeldBy(RESILIENCE_LOCK_KEY, lockToken);
+                } catch (Exception e) {
+                    log.error("[RESILIENCE] Failed to verify lock ownership during cleanup: {}. Treating as unverified/stale.", e.getMessage());
+                    isStaleOwner = true;
+                }
+            }
+
+            boolean sharedCleanupSuccessful = false;
             if (isStaleOwner) {
-                log.error("[RESILIENCE] Stale lock owner detected during cleanup. Lock is no longer held by token {}. Aborting cleanup to protect active cluster owner.", lockToken);
-                verificationErrors.add("Stale owner detected: skipped cleanup to avoid interfering with new lock holder");
-                cleanupSuccessful = false;
+                log.error("[RESILIENCE] Stale lock owner detected during cleanup. Lock is no longer held by token {}. Aborting shared-resource cleanup to protect active cluster owner.", lockToken);
+                verificationErrors.add("Stale owner detected: skipped shared cleanup to avoid interfering with new lock holder");
+                sharedCleanupSuccessful = false;
             } else if (adapter != null) {
                 try {
                     adapter.cleanup(definition);
-                    cleanupSuccessful = true;
+                    sharedCleanupSuccessful = true;
                     observedBehaviors.add("Cleanup completed successfully");
                 } catch (Exception cleanupEx) {
                     log.error("[RESILIENCE] Cleanup failed for experiment {}: {}", definition.getId(), cleanupEx.getMessage(), cleanupEx);
-                    cleanupSuccessful = false;
+                    sharedCleanupSuccessful = false;
                     quarantined.set(true);
                     if (redisTemplate != null) {
                         try {
@@ -300,7 +326,28 @@ public class ResilienceExperimentEngine {
                     resilienceMetrics.recordCleanupFailure(definition.getScenarioType());
                 }
             } else {
-                cleanupSuccessful = true;
+                sharedCleanupSuccessful = true;
+            }
+
+            cleanupSuccessful = localNeutralized && sharedCleanupSuccessful && !isStaleOwner;
+
+            // Step C: Ensure outcome and state consistency (M-01)
+            // If lock ownership was lost or local neutralization failed, the experiment CANNOT be PASS
+            if (isStaleOwner) {
+                outcome = ExperimentResult.Outcome.FAIL;
+                forceState(ExperimentState.FAILED);
+            } else if (!localNeutralized) {
+                outcome = ExperimentResult.Outcome.CLEANUP_FAILED;
+                forceState(ExperimentState.CLEANUP_FAILED);
+                quarantined.set(true);
+                if (redisTemplate != null) {
+                    try {
+                        redisTemplate.opsForValue().set(QUARANTINE_KEY, "Quarantined due to local fault neutralization failure in experiment " + definition.getId());
+                    } catch (Exception re) {
+                        log.error("Failed to set quarantine key in Redis", re);
+                    }
+                }
+                resilienceMetrics.recordCleanupFailure(definition.getScenarioType());
             }
 
             resilienceMetrics.recordExperimentCompleted(definition.getScenarioType(), outcome);
@@ -445,7 +492,14 @@ public class ResilienceExperimentEngine {
         if (!lockAcquired || distributedLockService == null) {
             return;
         }
-        if (!distributedLockService.isLockHeldBy(RESILIENCE_LOCK_KEY, lockToken)) {
+        boolean held = false;
+        try {
+            held = distributedLockService.isLockHeldBy(RESILIENCE_LOCK_KEY, lockToken);
+        } catch (Exception e) {
+            log.error("[RESILIENCE] Lock ownership check failed due to error: {}", e.getMessage());
+            held = false;
+        }
+        if (!held) {
             throw new StaleLockOwnerException("Distributed lock ownership was lost for " + RESILIENCE_LOCK_KEY + " (stale owner detected). Terminating experiment to prevent unauthorized execution.");
         }
     }

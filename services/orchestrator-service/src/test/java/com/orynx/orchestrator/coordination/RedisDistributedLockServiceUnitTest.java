@@ -129,4 +129,54 @@ class RedisDistributedLockServiceUnitTest {
         assertThat(actionExecuted).isFalse();
         verify(redisTemplate, never()).execute(any(), anyList(), anyString());
     }
+
+    @Test
+    @DisplayName("isLockHeldBy returns true when token matches in Redis")
+    void isLockHeldByReturnsTrueWhenTokenMatches() {
+        when(valueOperations.get(eq(RedisDistributedLockService.LOCK_KEY_PREFIX + "leader-1")))
+                .thenReturn("token-abc");
+
+        boolean held = lockService.isLockHeldBy("leader-1", "token-abc");
+
+        assertThat(held).isTrue();
+    }
+
+    @Test
+    @DisplayName("isLockHeldBy returns false when token mismatches")
+    void isLockHeldByReturnsFalseWhenTokenMismatches() {
+        when(valueOperations.get(eq(RedisDistributedLockService.LOCK_KEY_PREFIX + "leader-1")))
+                .thenReturn("token-other");
+
+        boolean held = lockService.isLockHeldBy("leader-1", "token-abc");
+
+        assertThat(held).isFalse();
+    }
+
+    @Test
+    @DisplayName("isLockHeldBy returns false when key is absent in Redis")
+    void isLockHeldByReturnsFalseWhenKeyAbsent() {
+        when(valueOperations.get(anyString())).thenReturn(null);
+
+        boolean held = lockService.isLockHeldBy("leader-1", "token-abc");
+
+        assertThat(held).isFalse();
+    }
+
+    @Test
+    @DisplayName("isLockHeldBy fails closed (returns false) on Redis exception (M-02)")
+    void isLockHeldByFailsClosedOnRedisException() {
+        when(valueOperations.get(anyString()))
+                .thenThrow(new RedisConnectionFailureException("Redis offline"));
+
+        boolean held = lockService.isLockHeldBy("leader-1", "token-abc");
+
+        assertThat(held).isFalse();
+    }
+
+    @Test
+    @DisplayName("isLockHeldBy fails closed (returns false) on null inputs")
+    void isLockHeldByReturnsFalseOnNullInputs() {
+        assertThat(lockService.isLockHeldBy(null, "token-1")).isFalse();
+        assertThat(lockService.isLockHeldBy("leader-1", null)).isFalse();
+    }
 }
