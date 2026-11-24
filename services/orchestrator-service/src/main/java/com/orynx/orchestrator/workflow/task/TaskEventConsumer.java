@@ -1,6 +1,5 @@
 package com.orynx.orchestrator.workflow.task;
 
-import com.orynx.orchestrator.common.metrics.WorkflowMetrics;
 import com.orynx.orchestrator.execution.WorkflowExecution;
 import com.orynx.orchestrator.execution.WorkflowExecutionRepository;
 import com.orynx.orchestrator.workflow.Workflow;
@@ -10,6 +9,7 @@ import com.orynx.orchestrator.workflow.event.ExecutionEvent;
 import com.orynx.orchestrator.workflow.event.ExecutionEventRepository;
 import com.orynx.orchestrator.workflow.task.dto.TaskExecutionEvent;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
@@ -27,9 +27,6 @@ public class TaskEventConsumer {
     private final ExecutionEventRepository executionEventRepository;
     private final WorkflowExecutionRepository workflowExecutionRepository;
     private final WorkflowRepository workflowRepository;
-
-    @Autowired(required = false)
-    private WorkflowMetrics workflowMetrics;
 
     public TaskEventConsumer(
             SimpMessagingTemplate messagingTemplate,
@@ -75,6 +72,8 @@ public class TaskEventConsumer {
             return;
         }
 
+        MDC.put("workflowId", String.valueOf(event.getWorkflowId()));
+        try {
         if (event.getEventId() != null && !event.getEventId().isBlank()
                 && executionEventRepository.existsByWorkflowIdAndEventId(event.getWorkflowId(), event.getEventId())) {
             log.info("Suppressing duplicate TaskExecutionEvent by eventId={} for workflow {} task {}",
@@ -147,10 +146,6 @@ public class TaskEventConsumer {
 
         executionEventRepository.save(executionEvent);
 
-        if (workflowMetrics != null && ("COMPLETED".equals(event.getStatus()) || "FAILED".equals(event.getStatus()))) {
-            workflowMetrics.recordTaskExecuted(event.getStatus());
-        }
-
         event.setGeneration(effectiveGen);
         event.setTimestamp(executionEvent.getTimestamp());
 
@@ -167,6 +162,9 @@ public class TaskEventConsumer {
                             "/queue/tasks",
                             event
                     ));
+        }
+        } finally {
+            MDC.remove("workflowId");
         }
     }
 }

@@ -1,5 +1,6 @@
 package com.orynx.orchestrator.ai;
 
+import com.orynx.orchestrator.common.metrics.WorkflowMetrics;
 import com.orynx.orchestrator.common.security.UserContext;
 import com.orynx.orchestrator.integration.planning.PlanningClient;
 import com.orynx.orchestrator.ai.dto.AiWorkflowRequest;
@@ -25,6 +26,9 @@ public class AiWorkflowService {
     private final WorkflowRepository workflowRepository;
     private final WorkflowTaskRepository workflowTaskRepository;
     private final WorkflowEventProducer workflowEventProducer;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private WorkflowMetrics workflowMetrics;
 
     public Workflow createdAiWorkflow(AiWorkflowRequest request) {
         return createdAiWorkflow(request, UserContext.getUserId());
@@ -66,6 +70,10 @@ public class AiWorkflowService {
                     .build();
 
             workflowTaskRepository.save(task);
+        }
+
+        if (workflowMetrics != null) {
+            workflowMetrics.recordWorkflowCreated();
         }
 
         return savedWorkflow;

@@ -15,6 +15,7 @@ import com.orynx.orchestrator.workflow.task.TaskStatus;
 import com.orynx.orchestrator.workflow.task.WorkflowTask;
 import com.orynx.orchestrator.workflow.task.WorkflowTaskRepository;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
@@ -70,8 +71,10 @@ public class ExecutionEventConsumer {
             log.warn("Received null or malformed TaskStartedEvent. Ignoring.");
             return;
         }
-        log.info("Task Started -> Workflow: {}, Task: {}, gen={}",
-                event.getWorkflowName(), event.getTaskName(), event.getGeneration());
+        MDC.put("workflowId", String.valueOf(event.getWorkflowId()));
+        try {
+            log.info("Task Started -> Workflow: {}, Task: {}, gen={}",
+                    event.getWorkflowName(), event.getTaskName(), event.getGeneration());
 
         Optional<WorkflowTask> taskOptional = workflowTaskRepository.findByWorkflowIdAndExecutionOrder(
                 event.getWorkflowId(),
@@ -133,6 +136,9 @@ public class ExecutionEventConsumer {
         workflowTaskRepository.save(task);
 
         log.info("Task {} marked RUNNING", task.getName());
+        } finally {
+            MDC.remove("workflowId");
+        }
     }
 
     @KafkaListener(
@@ -149,7 +155,8 @@ public class ExecutionEventConsumer {
             log.warn("Received null or malformed TaskCompletedEvent. Ignoring.");
             return;
         }
-
+        MDC.put("workflowId", String.valueOf(event.getWorkflowId()));
+        try {
         log.info(
                 "Task Completed -> Workflow: {}, Task: {}, Success: {}, gen={}",
                 event.getWorkflowName(),
@@ -220,6 +227,9 @@ public class ExecutionEventConsumer {
                 task.setRetryCount(Math.max(0, event.getAttempts() - 1));
             }
             workflowTaskRepository.save(task);
+            if (workflowMetrics != null) {
+                workflowMetrics.recordTaskExecuted(targetStatus.name());
+            }
             log.info("Task {} marked {}", task.getName(), task.getStatus());
         }
 
@@ -248,6 +258,9 @@ public class ExecutionEventConsumer {
                 && execution.getStatus() != WorkflowStatus.CANCELLED) {
             workflowExecutionRepository.save(execution);
         }
+        } finally {
+            MDC.remove("workflowId");
+        }
     }
 
     @KafkaListener(
@@ -264,7 +277,8 @@ public class ExecutionEventConsumer {
             log.warn("Received null or malformed WorkflowCompletedEvent. Ignoring.");
             return;
         }
-
+        MDC.put("workflowId", String.valueOf(event.getWorkflowId()));
+        try {
         log.info(
                 "Workflow Completed -> {} (success={}, gen={})",
                 event.getWorkflowName(),
@@ -387,9 +401,13 @@ public class ExecutionEventConsumer {
         );
 
         if (workflowMetrics != null) {
-            long dur = (workflow.getStartedAt() != null && workflow.getCompletedAt() != null)
-                    ? Math.max(0L, workflow.getCompletedAt() - workflow.getStartedAt())
-                    : 0L;
+            long dur = executionOptional
+                    .map(WorkflowExecution::getDurationMs)
+                    .filter(Objects::nonNull)
+                    .map(d -> Math.max(0L, d))
+                    .orElseGet(() -> (workflow.getStartedAt() != null && workflow.getCompletedAt() != null)
+                            ? Math.max(0L, workflow.getCompletedAt() - workflow.getStartedAt())
+                            : 0L);
             workflowMetrics.recordWorkflowCompleted(workflow.getStatus().name(), dur);
         }
 
@@ -404,6 +422,9 @@ public class ExecutionEventConsumer {
                     .timestamp(System.currentTimeMillis())
                     .eventId(UUID.randomUUID().toString())
                     .build());
+        }
+        } finally {
+            MDC.remove("workflowId");
         }
     }
 
@@ -423,7 +444,8 @@ public class ExecutionEventConsumer {
             log.warn("Received null or malformed WorkflowExecutionPausedEvent. Ignoring.");
             return;
         }
-
+        MDC.put("workflowId", String.valueOf(event.getWorkflowId()));
+        try {
         log.info(
                 "Workflow Execution Paused -> Id: {}, Workflow: {}, Last Completed Task: {}, gen={}",
                 event.getWorkflowId(),
@@ -484,6 +506,9 @@ public class ExecutionEventConsumer {
                 "Workflow execution {} marked PAUSED",
                 execution.getId()
         );
+        } finally {
+            MDC.remove("workflowId");
+        }
     }
 
     private boolean isStaleGeneration(

@@ -578,6 +578,10 @@ public class WorkflowService {
 
         workflowEventPublisher.publishWorkflowUpdate(event);
 
+        if (workflowMetrics != null) {
+            workflowMetrics.recordWorkflowCancelled();
+        }
+
         log.info("Workflow {} cancelled.", updatedWorkflow.getName());
 
         return updatedWorkflow;
@@ -772,7 +776,9 @@ public class WorkflowService {
 
         WorkflowStateValidator.validateTransition(workflow.getStatus(), WorkflowStatus.RUNNING, "retry");
 
+        long retryStartedAt = System.currentTimeMillis();
         workflow.setStatus(WorkflowStatus.RUNNING);
+        workflow.setStartedAt(retryStartedAt);
         workflow.setCompletedAt(null);
 
         Workflow updatedWorkflow =
@@ -802,7 +808,7 @@ public class WorkflowService {
                 WorkflowExecution.builder()
                         .workflow(updatedWorkflow)
                         .status(WorkflowStatus.RUNNING)
-                        .startedAt(System.currentTimeMillis())
+                        .startedAt(retryStartedAt)
                         .lastCompletedExecutionOrder(null)
                         .executionGeneration(nextExecutionGeneration)
                         .build();
@@ -841,6 +847,11 @@ public class WorkflowService {
                 .build();
 
         workflowEventPublisher.publishWorkflowUpdate(event);
+
+        if (workflowMetrics != null) {
+            workflowMetrics.recordWorkflowRetried();
+            workflowMetrics.recordWorkflowStarted();
+        }
 
         log.info(
                 "Workflow {} retry started with {} tasks",
