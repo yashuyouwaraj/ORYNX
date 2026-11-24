@@ -41,6 +41,14 @@ class ExperimentLifecycleTest {
     }
 
     @Test
+    @DisplayName("Timeout transitions from active states are valid")
+    void timeoutTransitions() {
+        assertTrue(ExperimentState.RUNNING.canTransitionTo(ExperimentState.TIMED_OUT));
+        assertTrue(ExperimentState.OBSERVING.canTransitionTo(ExperimentState.TIMED_OUT));
+        assertTrue(ExperimentState.RECOVERING.canTransitionTo(ExperimentState.TIMED_OUT));
+    }
+
+    @Test
     @DisplayName("Cleanup failure transition from active states is valid")
     void cleanupFailureTransitions() {
         assertTrue(ExperimentState.RUNNING.canTransitionTo(ExperimentState.CLEANUP_FAILED));
@@ -53,11 +61,13 @@ class ExperimentLifecycleTest {
         assertTrue(ExperimentState.COMPLETED.isTerminal());
         assertTrue(ExperimentState.FAILED.isTerminal());
         assertTrue(ExperimentState.ABORTED.isTerminal());
+        assertTrue(ExperimentState.TIMED_OUT.isTerminal());
         assertTrue(ExperimentState.CLEANUP_FAILED.isTerminal());
 
         assertFalse(ExperimentState.COMPLETED.canTransitionTo(ExperimentState.RUNNING));
         assertFalse(ExperimentState.FAILED.canTransitionTo(ExperimentState.READY));
         assertFalse(ExperimentState.ABORTED.canTransitionTo(ExperimentState.COMPLETED));
+        assertFalse(ExperimentState.TIMED_OUT.canTransitionTo(ExperimentState.COMPLETED));
         assertFalse(ExperimentState.CLEANUP_FAILED.canTransitionTo(ExperimentState.COMPLETED));
     }
 

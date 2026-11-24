@@ -11,12 +11,14 @@ import com.orynx.orchestrator.resilience.adapter.NetworkLatencyAdapter;
 import com.orynx.orchestrator.resilience.adapter.OrchestratorInterruptionAdapter;
 import com.orynx.orchestrator.resilience.adapter.PostgresInterruptionAdapter;
 import com.orynx.orchestrator.resilience.adapter.RedisInterruptionAdapter;
+import com.orynx.orchestrator.resilience.adapter.ResilienceFaultRegistry;
 import com.orynx.orchestrator.resilience.adapter.WorkerInterruptionAdapter;
 import com.orynx.orchestrator.resilience.engine.ExperimentRegistry;
 import com.orynx.orchestrator.resilience.engine.ResilienceExperimentEngine;
 import com.orynx.orchestrator.resilience.metrics.ResilienceMetrics;
 import com.orynx.orchestrator.resilience.model.ExperimentDefinition;
 import com.orynx.orchestrator.resilience.model.ExperimentResult;
+import com.orynx.orchestrator.resilience.model.InjectionLevel;
 import com.orynx.orchestrator.resilience.model.ScenarioType;
 import com.orynx.orchestrator.resilience.safety.ExperimentSafetyValidator;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -45,6 +47,7 @@ class ResilienceFailureScenariosIntegrationTest {
     private ExperimentSafetyValidator safetyValidator;
     private ResilienceMetrics resilienceMetrics;
     private ExperimentRegistry registry;
+    private ResilienceFaultRegistry faultRegistry;
     private ResilienceExperimentEngine engine;
 
     private RedisInterruptionAdapter redisAdapter;
@@ -60,13 +63,14 @@ class ResilienceFailureScenariosIntegrationTest {
         SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
         resilienceMetrics = new ResilienceMetrics(meterRegistry);
         registry = new ExperimentRegistry();
+        faultRegistry = new ResilienceFaultRegistry();
 
-        redisAdapter = new RedisInterruptionAdapter();
-        kafkaAdapter = new KafkaInterruptionAdapter();
-        postgresAdapter = new PostgresInterruptionAdapter();
-        workerAdapter = new WorkerInterruptionAdapter();
-        orchestratorAdapter = new OrchestratorInterruptionAdapter();
-        networkAdapter = new NetworkLatencyAdapter();
+        redisAdapter = new RedisInterruptionAdapter(faultRegistry);
+        kafkaAdapter = new KafkaInterruptionAdapter(faultRegistry);
+        postgresAdapter = new PostgresInterruptionAdapter(faultRegistry);
+        workerAdapter = new WorkerInterruptionAdapter(faultRegistry);
+        orchestratorAdapter = new OrchestratorInterruptionAdapter(faultRegistry);
+        networkAdapter = new NetworkLatencyAdapter(faultRegistry);
 
         engine = new ResilienceExperimentEngine(
                 safetyValidator,
@@ -77,12 +81,13 @@ class ResilienceFailureScenariosIntegrationTest {
     }
 
     @Test
-    @DisplayName("Scenario A: Redis Interruption — Admission Controller throws 503 under FAIL_CLOSED during outage")
-    void testScenarioA_RedisInterruptionFailClosed() {
+    @DisplayName("Scenario A: Redis Interruption — Live Admission Controller intercepts via ResilienceFaultRegistry without config mutation")
+    void testScenarioA_RedisInterruptionScopedFaultRegistry() {
         ExperimentDefinition def = ExperimentDefinition.builder()
                 .id("exp-scenario-a-redis-closed")
                 .name("Scenario A: Redis Interruption Fail Closed")
                 .scenarioType(ScenarioType.REDIS_INTERRUPTION)
+                .injectionLevel(InjectionLevel.APPLICATION_SCOPED)
                 .targetComponent("redis")
                 .targetResource("isolated-redis-primary")
                 .environmentTag("resilience-isolated")
@@ -93,23 +98,32 @@ class ResilienceFailureScenariosIntegrationTest {
                 .recoveryStrategy("Reconnect to Redis cluster")
                 .build();
 
-        // Simulate admission controller under Redis connection failure
+        // Setup mock Redis template returning success
         StringRedisTemplate mockRedis = mock(StringRedisTemplate.class);
         RedisScript<List> mockScript = mock(RedisScript.class);
-        when(mockRedis.execute(any(RedisScript.class), any(List.class), any())).thenThrow(
-                new RedisConnectionFailureException("Simulated Redis outage")
+        when(mockRedis.execute(any(RedisScript.class), any(List.class), any(Object[].class))).thenReturn(
+                List.of(1L, "OK", 10L, 50L)
         );
 
         RedisCoordinationProperties props = new RedisCoordinationProperties();
-        props.setFailurePolicy(AdmissionFailurePolicy.FAIL_CLOSED);
+        props.setFailurePolicy(AdmissionFailurePolicy.FAIL_OPEN); // Default configured as FAIL_OPEN
         props.setRetryAfterSeconds(5);
 
         RedisCoordinationMetrics coordMetrics = new RedisCoordinationMetrics(new SimpleMeterRegistry());
         RedisWorkflowAdmissionController admissionController = new RedisWorkflowAdmissionController(
-                mockRedis, mockScript, mockScript, props, coordMetrics
+                mockRedis, mockScript, mockScript, props, coordMetrics, faultRegistry
         );
 
-        // Precondition / verification during outage: FAIL_CLOSED throws 503 SERVICE_UNAVAILABLE
+        // Before experiment: admission succeeds normally
+        AdmissionDecision normalDecision = admissionController.tryAdmit(101L, 501L);
+        assertTrue(normalDecision.admitted());
+        assertFalse(normalDecision.bypassedDueToFailure());
+
+        // During experiment: fault is activated via faultRegistry
+        faultRegistry.activateFault(ScenarioType.REDIS_INTERRUPTION, "isolated-redis-primary", Map.of("policy", "FAIL_CLOSED"));
+        assertTrue(faultRegistry.isRedisFaultActive());
+
+        // When fault is active with FAIL_CLOSED, admissionController throws 503 WITHOUT mutating props singleton
         WorkflowAdmissionException ex = assertThrows(WorkflowAdmissionException.class, () ->
                 admissionController.tryAdmit(101L, 501L)
         );
@@ -117,33 +131,55 @@ class ResilienceFailureScenariosIntegrationTest {
         assertTrue("REDIS_UNAVAILABLE".equalsIgnoreCase(ex.getReason()));
         assertEquals(5, ex.getRetryAfterSeconds());
 
-        // Execute experiment through engine
+        // CRITICAL: Global configuration singleton was NOT mutated (F-02 remediation)
+        assertEquals(AdmissionFailurePolicy.FAIL_OPEN, props.getFailurePolicy());
+
+        // Deactivate fault
+        faultRegistry.deactivateFault(ScenarioType.REDIS_INTERRUPTION);
+        assertFalse(faultRegistry.isRedisFaultActive());
+
+        // After fault deactivated: admission controller immediately recovers
+        AdmissionDecision recoveredDecision = admissionController.tryAdmit(101L, 501L);
+        assertTrue(recoveredDecision.admitted());
+
+        // Run entire experiment lifecycle through engine
         ExperimentResult expResult = engine.runExperiment(def);
         assertEquals(ExperimentResult.Outcome.PASS, expResult.getOutcome());
         assertTrue(expResult.isCleanupSuccessful());
+        assertEquals(InjectionLevel.APPLICATION_SCOPED, expResult.getInjectionLevel());
     }
 
     @Test
-    @DisplayName("Scenario A: Redis Interruption — Admission Controller allows FAIL_OPEN when configured")
-    void testScenarioA_RedisInterruptionFailOpen() {
+    @DisplayName("Scenario A: Redis Interruption — Scoped FAIL_OPEN bypasses admission without mutating singleton")
+    void testScenarioA_RedisInterruptionScopedFailOpen() {
         StringRedisTemplate mockRedis = mock(StringRedisTemplate.class);
         RedisScript<List> mockScript = mock(RedisScript.class);
-        when(mockRedis.execute(any(RedisScript.class), any(List.class), any())).thenThrow(
-                new RedisConnectionFailureException("Simulated Redis outage")
+        when(mockRedis.execute(any(RedisScript.class), any(List.class), any(Object[].class))).thenReturn(
+                List.of(1L, "OK", 10L, 50L)
         );
 
         RedisCoordinationProperties props = new RedisCoordinationProperties();
-        props.setFailurePolicy(AdmissionFailurePolicy.FAIL_OPEN);
+        props.setFailurePolicy(AdmissionFailurePolicy.FAIL_CLOSED); // Global config is FAIL_CLOSED
 
         RedisCoordinationMetrics coordMetrics = new RedisCoordinationMetrics(new SimpleMeterRegistry());
         RedisWorkflowAdmissionController admissionController = new RedisWorkflowAdmissionController(
-                mockRedis, mockScript, mockScript, props, coordMetrics
+                mockRedis, mockScript, mockScript, props, coordMetrics, faultRegistry
         );
 
+        // Inject scoped fault with FAIL_OPEN policy
+        faultRegistry.activateFault(ScenarioType.REDIS_INTERRUPTION, "isolated-redis-primary", Map.of("policy", "FAIL_OPEN"));
+        assertTrue(faultRegistry.isRedisFaultActive());
+
+        // Under scoped fault with FAIL_OPEN, admission decision admits with bypass
         AdmissionDecision decision = admissionController.tryAdmit(102L, 502L);
         assertTrue(decision.admitted());
         assertTrue(decision.bypassedDueToFailure());
-        assertTrue(decision.reason().contains("FAIL_OPEN_REDIS_ERROR"));
+        assertTrue(decision.reason().contains("FAIL_OPEN_REDIS_INJECTED_FAULT"));
+
+        // Global config remains FAIL_CLOSED
+        assertEquals(AdmissionFailurePolicy.FAIL_CLOSED, props.getFailurePolicy());
+
+        faultRegistry.deactivateFault(ScenarioType.REDIS_INTERRUPTION);
     }
 
     @Test
@@ -153,6 +189,7 @@ class ResilienceFailureScenariosIntegrationTest {
                 .id("exp-scenario-b-kafka")
                 .name("Scenario B: Kafka Broker Outage")
                 .scenarioType(ScenarioType.KAFKA_INTERRUPTION)
+                .injectionLevel(InjectionLevel.APPLICATION_SCOPED)
                 .targetComponent("kafka")
                 .targetResource("isolated-kafka-broker-1")
                 .environmentTag("resilience-isolated")
@@ -167,6 +204,7 @@ class ResilienceFailureScenariosIntegrationTest {
         assertEquals(ExperimentResult.Outcome.PASS, expResult.getOutcome());
         assertTrue(expResult.isCleanupSuccessful());
         assertFalse(kafkaAdapter.isDropPublications());
+        assertEquals(InjectionLevel.APPLICATION_SCOPED, expResult.getInjectionLevel());
     }
 
     @Test
@@ -176,6 +214,7 @@ class ResilienceFailureScenariosIntegrationTest {
                 .id("exp-scenario-c-postgres")
                 .name("Scenario C: Postgres Transaction Abort")
                 .scenarioType(ScenarioType.POSTGRES_INTERRUPTION)
+                .injectionLevel(InjectionLevel.APPLICATION_SCOPED)
                 .targetComponent("postgres")
                 .targetResource("isolated-postgres-instance")
                 .environmentTag("resilience-isolated")
@@ -190,6 +229,7 @@ class ResilienceFailureScenariosIntegrationTest {
         assertEquals(ExperimentResult.Outcome.PASS, expResult.getOutcome());
         assertTrue(expResult.isCleanupSuccessful());
         assertFalse(postgresAdapter.isTransactionAbort());
+        assertEquals(InjectionLevel.APPLICATION_SCOPED, expResult.getInjectionLevel());
     }
 
     @Test
@@ -199,6 +239,7 @@ class ResilienceFailureScenariosIntegrationTest {
                 .id("exp-scenario-d-worker")
                 .name("Scenario D: Worker Crash and Lease Expiry")
                 .scenarioType(ScenarioType.WORKER_INTERRUPTION)
+                .injectionLevel(InjectionLevel.APPLICATION_SCOPED)
                 .targetComponent("worker")
                 .targetResource("isolated-worker-node-1")
                 .environmentTag("resilience-isolated")
@@ -213,6 +254,7 @@ class ResilienceFailureScenariosIntegrationTest {
         assertEquals(ExperimentResult.Outcome.PASS, expResult.getOutcome());
         assertTrue(expResult.isCleanupSuccessful());
         assertFalse(workerAdapter.isLeaseExpired());
+        assertEquals(InjectionLevel.APPLICATION_SCOPED, expResult.getInjectionLevel());
     }
 
     @Test
@@ -222,6 +264,7 @@ class ResilienceFailureScenariosIntegrationTest {
                 .id("exp-scenario-e-orchestrator")
                 .name("Scenario E: Orchestrator Leader Lock Lost")
                 .scenarioType(ScenarioType.ORCHESTRATOR_INTERRUPTION)
+                .injectionLevel(InjectionLevel.APPLICATION_SCOPED)
                 .targetComponent("orchestrator")
                 .targetResource("isolated-orchestrator-instance")
                 .environmentTag("resilience-isolated")
@@ -236,6 +279,7 @@ class ResilienceFailureScenariosIntegrationTest {
         assertEquals(ExperimentResult.Outcome.PASS, expResult.getOutcome());
         assertTrue(expResult.isCleanupSuccessful());
         assertFalse(orchestratorAdapter.isLeaderLockLost());
+        assertEquals(InjectionLevel.APPLICATION_SCOPED, expResult.getInjectionLevel());
     }
 
     @Test
@@ -245,6 +289,7 @@ class ResilienceFailureScenariosIntegrationTest {
                 .id("exp-scenario-f-network")
                 .name("Scenario F: Cross-Service Network Latency")
                 .scenarioType(ScenarioType.NETWORK_LATENCY)
+                .injectionLevel(InjectionLevel.SIMULATION)
                 .targetComponent("network")
                 .targetResource("isolated-network-link-1")
                 .environmentTag("resilience-isolated")
@@ -259,5 +304,6 @@ class ResilienceFailureScenariosIntegrationTest {
         assertEquals(ExperimentResult.Outcome.PASS, expResult.getOutcome());
         assertTrue(expResult.isCleanupSuccessful());
         assertEquals(0, networkAdapter.getArtificialLatencyMs());
+        assertEquals(InjectionLevel.SIMULATION, expResult.getInjectionLevel());
     }
 }

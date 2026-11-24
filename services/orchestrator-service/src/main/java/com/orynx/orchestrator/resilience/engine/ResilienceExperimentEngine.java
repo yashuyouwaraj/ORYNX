@@ -1,5 +1,6 @@
 package com.orynx.orchestrator.resilience.engine;
 
+import com.orynx.orchestrator.coordination.lock.DistributedLockService;
 import com.orynx.orchestrator.resilience.adapter.FailureInjectionAdapter;
 import com.orynx.orchestrator.resilience.metrics.ResilienceMetrics;
 import com.orynx.orchestrator.resilience.model.ExperimentDefinition;
@@ -9,15 +10,22 @@ import com.orynx.orchestrator.resilience.model.ScenarioType;
 import com.orynx.orchestrator.resilience.safety.ExperimentSafetyValidator;
 import com.orynx.orchestrator.resilience.safety.SafetyValidationException;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -25,28 +33,56 @@ import java.util.concurrent.atomic.AtomicReference;
  * Core execution engine for resilience failure experiments.
  * Orchestrates safety validation, state transitions, fault injection, observation,
  * recovery verification, and guaranteed cleanup with Micrometer observability.
+ *
+ * Remediated in Step 25.2:
+ * - Distributed locking via DistributedLockService to prevent cross-node concurrency
+ * - Scheduled timeout watchdog actively enforcing experiment timeoutMs with thread interruption
+ * - Active thread interruption on operator abort
+ * - Quarantine mode enforcement on cleanup failure with clearQuarantine operator reset
+ * - Non-invasive context-scoped fault injection
  */
 @Slf4j
 @Component
 public class ResilienceExperimentEngine {
+
+    public static final String RESILIENCE_LOCK_KEY = "orynx:{admission}:resilience_lock";
+    public static final String QUARANTINE_KEY = "orynx:{admission}:resilience_quarantine";
 
     private final ExperimentSafetyValidator safetyValidator;
     private final ResilienceMetrics resilienceMetrics;
     private final ExperimentRegistry experimentRegistry;
     private final Map<ScenarioType, FailureInjectionAdapter> adapters = new ConcurrentHashMap<>();
 
-    // Concurrency guard: only 1 experiment may run concurrently
+    private final DistributedLockService distributedLockService;
+    private final StringRedisTemplate redisTemplate;
+
+    // Concurrency guard: only 1 experiment may run concurrently in this node
     private final AtomicReference<String> activeExperimentId = new AtomicReference<>(null);
     private final AtomicReference<ExperimentState> currentState = new AtomicReference<>(ExperimentState.CREATED);
     private final AtomicBoolean abortRequested = new AtomicBoolean(false);
+    private final AtomicReference<Thread> executingThread = new AtomicReference<>(null);
 
+    // Quarantine guard: if cleanup fails, engine enters quarantine until operator reset
+    private final AtomicBoolean quarantined = new AtomicBoolean(false);
+
+    private final ScheduledExecutorService timeoutScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "resilience-timeout-watchdog");
+        t.setDaemon(true);
+        return t;
+    });
+
+    @Autowired
     public ResilienceExperimentEngine(ExperimentSafetyValidator safetyValidator,
                                       ResilienceMetrics resilienceMetrics,
                                       ExperimentRegistry experimentRegistry,
-                                      List<FailureInjectionAdapter> adapterList) {
+                                      List<FailureInjectionAdapter> adapterList,
+                                      @Autowired(required = false) DistributedLockService distributedLockService,
+                                      @Autowired(required = false) StringRedisTemplate redisTemplate) {
         this.safetyValidator = safetyValidator;
         this.resilienceMetrics = resilienceMetrics;
         this.experimentRegistry = experimentRegistry;
+        this.distributedLockService = distributedLockService;
+        this.redisTemplate = redisTemplate;
 
         if (adapterList != null) {
             for (FailureInjectionAdapter adapter : adapterList) {
@@ -55,15 +91,41 @@ public class ResilienceExperimentEngine {
         }
     }
 
+    public ResilienceExperimentEngine(ExperimentSafetyValidator safetyValidator,
+                                      ResilienceMetrics resilienceMetrics,
+                                      ExperimentRegistry experimentRegistry,
+                                      List<FailureInjectionAdapter> adapterList) {
+        this(safetyValidator, resilienceMetrics, experimentRegistry, adapterList, null, null);
+    }
+
     public ExperimentResult runExperiment(ExperimentDefinition definition) {
         if (definition == null) {
             throw new IllegalArgumentException("Experiment definition cannot be null");
         }
 
-        // Concurrency guard
+        // Quarantine check (F-07)
+        if (isQuarantined()) {
+            throw new SafetyValidationException("Resilience engine is in QUARANTINE mode due to previous cleanup failure. Operator intervention required via clearQuarantine().");
+        }
+
+        // JVM concurrency guard
         if (!activeExperimentId.compareAndSet(null, definition.getId())) {
             String active = activeExperimentId.get();
             throw new SafetyValidationException("Another resilience experiment is already running: " + active);
+        }
+
+        // Distributed cluster lock guard (F-03)
+        String lockToken = UUID.randomUUID().toString();
+        boolean lockAcquired = false;
+        long timeoutMs = definition.getTimeoutMs() > 0 ? definition.getTimeoutMs() : 60000;
+        Duration lockDuration = Duration.ofMillis(timeoutMs + 30000);
+
+        if (distributedLockService != null) {
+            lockAcquired = distributedLockService.tryAcquire(RESILIENCE_LOCK_KEY, lockToken, lockDuration);
+            if (!lockAcquired) {
+                activeExperimentId.set(null);
+                throw new SafetyValidationException("Cluster resilience lock is already held by another node: " + RESILIENCE_LOCK_KEY);
+            }
         }
 
         Instant startTime = Instant.now();
@@ -80,6 +142,18 @@ public class ResilienceExperimentEngine {
         experimentRegistry.register(definition);
         abortRequested.set(false);
 
+        Thread currentThread = Thread.currentThread();
+        executingThread.set(currentThread);
+        AtomicBoolean timedOut = new AtomicBoolean(false);
+
+        // Schedule timeout watchdog (F-04)
+        ScheduledFuture<?> timeoutFuture = timeoutScheduler.schedule(() -> {
+            timedOut.set(true);
+            log.error("[RESILIENCE] Experiment '{}' timed out after {}ms. Interrupting execution thread...",
+                    definition.getId(), timeoutMs);
+            currentThread.interrupt();
+        }, timeoutMs, TimeUnit.MILLISECONDS);
+
         FailureInjectionAdapter adapter = null;
 
         try {
@@ -93,7 +167,7 @@ public class ResilienceExperimentEngine {
             transitionState(ExperimentState.VALIDATING, ExperimentState.READY);
             observedBehaviors.add("Safety validation passed for target: " + definition.getTargetResource());
 
-            checkAborted();
+            checkAborted(timedOut);
 
             // Step 2: Inject failure
             transitionState(ExperimentState.READY, ExperimentState.RUNNING);
@@ -110,7 +184,7 @@ public class ResilienceExperimentEngine {
             }
             observedBehaviors.add("Failure injection verified observable");
 
-            checkAborted();
+            checkAborted(timedOut);
 
             // Step 4: Observation window
             transitionState(ExperimentState.RUNNING, ExperimentState.OBSERVING);
@@ -119,7 +193,7 @@ public class ResilienceExperimentEngine {
                 long sleepInterval = Math.min(duration, 500);
                 long elapsed = 0;
                 while (elapsed < duration) {
-                    checkAborted();
+                    checkAborted(timedOut);
                     long step = Math.min(sleepInterval, duration - elapsed);
                     Thread.sleep(step);
                     elapsed += step;
@@ -128,7 +202,7 @@ public class ResilienceExperimentEngine {
             failureDurationMs = System.currentTimeMillis() - injectionStart;
             observedBehaviors.add("Observation completed for duration: " + failureDurationMs + "ms");
 
-            checkAborted();
+            checkAborted(timedOut);
 
             // Step 5: Recovery
             transitionState(ExperimentState.OBSERVING, ExperimentState.RECOVERING);
@@ -153,15 +227,25 @@ public class ResilienceExperimentEngine {
 
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
-            outcome = ExperimentResult.Outcome.ABORTED;
-            verificationErrors.add("Experiment interrupted: " + ie.getMessage());
-            forceState(ExperimentState.ABORTED);
+            if (timedOut.get()) {
+                outcome = ExperimentResult.Outcome.TIMED_OUT;
+                verificationErrors.add("Experiment exceeded timeout threshold of " + timeoutMs + "ms");
+                forceState(ExperimentState.TIMED_OUT);
+            } else {
+                outcome = ExperimentResult.Outcome.ABORTED;
+                verificationErrors.add("Experiment interrupted: " + ie.getMessage());
+                forceState(ExperimentState.ABORTED);
+            }
         } catch (SafetyValidationException sve) {
             outcome = ExperimentResult.Outcome.FAIL;
             verificationErrors.add("Safety validation failed: " + sve.getMessage());
             forceState(ExperimentState.FAILED);
         } catch (Exception ex) {
-            if (abortRequested.get()) {
+            if (timedOut.get()) {
+                outcome = ExperimentResult.Outcome.TIMED_OUT;
+                verificationErrors.add("Experiment timed out after " + timeoutMs + "ms: " + ex.getMessage());
+                forceState(ExperimentState.TIMED_OUT);
+            } else if (abortRequested.get()) {
                 outcome = ExperimentResult.Outcome.ABORTED;
                 verificationErrors.add("Experiment was aborted by operator");
                 forceState(ExperimentState.ABORTED);
@@ -171,6 +255,9 @@ public class ResilienceExperimentEngine {
                 forceState(ExperimentState.FAILED);
             }
         } finally {
+            timeoutFuture.cancel(true);
+            executingThread.set(null);
+
             // Mandatory cleanup in finally block
             if (adapter != null) {
                 try {
@@ -180,6 +267,14 @@ public class ResilienceExperimentEngine {
                 } catch (Exception cleanupEx) {
                     log.error("[RESILIENCE] Cleanup failed for experiment {}: {}", definition.getId(), cleanupEx.getMessage(), cleanupEx);
                     cleanupSuccessful = false;
+                    quarantined.set(true);
+                    if (redisTemplate != null) {
+                        try {
+                            redisTemplate.opsForValue().set(QUARANTINE_KEY, "Quarantined due to cleanup failure in experiment " + definition.getId());
+                        } catch (Exception re) {
+                            log.error("Failed to set quarantine key in Redis", re);
+                        }
+                    }
                     verificationErrors.add("Cleanup failed: " + cleanupEx.getMessage());
                     forceState(ExperimentState.CLEANUP_FAILED);
                     outcome = ExperimentResult.Outcome.CLEANUP_FAILED;
@@ -192,6 +287,15 @@ public class ResilienceExperimentEngine {
             resilienceMetrics.recordExperimentCompleted(definition.getScenarioType(), outcome);
             resilienceMetrics.experimentEnded();
             activeExperimentId.set(null);
+
+            // Release distributed lock only if cleanup succeeded (F-03, F-07)
+            if (lockAcquired && distributedLockService != null && cleanupSuccessful) {
+                try {
+                    distributedLockService.release(RESILIENCE_LOCK_KEY, lockToken);
+                } catch (Exception e) {
+                    log.warn("Failed to release distributed resilience lock", e);
+                }
+            }
         }
 
         Instant endTime = Instant.now();
@@ -214,6 +318,7 @@ public class ResilienceExperimentEngine {
                 .verificationErrors(verificationErrors)
                 .cleanupSuccessful(cleanupSuccessful)
                 .metricsSnapshot(metricsSnapshot)
+                .injectionLevel(definition.getInjectionLevel())
                 .build();
 
         experimentRegistry.recordResult(result);
@@ -228,7 +333,39 @@ public class ResilienceExperimentEngine {
         if (active != null && active.equals(experimentId)) {
             log.warn("[RESILIENCE] Operator requested abort for active experiment: {}", experimentId);
             abortRequested.set(true);
+            Thread t = executingThread.get();
+            if (t != null) {
+                t.interrupt();
+            }
             return true;
+        }
+        return false;
+    }
+
+    public boolean clearQuarantine(String operatorReason) {
+        log.warn("[RESILIENCE] Operator clearing quarantine. Reason: {}", operatorReason);
+        quarantined.set(false);
+        if (redisTemplate != null) {
+            try {
+                redisTemplate.delete(QUARANTINE_KEY);
+            } catch (Exception re) {
+                log.error("Failed to delete quarantine in Redis", re);
+            }
+        }
+        return true;
+    }
+
+    public boolean isQuarantined() {
+        if (quarantined.get()) {
+            return true;
+        }
+        if (redisTemplate != null) {
+            try {
+                Boolean hasKey = redisTemplate.hasKey(QUARANTINE_KEY);
+                return Boolean.TRUE.equals(hasKey);
+            } catch (Exception e) {
+                log.warn("Failed to check quarantine in Redis", e);
+            }
         }
         return false;
     }
@@ -241,7 +378,10 @@ public class ResilienceExperimentEngine {
         return activeExperimentId.get();
     }
 
-    private void checkAborted() {
+    private void checkAborted(AtomicBoolean timedOut) {
+        if (timedOut.get() || Thread.currentThread().isInterrupted()) {
+            throw new IllegalStateException("Experiment exceeded timeout threshold");
+        }
         if (abortRequested.get()) {
             throw new IllegalStateException("Experiment execution aborted by operator");
         }

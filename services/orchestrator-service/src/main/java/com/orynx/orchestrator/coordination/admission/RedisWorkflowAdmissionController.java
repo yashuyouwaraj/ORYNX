@@ -17,7 +17,6 @@ import java.util.UUID;
  * Uses Redis cluster hash tags {admission} to prevent CROSSSLOT errors.
  */
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class RedisWorkflowAdmissionController implements WorkflowAdmissionController {
 
@@ -33,6 +32,35 @@ public class RedisWorkflowAdmissionController implements WorkflowAdmissionContro
     private final RedisCoordinationProperties properties;
     private final RedisCoordinationMetrics metrics;
 
+    private com.orynx.orchestrator.resilience.adapter.ResilienceFaultRegistry faultRegistry;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public RedisWorkflowAdmissionController(StringRedisTemplate redisTemplate,
+                                           RedisScript<List> admitWorkflowScript,
+                                           RedisScript<List> releaseWorkflowScript,
+                                           RedisCoordinationProperties properties,
+                                           RedisCoordinationMetrics metrics,
+                                           @org.springframework.beans.factory.annotation.Autowired(required = false) com.orynx.orchestrator.resilience.adapter.ResilienceFaultRegistry faultRegistry) {
+        this.redisTemplate = redisTemplate;
+        this.admitWorkflowScript = admitWorkflowScript;
+        this.releaseWorkflowScript = releaseWorkflowScript;
+        this.properties = properties;
+        this.metrics = metrics;
+        this.faultRegistry = faultRegistry;
+    }
+
+    public RedisWorkflowAdmissionController(StringRedisTemplate redisTemplate,
+                                           RedisScript<List> admitWorkflowScript,
+                                           RedisScript<List> releaseWorkflowScript,
+                                           RedisCoordinationProperties properties,
+                                           RedisCoordinationMetrics metrics) {
+        this(redisTemplate, admitWorkflowScript, releaseWorkflowScript, properties, metrics, null);
+    }
+
+    public void setFaultRegistry(com.orynx.orchestrator.resilience.adapter.ResilienceFaultRegistry faultRegistry) {
+        this.faultRegistry = faultRegistry;
+    }
+
     @Override
     public AdmissionDecision tryAdmit(Long workflowId, Long userId) {
         if (!properties.isEnabled()) {
@@ -42,6 +70,19 @@ public class RedisWorkflowAdmissionController implements WorkflowAdmissionContro
 
         if (workflowId == null) {
             throw new IllegalArgumentException("workflowId cannot be null for admission");
+        }
+
+        // Check if an isolated resilience fault injection is active
+        if (faultRegistry != null && faultRegistry.isRedisFaultActive()) {
+            AdmissionFailurePolicy activePolicy = faultRegistry.getScopedRedisPolicy(properties.getFailurePolicy());
+            if (activePolicy == AdmissionFailurePolicy.FAIL_OPEN) {
+                log.warn("Resilience fault injected (FAIL_OPEN): allowing workflow {} to proceed", workflowId);
+                metrics.recordAdmission("accepted", "fail_open");
+                return AdmissionDecision.failOpenBypassed("FAIL_OPEN_REDIS_INJECTED_FAULT");
+            } else {
+                metrics.recordAdmission("error", "redis_unavailable");
+                throw WorkflowAdmissionException.redisUnavailable("Simulated Redis outage by resilience experiment", properties.getRetryAfterSeconds());
+            }
         }
 
         long safeUserId = userId != null ? userId : 0L;

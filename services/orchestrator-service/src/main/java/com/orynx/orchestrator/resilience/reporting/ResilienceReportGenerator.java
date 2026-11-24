@@ -13,7 +13,7 @@ import java.util.Map;
 
 /**
  * Generates standardized markdown and JSON reports for resilience experiments,
- * containing all 17 mandatory audit fields.
+ * containing all 17 mandatory audit fields plus injection level classification.
  */
 @Component
 public class ResilienceReportGenerator {
@@ -35,6 +35,11 @@ public class ResilienceReportGenerator {
         sb.append("## 1. Experiment ID\n`").append(definition.getId()).append("`\n\n");
         sb.append("## 2. Scenario\n").append(definition.getScenarioType().name())
                 .append(" — ").append(definition.getScenarioType().getDescription()).append("\n\n");
+        sb.append("## 2.1 Injection Level\n`")
+                .append(definition.getInjectionLevel() != null ? definition.getInjectionLevel().name() : "APPLICATION_SCOPED")
+                .append("` — ")
+                .append(definition.getInjectionLevel() != null ? definition.getInjectionLevel().getDescription() : "Application-level fault injection")
+                .append("\n\n");
         sb.append("## 3. Environment\n`").append(definition.getEnvironmentTag()).append("`\n\n");
         sb.append("## 4. Target\n- Component: `").append(definition.getTargetComponent()).append("`\n")
                 .append("- Resource: `").append(definition.getTargetResource()).append("`\n\n");
@@ -111,6 +116,7 @@ public class ResilienceReportGenerator {
             Map<String, Object> data = new HashMap<>();
             data.put("experimentId", definition.getId());
             data.put("scenario", definition.getScenarioType().name());
+            data.put("injectionLevel", definition.getInjectionLevel() != null ? definition.getInjectionLevel().name() : "APPLICATION_SCOPED");
             data.put("environment", definition.getEnvironmentTag());
             data.put("targetComponent", definition.getTargetComponent());
             data.put("targetResource", definition.getTargetResource());

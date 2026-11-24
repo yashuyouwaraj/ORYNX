@@ -5,9 +5,7 @@ import lombok.Getter;
 import lombok.ToString;
 
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -23,11 +21,14 @@ public class ExperimentResult {
         PASS,
         FAIL,
         ABORTED,
+        TIMED_OUT,
         INCONCLUSIVE,
         CLEANUP_FAILED
     }
 
     private final String experimentId;
+    @Builder.Default
+    private final InjectionLevel injectionLevel = InjectionLevel.APPLICATION_SCOPED;
     private final Outcome outcome;
     private final String message;
     private final Instant startTime;

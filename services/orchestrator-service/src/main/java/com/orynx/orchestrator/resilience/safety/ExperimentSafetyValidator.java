@@ -2,6 +2,7 @@ package com.orynx.orchestrator.resilience.safety;
 
 import com.orynx.orchestrator.resilience.model.ExperimentDefinition;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.Locale;
@@ -10,8 +11,8 @@ import java.util.regex.Pattern;
 
 /**
  * Validates resilience experiment safety constraints before execution.
- * Enforces strict environment isolation, resource naming boundaries, and duration limits.
- * Prevents targeting shared infrastructure or production environments.
+ * Enforces server-side environment verification, resource naming boundaries,
+ * and duration limits to prevent targeting shared infrastructure or production environments.
  */
 @Slf4j
 @Component
@@ -20,10 +21,6 @@ public class ExperimentSafetyValidator {
     public static final long MIN_DURATION_MS = 50L;
     public static final long MAX_DURATION_MS = 120_000L; // 2 minutes
     public static final long MAX_TIMEOUT_MS = 300_000L;  // 5 minutes
-
-    private static final Set<String> ALLOWED_ENVIRONMENTS = Set.of(
-            "test", "resilience-isolated", "staging", "isolated"
-    );
 
     private static final Set<String> FORBIDDEN_ENVIRONMENT_SUBSTRINGS = Set.of(
             "prod", "production", "default", "shared", "main", "live"
@@ -53,9 +50,35 @@ public class ExperimentSafetyValidator {
     private static final Pattern RESOURCE_NAME_PATTERN = Pattern.compile("^[a-zA-Z0-9][a-zA-Z0-9_\\-\\.:]{2,63}$");
     private static final Pattern EXPERIMENT_ID_PATTERN = Pattern.compile("^[a-zA-Z0-9_\\-]{3,64}$");
 
+    private final ResilienceProperties properties;
+
+    public ExperimentSafetyValidator(@Autowired(required = false) ResilienceProperties properties) {
+        this.properties = properties != null ? properties : new ResilienceProperties();
+    }
+
+    public ExperimentSafetyValidator() {
+        this(new ResilienceProperties());
+    }
+
     public void validate(ExperimentDefinition definition) {
         if (definition == null) {
             throw new SafetyValidationException("Experiment definition cannot be null");
+        }
+
+        // Server-Side Master Enablement Check
+        if (!properties.isEnabled()) {
+            throw new SafetyValidationException("Resilience failure testing is currently disabled by server configuration (orynx.resilience.enabled=false)");
+        }
+
+        // Server-Side Environment Check
+        String serverEnv = properties.getServerEnvironment();
+        if (serverEnv != null) {
+            String normalizedServerEnv = serverEnv.trim().toLowerCase(Locale.ROOT);
+            for (String forbidden : FORBIDDEN_ENVIRONMENT_SUBSTRINGS) {
+                if (normalizedServerEnv.contains(forbidden)) {
+                    throw new SafetyValidationException("Resilience testing is strictly forbidden when server environment is configured as '" + serverEnv + "'");
+                }
+            }
         }
 
         // Validate Experiment ID
@@ -73,7 +96,7 @@ public class ExperimentSafetyValidator {
             throw new SafetyValidationException("ScenarioType must be specified");
         }
 
-        // Validate Environment Tag
+        // Validate Environment Tag against Server Allowlist
         String env = definition.getEnvironmentTag();
         if (env == null || env.trim().isEmpty()) {
             throw new SafetyValidationException("Environment tag must be explicitly specified");
@@ -84,8 +107,8 @@ public class ExperimentSafetyValidator {
                 throw new SafetyValidationException("Environment tag '" + env + "' contains forbidden substring: " + forbidden);
             }
         }
-        if (!ALLOWED_ENVIRONMENTS.contains(normalizedEnv)) {
-            throw new SafetyValidationException("Environment tag '" + env + "' is not in allowed environments list: " + ALLOWED_ENVIRONMENTS);
+        if (!properties.getAllowedEnvironments().contains(normalizedEnv)) {
+            throw new SafetyValidationException("Environment tag '" + env + "' is not permitted. Server allows: " + properties.getAllowedEnvironments());
         }
 
         // Validate Target Component
@@ -109,17 +132,17 @@ public class ExperimentSafetyValidator {
         if (definition.getDurationMs() < MIN_DURATION_MS) {
             throw new SafetyValidationException("Experiment duration " + definition.getDurationMs() + "ms is less than minimum " + MIN_DURATION_MS + "ms");
         }
-        if (definition.getDurationMs() > MAX_DURATION_MS) {
-            throw new SafetyValidationException("Experiment duration " + definition.getDurationMs() + "ms exceeds maximum allowed " + MAX_DURATION_MS + "ms");
+        if (definition.getDurationMs() > properties.getMaxDurationMs()) {
+            throw new SafetyValidationException("Experiment duration " + definition.getDurationMs() + "ms exceeds maximum allowed " + properties.getMaxDurationMs() + "ms");
         }
         if (definition.getTimeoutMs() < definition.getDurationMs()) {
             throw new SafetyValidationException("Experiment timeout " + definition.getTimeoutMs() + "ms cannot be less than failure duration " + definition.getDurationMs() + "ms");
         }
-        if (definition.getTimeoutMs() > MAX_TIMEOUT_MS) {
-            throw new SafetyValidationException("Experiment timeout " + definition.getTimeoutMs() + "ms exceeds maximum allowed " + MAX_TIMEOUT_MS + "ms");
+        if (definition.getTimeoutMs() > properties.getMaxTimeoutMs()) {
+            throw new SafetyValidationException("Experiment timeout " + definition.getTimeoutMs() + "ms exceeds maximum allowed " + properties.getMaxTimeoutMs() + "ms");
         }
 
-        log.info("Experiment definition '{}' passed safety validation (target={}, env={}, duration={}ms)",
+        log.info("[SAFETY] Experiment definition '{}' passed safety validation (target={}, env={}, duration={}ms)",
                 definition.getId(), definition.getTargetResource(), definition.getEnvironmentTag(), definition.getDurationMs());
     }
 }

@@ -1,28 +1,42 @@
 package com.orynx.orchestrator.resilience.adapter;
 
 import com.orynx.orchestrator.resilience.model.ExperimentDefinition;
+import com.orynx.orchestrator.resilience.model.InjectionLevel;
 import com.orynx.orchestrator.resilience.model.ScenarioType;
 import com.orynx.orchestrator.resilience.safety.SafetyValidationException;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Adapter for simulating orchestrator service interruption, leader lock loss,
- * graceful restart, and startup state reconciliation.
+ * Adapter for executing scoped Orchestrator interruption experiments.
+ * Integrates with ResilienceFaultRegistry to simulate leader lock loss and startup reconciliation.
  */
 @Slf4j
 @Component
 public class OrchestratorInterruptionAdapter implements FailureInjectionAdapter {
 
     private final AtomicBoolean injected = new AtomicBoolean(false);
-    private final AtomicBoolean leaderLockLost = new AtomicBoolean(false);
-    private final AtomicBoolean restartInProgress = new AtomicBoolean(false);
+    private final ResilienceFaultRegistry faultRegistry;
+
+    public OrchestratorInterruptionAdapter(@Autowired(required = false) ResilienceFaultRegistry faultRegistry) {
+        this.faultRegistry = faultRegistry != null ? faultRegistry : new ResilienceFaultRegistry();
+    }
+
+    public OrchestratorInterruptionAdapter() {
+        this(null);
+    }
 
     @Override
     public ScenarioType getSupportedScenario() {
         return ScenarioType.ORCHESTRATOR_INTERRUPTION;
+    }
+
+    @Override
+    public InjectionLevel getInjectionLevel() {
+        return InjectionLevel.APPLICATION_SCOPED;
     }
 
     @Override
@@ -35,48 +49,43 @@ public class OrchestratorInterruptionAdapter implements FailureInjectionAdapter 
 
     @Override
     public void inject(ExperimentDefinition definition) {
-        log.info("[RESILIENCE] Injecting Orchestrator interruption on target '{}' (duration: {}ms)",
+        log.info("[RESILIENCE] Injecting scoped Orchestrator interruption on target '{}' (duration: {}ms)",
                 definition.getTargetResource(), definition.getDurationMs());
 
-        String mode = definition.getParameter("mode", "LEADER_LOCK_LOST");
-        if ("RESTART_SIMULATION".equalsIgnoreCase(mode)) {
-            restartInProgress.set(true);
-        } else {
-            leaderLockLost.set(true);
-        }
+        faultRegistry.activateFault(ScenarioType.ORCHESTRATOR_INTERRUPTION, definition.getTargetResource(), definition.getParameters());
         injected.set(true);
     }
 
     @Override
     public boolean verifyInjected(ExperimentDefinition definition) {
-        return injected.get() && (leaderLockLost.get() || restartInProgress.get());
+        return injected.get() && faultRegistry.isFaultActive(ScenarioType.ORCHESTRATOR_INTERRUPTION);
     }
 
     @Override
     public void recover(ExperimentDefinition definition) {
         log.info("[RESILIENCE] Recovering Orchestrator operations on target '{}'", definition.getTargetResource());
-        leaderLockLost.set(false);
-        restartInProgress.set(false);
+        faultRegistry.deactivateFault(ScenarioType.ORCHESTRATOR_INTERRUPTION);
     }
 
     @Override
     public boolean verifyRecovered(ExperimentDefinition definition) {
-        return !leaderLockLost.get() && !restartInProgress.get();
+        return !faultRegistry.isFaultActive(ScenarioType.ORCHESTRATOR_INTERRUPTION);
     }
 
     @Override
     public void cleanup(ExperimentDefinition definition) {
         log.info("[RESILIENCE] Cleaning up Orchestrator interruption experiment '{}'", definition.getId());
-        leaderLockLost.set(false);
-        restartInProgress.set(false);
+        faultRegistry.deactivateFault(ScenarioType.ORCHESTRATOR_INTERRUPTION);
         injected.set(false);
     }
 
     public boolean isLeaderLockLost() {
-        return leaderLockLost.get();
+        String mode = faultRegistry.getParameter(ScenarioType.ORCHESTRATOR_INTERRUPTION, "mode", "LEADER_LOCK_LOST");
+        return faultRegistry.isFaultActive(ScenarioType.ORCHESTRATOR_INTERRUPTION) && "LEADER_LOCK_LOST".equalsIgnoreCase(mode);
     }
 
     public boolean isRestartInProgress() {
-        return restartInProgress.get();
+        String mode = faultRegistry.getParameter(ScenarioType.ORCHESTRATOR_INTERRUPTION, "mode", "LEADER_LOCK_LOST");
+        return faultRegistry.isFaultActive(ScenarioType.ORCHESTRATOR_INTERRUPTION) && "RESTART_SIMULATION".equalsIgnoreCase(mode);
     }
 }

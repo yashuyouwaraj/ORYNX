@@ -1,7 +1,5 @@
 package com.orynx.orchestrator.resilience.adapter;
 
-import com.orynx.orchestrator.coordination.admission.AdmissionFailurePolicy;
-import com.orynx.orchestrator.coordination.config.RedisCoordinationProperties;
 import com.orynx.orchestrator.resilience.model.ExperimentDefinition;
 import com.orynx.orchestrator.resilience.model.ScenarioType;
 import com.orynx.orchestrator.resilience.safety.SafetyValidationException;
@@ -12,20 +10,24 @@ import org.springframework.stereotype.Component;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Adapter for simulating Redis unavailability and degradation in isolated environments.
- * Tests admission controller fail-closed/fail-open policies, distributed locking,
- * lease expiration, and state reconciliation upon recovery.
+ * Adapter for executing safely scoped Redis interruption failure experiments.
+ * Injects scoped faults via ResilienceFaultRegistry so live admission controllers
+ * observe the fault without mutating global Spring singleton configuration.
  */
 @Slf4j
 @Component
 public class RedisInterruptionAdapter implements FailureInjectionAdapter {
 
     private final AtomicBoolean injected = new AtomicBoolean(false);
-    private final AtomicBoolean simulatedFailureMode = new AtomicBoolean(false);
-    private AdmissionFailurePolicy originalPolicy = AdmissionFailurePolicy.FAIL_CLOSED;
+    private final ResilienceFaultRegistry faultRegistry;
 
-    @Autowired(required = false)
-    private RedisCoordinationProperties coordinationProperties;
+    public RedisInterruptionAdapter(@Autowired(required = false) ResilienceFaultRegistry faultRegistry) {
+        this.faultRegistry = faultRegistry != null ? faultRegistry : new ResilienceFaultRegistry();
+    }
+
+    public RedisInterruptionAdapter() {
+        this(null);
+    }
 
     @Override
     public ScenarioType getSupportedScenario() {
@@ -42,51 +44,41 @@ public class RedisInterruptionAdapter implements FailureInjectionAdapter {
 
     @Override
     public void inject(ExperimentDefinition definition) {
-        log.info("[RESILIENCE] Injecting Redis interruption on target '{}' (duration: {}ms)",
+        log.info("[RESILIENCE] Injecting scoped Redis interruption on target '{}' (duration: {}ms)",
                 definition.getTargetResource(), definition.getDurationMs());
 
-        if (coordinationProperties != null) {
-            this.originalPolicy = coordinationProperties.getFailurePolicy();
-            String requestedPolicy = definition.getParameter("policy", "FAIL_CLOSED");
-            coordinationProperties.setFailurePolicy(
-                    "FAIL_OPEN".equalsIgnoreCase(requestedPolicy) ? AdmissionFailurePolicy.FAIL_OPEN : AdmissionFailurePolicy.FAIL_CLOSED
-            );
-        }
-
-        simulatedFailureMode.set(true);
+        faultRegistry.activateFault(ScenarioType.REDIS_INTERRUPTION, definition.getTargetResource(), definition.getParameters());
         injected.set(true);
     }
 
     @Override
     public boolean verifyInjected(ExperimentDefinition definition) {
-        return injected.get() && simulatedFailureMode.get();
+        return injected.get() && faultRegistry.isRedisFaultActive();
     }
 
     @Override
     public void recover(ExperimentDefinition definition) {
         log.info("[RESILIENCE] Recovering Redis connection on target '{}'", definition.getTargetResource());
-        simulatedFailureMode.set(false);
-        if (coordinationProperties != null) {
-            coordinationProperties.setFailurePolicy(originalPolicy);
-        }
+        faultRegistry.deactivateFault(ScenarioType.REDIS_INTERRUPTION);
     }
 
     @Override
     public boolean verifyRecovered(ExperimentDefinition definition) {
-        return !simulatedFailureMode.get();
+        return !faultRegistry.isRedisFaultActive();
     }
 
     @Override
     public void cleanup(ExperimentDefinition definition) {
         log.info("[RESILIENCE] Cleaning up Redis interruption experiment '{}'", definition.getId());
-        simulatedFailureMode.set(false);
+        faultRegistry.deactivateFault(ScenarioType.REDIS_INTERRUPTION);
         injected.set(false);
-        if (coordinationProperties != null) {
-            coordinationProperties.setFailurePolicy(originalPolicy);
-        }
     }
 
     public boolean isSimulatedFailureActive() {
-        return simulatedFailureMode.get();
+        return faultRegistry.isRedisFaultActive();
+    }
+
+    public ResilienceFaultRegistry getFaultRegistry() {
+        return faultRegistry;
     }
 }

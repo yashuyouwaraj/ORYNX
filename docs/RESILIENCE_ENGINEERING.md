@@ -10,8 +10,9 @@ The resilience framework is housed within `orchestrator-service` under `com.oryn
 
 ```
 com.orynx.orchestrator.resilience/
-├── adapter/                      # Failure injection SPI and component adapters
+├── adapter/                      # Failure injection SPI, scoped fault registry & component adapters
 │   ├── FailureInjectionAdapter.java
+│   ├── ResilienceFaultRegistry.java
 │   ├── RedisInterruptionAdapter.java
 │   ├── KafkaInterruptionAdapter.java
 │   ├── PostgresInterruptionAdapter.java
@@ -23,21 +24,37 @@ com.orynx.orchestrator.resilience/
 │   └── ResilienceExperimentEngine.java
 ├── metrics/                      # Bounded-cardinality Micrometer metrics
 │   └── ResilienceMetrics.java
-├── model/                        # State machines, definitions, and results
+├── model/                        # State machines, definitions, results & injection levels
 │   ├── ExperimentDefinition.java
 │   ├── ExperimentResult.java
 │   ├── ExperimentState.java
+│   ├── InjectionLevel.java
 │   └── ScenarioType.java
 ├── reporting/                    # Markdown & JSON report generators
 │   └── ResilienceReportGenerator.java
-└── safety/                       # Isolation validation and blast-radius containment
+└── safety/                       # Isolation validation, server properties & blast-radius containment
     ├── ExperimentSafetyValidator.java
+    ├── ResilienceProperties.java
     └── SafetyValidationException.java
 ```
 
 ---
 
-## 2. Experiment Lifecycle & State Machine
+## 2. Injection Levels & Classification
+
+Failure injection adapters are explicitly classified into three honest injection tiers:
+
+1. **`APPLICATION_SCOPED`**:
+   - In-process fault injection intercepted via `ResilienceFaultRegistry` within application component boundaries (e.g., `RedisWorkflowAdmissionController`).
+   - Ensures zero global mutation of Spring singletons (e.g. `RedisCoordinationProperties.failurePolicy`), maintaining tenant isolation and thread safety.
+2. **`ISOLATED_INFRASTRUCTURE`**:
+   - Targets dedicated ephemeral infrastructure instances (e.g. standalone test Redis containers, mock brokers) isolated from shared cluster nodes.
+3. **`SIMULATION`**:
+   - Synthetic simulation of conditions such as cross-service latency degradation, simulated client drops, or mock responses.
+
+---
+
+## 3. Experiment Lifecycle & State Machine
 
 Each experiment progresses through validated, deterministic state transitions:
 
@@ -47,53 +64,58 @@ Each experiment progresses through validated, deterministic state transitions:
      ▼              ▼             ▼           ▼              ▼               ▼
  [ABORTED]      [FAILED]      [ABORTED]   [FAILED]       [FAILED]        [FAILED]
                                               │              │               │
+                                              ├──────────────┼───────────────┼───> [TIMED_OUT]
+                                              │              │               │
                                               └──────────────┴───────────────┴───> [CLEANUP_FAILED]
 ```
 
 - **CREATED**: Experiment initialized and submitted to engine.
-- **VALIDATING**: SafetyValidator inspects environment tag, target resource, duration bounds, and concurrency locks.
+- **VALIDATING**: SafetyValidator inspects server configuration, environment tags, target resources, duration bounds, and acquires the cluster distributed lock.
 - **READY**: Preconditions satisfied; adapter validated.
 - **RUNNING**: Fault actively injected by adapter.
 - **OBSERVING**: System behavior observed during failure duration; injection verified.
 - **RECOVERING**: Component recovery initiated and recovery duration measured.
 - **COMPLETED**: Normal state restored; verification assertions pass; cleanup succeeded.
 - **FAILED**: Verification assertions or injection failed.
-- **ABORTED**: Operator or safety watchdog cancelled experiment.
-- **CLEANUP_FAILED**: Teardown failed; operator intervention required.
+- **ABORTED**: Operator cancelled experiment; active execution thread interrupted.
+- **TIMED_OUT**: Experiment exceeded `timeoutMs`; timeout watchdog actively interrupted execution thread.
+- **CLEANUP_FAILED**: Teardown failed; quarantine mode activated; operator intervention required.
 
 ---
 
-## 3. Safety Model & Containment Boundaries
+## 4. Safety Model & Containment Boundaries
 
 To guarantee that failure injection never compromises shared environments or production data:
 
-1. **Environment Whitelisting**:
-   - Experiments are strictly permitted only in `test`, `resilience-isolated`, `staging`, or `isolated` environments.
-   - Any tag matching `prod`, `production`, `default`, `shared`, or `live` is immediately rejected.
+1. **Server-Side Authorization & Environment Model**:
+   - Enforced by `ResilienceProperties` (`orynx.resilience.enabled` and `orynx.resilience.server-environment`).
+   - If `orynx.resilience.enabled=false`, all experiments are immediately rejected.
+   - If `server-environment` is `production` or contains `prod`, execution is rejected regardless of caller-supplied parameters.
+   - Caller environment tag must match allowed environments (`test`, `resilience-isolated`, `staging`, `isolated`).
 2. **Resource Whitelist & Blacklist**:
    - Target resources must match regex `^[a-zA-Z0-9][a-zA-Z0-9_\-\.:]{2,63}$`.
    - Blacklisted targets (e.g. `orynx-audit-postgres`, `orynx-kafka`, `orynx-audit-redis`, `localhost:5432`, `docker.sock`) are rejected with `SafetyValidationException`.
-3. **Bounded Duration & Timeouts**:
-   - Minimum duration: 50 ms.
-   - Maximum duration: 120,000 ms (2 minutes).
-   - Maximum timeout: 300,000 ms (5 minutes).
-4. **Concurrency Enforcement**:
-   - Atomic concurrency guard limits node execution to exactly **1 concurrent experiment**.
-5. **Guaranteed Teardown**:
+3. **Cluster Distributed Concurrency Lock**:
+   - Cluster-wide concurrency is coordinated via Step 24's `DistributedLockService` using mutex `orynx:{admission}:resilience_lock`.
+   - Ensures only **1 experiment** can execute across the entire distributed cluster simultaneously.
+4. **Active Timeout Watchdog & Thread Interruption**:
+   - A dedicated watchdog scheduler monitors `timeoutMs`. If an adapter or phase hangs, the watchdog interrupts the thread and transitions directly to cleanup.
+   - Operator `abort(experimentId)` also actively interrupts the executing thread.
+5. **Quarantine Mode & Guaranteed Teardown**:
    - Adapter `cleanup()` is executed in a Java `finally` block.
-   - If cleanup fails, state transitions to `CLEANUP_FAILED`, an alert-level metric is incremented, and result is marked `CLEANUP_FAILED`.
+   - If cleanup fails, state transitions to `CLEANUP_FAILED`, and the engine enters **QUARANTINE MODE** locally and in Redis (`orynx:{admission}:resilience_quarantine`).
+   - All subsequent experiments are rejected until an operator inspects the system and calls `clearQuarantine(operatorReason)`.
 
 ---
 
-## 4. Prioritized Failure Scenarios
+## 5. Prioritized Failure Scenarios
 
 ### Scenario A — Redis Interruption (`REDIS_INTERRUPTION`)
 - **Focus**: Distributed admission control and lock reliability under Redis outage or latency.
 - **Behavior**:
   - `FAIL_CLOSED` policy: Admission returns `AdmissionStatus.ERROR` with HTTP 503 and `Retry-After: 5` header, protecting cluster stability.
   - `FAIL_OPEN` policy: Logs warning and admits workflow to maintain throughput when configured.
-  - Distributed lock operations fail gracefully without acquiring locks.
-  - Upon reconnection, `AdmissionReconciliationJob` reconstructs cluster counts against PostgreSQL ground truth.
+  - Scoped faults in `ResilienceFaultRegistry` ensure live admission controllers observe the fault without mutating global Spring singletons.
 
 ### Scenario B — Kafka Interruption (`KAFKA_INTERRUPTION`)
 - **Focus**: Event publication drops and consumer lag accumulation.
@@ -129,7 +151,7 @@ To guarantee that failure injection never compromises shared environments or pro
 
 ---
 
-## 5. Observability & Metrics
+## 6. Observability & Metrics
 
 Resilience telemetry uses bounded-cardinality Micrometer metrics pre-registered at startup:
 
@@ -145,53 +167,27 @@ Resilience telemetry uses bounded-cardinality Micrometer metrics pre-registered 
 
 ---
 
-## 6. Execution & Reporting Guide
+## 7. Execution & Reporting Guide
 
 Resilience experiments can be initiated via `ResilienceExperimentEngine`:
 
 ```java
 ExperimentDefinition def = ExperimentDefinition.builder()
     .id("exp-redis-failover-001")
-    .name("Redis Primary Outage Test")
+    .name("Redis Isolation Test")
     .scenarioType(ScenarioType.REDIS_INTERRUPTION)
+    .injectionLevel(InjectionLevel.APPLICATION_SCOPED)
     .targetComponent("redis")
-    .targetResource("isolated-redis-primary")
+    .targetResource("isolated-redis-node-1")
     .environmentTag("resilience-isolated")
-    .durationMs(1000)
-    .timeoutMs(5000)
+    .durationMs(5000)
+    .timeoutMs(15000)
     .parameters(Map.of("policy", "FAIL_CLOSED"))
-    .expectedBehavior("Reject admission with 503 backpressure")
-    .recoveryStrategy("Restore Redis connectivity")
+    .expectedBehavior("Admission controller returns 503 Service Unavailable")
+    .recoveryStrategy("Reconnect Redis client")
     .build();
 
-ExperimentResult result = engine.runExperiment(def);
-String markdown = reportGenerator.generateMarkdownReport(def, result);
-String json = reportGenerator.generateJsonReport(def, result);
+ExperimentResult result = resilienceEngine.runExperiment(def);
+String markdownReport = reportGenerator.generateMarkdownReport(def, result);
+String jsonReport = reportGenerator.generateJsonReport(def, result);
 ```
-
-Every generated report contains the 17 mandatory audit fields:
-1. Experiment ID
-2. Scenario
-3. Environment
-4. Target
-5. Preconditions
-6. Injection Parameters
-7. Start Timestamp
-8. Failure Duration
-9. Observed Behavior
-10. Workflow Impact
-11. Recovery Duration
-12. Recovery Validation
-13. Metrics and Alerts
-14. Cleanup Status
-15. Result (`PASS`, `FAIL`, `ABORTED`, `INCONCLUSIVE`, `CLEANUP_FAILED`)
-16. Failure Details
-17. Reproduction Instructions
-
----
-
-## 7. Limitations & Unsupported Scenarios
-
-1. **Kernel/OS Level Panics**: Kernel crashes, host kernel panics, or OS hardware reboots are out of scope.
-2. **Arbitrary Host Docker Execution**: Executing arbitrary Docker commands against host daemon is strictly forbidden by the safety model.
-3. **Multi-Region Cross-Cloud Partitions**: Experiments validate single-cluster and multi-node failure domains; multi-cloud WAN cuts are simulated via network latency adapter.

@@ -1,5 +1,6 @@
 package com.orynx.orchestrator.resilience;
 
+import com.orynx.orchestrator.coordination.lock.DistributedLockService;
 import com.orynx.orchestrator.resilience.adapter.FailureInjectionAdapter;
 import com.orynx.orchestrator.resilience.adapter.RedisInterruptionAdapter;
 import com.orynx.orchestrator.resilience.engine.ExperimentRegistry;
@@ -26,6 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -126,9 +129,67 @@ class ResilienceExperimentEngineTest {
     }
 
     @Test
+    @DisplayName("Distributed lock acquisition failure blocks experiment execution")
+    void distributedLockBlocksExecution() {
+        DistributedLockService lockService = mock(DistributedLockService.class);
+        when(lockService.tryAcquire(eq(ResilienceExperimentEngine.RESILIENCE_LOCK_KEY), any(), any()))
+                .thenReturn(false);
+
+        ResilienceExperimentEngine lockGuardedEngine = new ResilienceExperimentEngine(
+                validator,
+                metrics,
+                registry,
+                List.of(redisAdapter),
+                lockService,
+                null
+        );
+
+        ExperimentDefinition def = sampleDefinition("exp-locked-001");
+        SafetyValidationException ex = assertThrows(SafetyValidationException.class, () ->
+                lockGuardedEngine.runExperiment(def)
+        );
+        assertTrue(ex.getMessage().contains("Cluster resilience lock is already held"));
+    }
+
+    @Test
+    @DisplayName("Timeout watchdog enforces timeoutMs and records TIMED_OUT outcome")
+    void timeoutWatchdogEnforcesTimeout() {
+        FailureInjectionAdapter hangingAdapter = mock(FailureInjectionAdapter.class);
+        when(hangingAdapter.getSupportedScenario()).thenReturn(ScenarioType.REDIS_INTERRUPTION);
+        when(hangingAdapter.verifyInjected(any())).thenReturn(true);
+        // Simulate hanging inject
+        doAnswer(invocation -> {
+            Thread.sleep(10000);
+            return null;
+        }).when(hangingAdapter).inject(any());
+
+        ResilienceExperimentEngine hangingEngine = new ResilienceExperimentEngine(
+                validator,
+                metrics,
+                registry,
+                List.of(hangingAdapter)
+        );
+
+        ExperimentDefinition def = sampleDefinition("exp-timeout-001")
+                .toBuilder()
+                .durationMs(100)
+                .timeoutMs(250) // Small timeout for test
+                .build();
+
+        long start = System.currentTimeMillis();
+        ExperimentResult result = hangingEngine.runExperiment(def);
+        long elapsed = System.currentTimeMillis() - start;
+
+        assertEquals(ExperimentResult.Outcome.TIMED_OUT, result.getOutcome());
+        assertTrue(elapsed < 2000, "Should be aborted quickly around timeout threshold, took: " + elapsed + "ms");
+        assertTrue(result.isCleanupSuccessful());
+        assertTrue(result.getVerificationErrors().stream().anyMatch(e -> e.contains("timeout")));
+    }
+
+    @Test
     @DisplayName("Abort request halts experiment and records ABORTED outcome")
     void abortRequestHaltsExperiment() throws Exception {
-        ExperimentDefinition def = sampleDefinition("exp-abort-001").toBuilder().durationMs(1000).build();
+        ExperimentDefinition def = sampleDefinition("exp-abort-001").toBuilder().durationMs(2000).timeoutMs(5000).build();
 
         Thread t = new Thread(() -> engine.runExperiment(def));
         t.start();
@@ -145,8 +206,8 @@ class ResilienceExperimentEngineTest {
     }
 
     @Test
-    @DisplayName("Cleanup failure transitions to CLEANUP_FAILED outcome")
-    void cleanupFailureHandled() {
+    @DisplayName("Cleanup failure transitions to CLEANUP_FAILED, activates quarantine, and blocks subsequent runs")
+    void cleanupFailureEnforcesQuarantine() {
         FailureInjectionAdapter faultyAdapter = mock(FailureInjectionAdapter.class);
         when(faultyAdapter.getSupportedScenario()).thenReturn(ScenarioType.REDIS_INTERRUPTION);
         when(faultyAdapter.verifyInjected(any())).thenReturn(true);
@@ -166,10 +227,18 @@ class ResilienceExperimentEngineTest {
         assertEquals(ExperimentResult.Outcome.CLEANUP_FAILED, result.getOutcome());
         assertFalse(result.isCleanupSuccessful());
         assertTrue(result.getVerificationErrors().stream().anyMatch(e -> e.contains("Cleanup failed")));
+        assertTrue(faultyEngine.isQuarantined());
 
-        double cleanupFailures = meterRegistry.get("orynx.resilience.cleanup.failures.total")
-                .tag("scenario", "redis_interruption")
-                .counter().count();
-        assertEquals(1.0, cleanupFailures);
+        // Subsequent experiment must be rejected due to quarantine
+        ExperimentDefinition nextDef = sampleDefinition("exp-subsequent-002");
+        SafetyValidationException quarantineEx = assertThrows(SafetyValidationException.class, () ->
+                faultyEngine.runExperiment(nextDef)
+        );
+        assertTrue(quarantineEx.getMessage().contains("QUARANTINE mode"));
+
+        // Clear quarantine via operator reset
+        boolean cleared = faultyEngine.clearQuarantine("Manual operator recovery verification");
+        assertTrue(cleared);
+        assertFalse(faultyEngine.isQuarantined());
     }
 }

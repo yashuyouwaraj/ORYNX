@@ -4,7 +4,7 @@ import java.util.Set;
 
 /**
  * Valid lifecycle states for a resilience failure experiment.
- * State transitions must be validated to enforce deterministic experiment execution.
+ * State transitions are strictly validated to enforce deterministic experiment execution.
  */
 public enum ExperimentState {
     CREATED,
@@ -16,10 +16,11 @@ public enum ExperimentState {
     COMPLETED,
     FAILED,
     ABORTED,
+    TIMED_OUT,
     CLEANUP_FAILED;
 
     private static final Set<ExperimentState> TERMINAL_STATES = Set.of(
-            COMPLETED, FAILED, ABORTED, CLEANUP_FAILED
+            COMPLETED, FAILED, ABORTED, TIMED_OUT, CLEANUP_FAILED
     );
 
     public boolean isTerminal() {
@@ -44,6 +45,10 @@ public enum ExperimentState {
         // Any non-terminal state can transition to ABORTED on abort request
         if (target == ABORTED) {
             return true;
+        }
+        // Any active running/observing/recovering state can transition to TIMED_OUT
+        if (target == TIMED_OUT) {
+            return this == RUNNING || this == OBSERVING || this == RECOVERING;
         }
 
         return switch (this) {

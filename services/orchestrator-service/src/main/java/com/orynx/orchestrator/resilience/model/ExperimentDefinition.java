@@ -18,6 +18,8 @@ public class ExperimentDefinition {
     private final String id;
     private final String name;
     private final ScenarioType scenarioType;
+    @Builder.Default
+    private final InjectionLevel injectionLevel = InjectionLevel.APPLICATION_SCOPED;
     private final String targetComponent;
     private final String targetResource;
     private final String environmentTag;

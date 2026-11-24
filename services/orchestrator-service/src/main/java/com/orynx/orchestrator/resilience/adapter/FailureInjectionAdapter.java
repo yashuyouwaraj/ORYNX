@@ -1,11 +1,12 @@
 package com.orynx.orchestrator.resilience.adapter;
 
 import com.orynx.orchestrator.resilience.model.ExperimentDefinition;
+import com.orynx.orchestrator.resilience.model.InjectionLevel;
 import com.orynx.orchestrator.resilience.model.ScenarioType;
 
 /**
  * Standard SPI contract for failure injection adapters.
- * Each adapter handles the mechanics of simulating a specific failure scenario
+ * Each adapter handles the mechanics of simulating or injecting a specific failure scenario
  * in an isolated environment, verifying the injection, recovering, and performing cleanup.
  */
 public interface FailureInjectionAdapter {
@@ -14,6 +15,13 @@ public interface FailureInjectionAdapter {
      * The scenario type handled by this adapter.
      */
     ScenarioType getSupportedScenario();
+
+    /**
+     * The injection level capability supported by this adapter.
+     */
+    default InjectionLevel getInjectionLevel() {
+        return InjectionLevel.APPLICATION_SCOPED;
+    }
 
     /**
      * Scenario-specific parameter validation before execution.

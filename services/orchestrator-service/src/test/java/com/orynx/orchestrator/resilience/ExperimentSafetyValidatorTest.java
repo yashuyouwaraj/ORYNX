@@ -3,6 +3,7 @@ package com.orynx.orchestrator.resilience;
 import com.orynx.orchestrator.resilience.model.ExperimentDefinition;
 import com.orynx.orchestrator.resilience.model.ScenarioType;
 import com.orynx.orchestrator.resilience.safety.ExperimentSafetyValidator;
+import com.orynx.orchestrator.resilience.safety.ResilienceProperties;
 import com.orynx.orchestrator.resilience.safety.SafetyValidationException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -17,10 +18,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ExperimentSafetyValidatorTest {
 
     private ExperimentSafetyValidator validator;
+    private ResilienceProperties properties;
 
     @BeforeEach
     void setUp() {
-        validator = new ExperimentSafetyValidator();
+        properties = new ResilienceProperties();
+        properties.setEnabled(true);
+        properties.setServerEnvironment("resilience-isolated");
+        validator = new ExperimentSafetyValidator(properties);
     }
 
     private ExperimentDefinition.ExperimentDefinitionBuilder validDefinition() {
@@ -41,6 +46,24 @@ class ExperimentSafetyValidatorTest {
     @DisplayName("Valid experiment definition passes validation")
     void validDefinitionPasses() {
         assertDoesNotThrow(() -> validator.validate(validDefinition().build()));
+    }
+
+    @Test
+    @DisplayName("Disabled resilience properties throws SafetyValidationException")
+    void disabledPropertiesThrows() {
+        properties.setEnabled(false);
+        ExperimentDefinition def = validDefinition().build();
+        SafetyValidationException ex = assertThrows(SafetyValidationException.class, () -> validator.validate(def));
+        assertTrue(ex.getMessage().contains("disabled"));
+    }
+
+    @Test
+    @DisplayName("Production server environment throws SafetyValidationException regardless of experiment definition")
+    void productionServerEnvironmentThrows() {
+        properties.setServerEnvironment("production");
+        ExperimentDefinition def = validDefinition().build();
+        SafetyValidationException ex = assertThrows(SafetyValidationException.class, () -> validator.validate(def));
+        assertTrue(ex.getMessage().contains("forbidden when server environment is configured as") || ex.getMessage().contains("forbidden"));
     }
 
     @Test
@@ -79,7 +102,7 @@ class ExperimentSafetyValidatorTest {
     void nonWhitelistedEnvironmentThrows() {
         ExperimentDefinition def = validDefinition().environmentTag("dev-arbitrary").build();
         SafetyValidationException ex = assertThrows(SafetyValidationException.class, () -> validator.validate(def));
-        assertTrue(ex.getMessage().contains("not in allowed"));
+        assertTrue(ex.getMessage().contains("is not permitted") || ex.getMessage().contains("not in allowed"));
     }
 
     @ParameterizedTest

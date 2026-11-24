@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.orynx.orchestrator.resilience.model.ExperimentDefinition;
 import com.orynx.orchestrator.resilience.model.ExperimentResult;
+import com.orynx.orchestrator.resilience.model.InjectionLevel;
 import com.orynx.orchestrator.resilience.model.ScenarioType;
 import com.orynx.orchestrator.resilience.reporting.ResilienceReportGenerator;
 import org.junit.jupiter.api.BeforeEach;
@@ -30,12 +31,13 @@ class ResilienceReportGeneratorTest {
     }
 
     @Test
-    @DisplayName("Markdown report contains all 17 mandatory audit sections")
+    @DisplayName("Markdown report contains all 17 mandatory audit sections and injection level")
     void markdownReportContainsAll17Sections() {
         ExperimentDefinition def = ExperimentDefinition.builder()
                 .id("exp-redis-001")
                 .name("Redis Resilience Test")
                 .scenarioType(ScenarioType.REDIS_INTERRUPTION)
+                .injectionLevel(InjectionLevel.APPLICATION_SCOPED)
                 .targetComponent("redis")
                 .targetResource("isolated-redis-1")
                 .environmentTag("resilience-isolated")
@@ -57,6 +59,7 @@ class ResilienceReportGeneratorTest {
                 .observedBehaviors(List.of("Safety verified", "Failure injected", "Recovered in 20ms"))
                 .verificationErrors(List.of())
                 .cleanupSuccessful(true)
+                .injectionLevel(InjectionLevel.APPLICATION_SCOPED)
                 .build();
 
         String md = generator.generateMarkdownReport(def, res);
@@ -64,6 +67,7 @@ class ResilienceReportGeneratorTest {
         List<String> requiredSections = List.of(
                 "## 1. Experiment ID",
                 "## 2. Scenario",
+                "## 2.1 Injection Level",
                 "## 3. Environment",
                 "## 4. Target",
                 "## 5. Preconditions",
@@ -87,17 +91,19 @@ class ResilienceReportGeneratorTest {
 
         assertTrue(md.contains("exp-redis-001"));
         assertTrue(md.contains("REDIS_INTERRUPTION"));
+        assertTrue(md.contains("APPLICATION_SCOPED"));
         assertTrue(md.contains("CLEANUP SUCCESSFUL"));
         assertTrue(md.contains("**PASS**"));
     }
 
     @Test
-    @DisplayName("JSON report produces valid JSON with all required keys")
+    @DisplayName("JSON report produces valid JSON with all required keys including injectionLevel")
     void jsonReportValid() throws Exception {
         ExperimentDefinition def = ExperimentDefinition.builder()
                 .id("exp-kafka-001")
                 .name("Kafka Broker Down")
                 .scenarioType(ScenarioType.KAFKA_INTERRUPTION)
+                .injectionLevel(InjectionLevel.SIMULATION)
                 .targetComponent("kafka")
                 .targetResource("isolated-kafka-node-1")
                 .environmentTag("resilience-isolated")
@@ -114,6 +120,7 @@ class ResilienceReportGeneratorTest {
                 .failureDurationMs(200)
                 .recoveryDurationMs(15)
                 .cleanupSuccessful(true)
+                .injectionLevel(InjectionLevel.SIMULATION)
                 .build();
 
         String json = generator.generateJsonReport(def, res);
@@ -121,6 +128,7 @@ class ResilienceReportGeneratorTest {
 
         assertEquals("exp-kafka-001", root.path("experimentId").asText());
         assertEquals("KAFKA_INTERRUPTION", root.path("scenario").asText());
+        assertEquals("SIMULATION", root.path("injectionLevel").asText());
         assertEquals("resilience-isolated", root.path("environment").asText());
         assertEquals("PASS", root.path("outcome").asText());
         assertTrue(root.path("cleanupSuccessful").asBoolean());
