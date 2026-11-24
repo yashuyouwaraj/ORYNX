@@ -1,0 +1,396 @@
+groups:
+  # ============================================================================
+  # 1. Platform & Observability Availability Alerts
+  # ============================================================================
+  - name: orynx_platform_alerts
+    interval: 15s
+    rules:
+      - alert: BackendServiceDown
+        expr: up{job="orynx-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: platform
+          service: "{{ $labels.instance }}"
+        annotations:
+          summary: "OrynX backend service {{ $labels.instance }} is down"
+          description: "Prometheus failed to scrape metrics from {{ $labels.instance }} (job={{ $labels.job }}) for more than 1 minute."
+          impact: "API traffic, authentication, AI workflow planning, orchestration, or task execution handled by {{ $labels.instance }} is unavailable."
+          runbook_url: "docs/runbooks/ServiceUnavailable.md"
+
+      - alert: PrometheusTargetDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: warning
+          category: platform
+          service: "{{ $labels.job }}"
+        annotations:
+          summary: "Prometheus scrape target {{ $labels.instance }} ({{ $labels.job }}) is unreachable"
+          description: "Target {{ $labels.instance }} in job {{ $labels.job }} has reported up == 0 for over 2 minutes."
+          impact: "Telemetry and SLI evaluation for {{ $labels.job }} are degraded or incomplete."
+          runbook_url: "docs/runbooks/ServiceUnavailable.md"
+
+      - alert: OtelCollectorDown
+        expr: up{job="otel-collector"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: platform
+          service: "otel-collector"
+        annotations:
+          summary: "OpenTelemetry Collector is unreachable"
+          description: "Prometheus cannot scrape otel-collector:8888 for more than 1 minute."
+          impact: "Distributed trace ingestion from OrynX microservices to Tempo is interrupted."
+          runbook_url: "docs/runbooks/ServiceUnavailable.md"
+
+      - alert: PostgresExporterDown
+        expr: up{job="postgres-exporter"} == 0
+        for: 1m
+        labels:
+          severity: warning
+          category: platform
+          service: "postgres-exporter"
+        annotations:
+          summary: "PostgreSQL Prometheus exporter is down"
+          description: "postgres-exporter:9187 has been unreachable for more than 1 minute."
+          impact: "Database telemetry and connection pool utilization alerts are blind."
+          runbook_url: "docs/runbooks/PostgreSQLUnavailable.md"
+
+      - alert: RedisExporterDown
+        expr: up{job="redis-exporter"} == 0
+        for: 1m
+        labels:
+          severity: warning
+          category: platform
+          service: "redis-exporter"
+        annotations:
+          summary: "Redis Prometheus exporter is down"
+          description: "redis-exporter:9121 has been unreachable for more than 1 minute."
+          impact: "Redis availability, memory, and client telemetry are unavailable."
+          runbook_url: "docs/runbooks/RedisUnavailable.md"
+
+      - alert: KafkaExporterDown
+        expr: up{job="kafka-exporter"} == 0
+        for: 1m
+        labels:
+          severity: warning
+          category: platform
+          service: "kafka-exporter"
+        annotations:
+          summary: "Kafka Prometheus exporter is down"
+          description: "kafka-exporter:9308 has been unreachable for more than 1 minute."
+          impact: "Kafka broker count, partition status, and consumer group lag telemetry are unavailable."
+          runbook_url: "docs/runbooks/KafkaUnavailable.md"
+
+      - alert: AlertmanagerDown
+        expr: up{job="alertmanager"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: platform
+          service: "alertmanager"
+        annotations:
+          summary: "Alertmanager is unreachable from Prometheus"
+          description: "alertmanager:9093 has reported up == 0 for more than 1 minute."
+          impact: "Firing Prometheus alerts cannot be routed, grouped, deduplicated, or delivered to notification receivers."
+          runbook_url: "docs/runbooks/ServiceUnavailable.md"
+
+  # ============================================================================
+  # 2. Workflow Orchestration Reliability Alerts
+  # ============================================================================
+  - name: orynx_workflow_alerts
+    interval: 15s
+    rules:
+      - alert: WorkflowFailureRateHigh
+        expr: >-
+          orynx:workflow:failure_ratio:rate5m > 0.10
+          and
+          (orynx:workflow:completed:rate5m + orynx:workflow:failed:rate5m) > 0
+        for: 2m
+        labels:
+          severity: critical
+          category: workflow
+          service: "orchestrator-service"
+        annotations:
+          summary: "Workflow failure rate exceeds 10% over the last 5 minutes"
+          description: "Workflow failure ratio is {{ $value | humanizePercentage }} over the last 5m (threshold: 10%)."
+          impact: "User workflows are failing at an elevated rate and rapidly consuming the 99% workflow reliability error budget."
+          runbook_url: "docs/runbooks/WorkflowFailureRateHigh.md"
+
+      - alert: WorkflowExecutionLatencyHigh
+        expr: >-
+          orynx:workflow:duration_p95_seconds:rate5m > 30
+          and
+          (orynx:workflow:completed:rate5m + orynx:workflow:failed:rate5m) > 0
+        for: 3m
+        labels:
+          severity: warning
+          category: workflow
+          service: "orchestrator-service"
+        annotations:
+          summary: "Workflow P95 execution duration exceeds 30s SLO target"
+          description: "Workflow P95 execution duration is {{ $value | humanizeDuration }} over the last 5m (SLO target: 30s)."
+          impact: "End-to-end workflow completion is slow, degrading user experience and risking downstream timeouts."
+          runbook_url: "docs/runbooks/WorkflowLatencyHigh.md"
+
+      - alert: WorkflowCompletionDegraded
+        expr: >-
+          orynx:workflow:started:rate5m > 0
+          and
+          (orynx:workflow:completed:rate5m + orynx:workflow:failed:rate5m) == 0
+        for: 5m
+        labels:
+          severity: warning
+          category: workflow
+          service: "orchestrator-service"
+        annotations:
+          summary: "Workflows are starting but none are reaching terminal state"
+          description: "Workflows have been starting over the last 5m, but zero workflows completed or failed for 5 consecutive minutes."
+          impact: "In-flight workflows are stalled in RUNNING or PLANNING state due to consumer lag, deadlock, or worker starvation."
+          runbook_url: "docs/runbooks/WorkflowLatencyHigh.md"
+
+      - alert: WorkflowRetryRateElevated
+        expr: >-
+          orynx:workflow:retry_ratio:rate5m > 0.20
+          and
+          orynx:workflow:retried:rate5m > 0
+        for: 3m
+        labels:
+          severity: warning
+          category: workflow
+          service: "orchestrator-service"
+        annotations:
+          summary: "Workflow retry ratio exceeds 20% of started workflows"
+          description: "Workflow retry ratio is {{ $value | humanizePercentage }} over the last 5m."
+          impact: "Transient downstream failures or task timeouts are forcing frequent workflow retries and increasing system load."
+          runbook_url: "docs/runbooks/WorkflowFailureRateHigh.md"
+
+  # ============================================================================
+  # 3. Task Execution Reliability Alerts
+  # ============================================================================
+  - name: orynx_task_alerts
+    interval: 15s
+    rules:
+      - alert: TaskFailureRateHigh
+        expr: >-
+          orynx:task:failure_ratio:rate5m > 0.10
+          and
+          orynx:task:executed:rate5m > 0
+        for: 2m
+        labels:
+          severity: critical
+          category: task
+          service: "execution-service"
+        annotations:
+          summary: "Task execution failure rate exceeds 10% over the last 5 minutes"
+          description: "Task failure ratio is {{ $value | humanizePercentage }} over the last 5m (threshold: 10%)."
+          impact: "DAG task nodes are failing in execution-service, triggering retries or cascading workflow failures."
+          runbook_url: "docs/runbooks/TaskFailureRateHigh.md"
+
+      - alert: TaskExecutionStalled
+        expr: >-
+          orynx:workflow:started:rate5m > 0
+          and
+          orynx:task:executed:rate5m == 0
+        for: 5m
+        labels:
+          severity: warning
+          category: task
+          service: "execution-service"
+        annotations:
+          summary: "Workflows are starting but zero tasks are completing execution"
+          description: "Workflows are starting over the last 5m, but orynx:task:executed:rate5m has remained 0 for 5 minutes."
+          impact: "Task dispatching or execution-service Kafka consumption is stalled."
+          runbook_url: "docs/runbooks/TaskFailureRateHigh.md"
+
+  # ============================================================================
+  # 4. Infrastructure & Backing Store Alerts
+  # ============================================================================
+  - name: orynx_infrastructure_alerts
+    interval: 15s
+    rules:
+      - alert: PostgreSQLUnavailable
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: infrastructure
+          service: "postgres"
+        annotations:
+          summary: "PostgreSQL database is unavailable (pg_up == 0)"
+          description: "postgres-exporter reports pg_up == 0 for more than 1 minute."
+          impact: "All persistent state operations for auth-service and orchestrator-service fail; new logins and workflows cannot be persisted."
+          runbook_url: "docs/runbooks/PostgreSQLUnavailable.md"
+
+      - alert: PostgreSQLConnectionsHigh
+        expr: orynx:postgres:connection_utilization_ratio > 0.80
+        for: 3m
+        labels:
+          severity: warning
+          category: infrastructure
+          service: "postgres"
+        annotations:
+          summary: "PostgreSQL active connection utilization exceeds 80%"
+          description: "PostgreSQL connection utilization is {{ $value | humanizePercentage }} of max_connections for over 3 minutes."
+          impact: "Risk of connection pool exhaustion (HikariCP timeouts) across backend services if utilization reaches 100%."
+          runbook_url: "docs/runbooks/PostgreSQLUnavailable.md"
+
+      - alert: RedisUnavailable
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: infrastructure
+          service: "redis"
+        annotations:
+          summary: "Redis cache / state store is unavailable (redis_up == 0)"
+          description: "redis-exporter reports redis_up == 0 for more than 1 minute."
+          impact: "Gateway rate limiting, session caching, and fast state lookups are degraded or unavailable."
+          runbook_url: "docs/runbooks/RedisUnavailable.md"
+
+      - alert: KafkaUnavailable
+        expr: kafka_brokers < 1
+        for: 1m
+        labels:
+          severity: critical
+          category: infrastructure
+          service: "kafka"
+        annotations:
+          summary: "Kafka cluster has zero active brokers (kafka_brokers < 1)"
+          description: "kafka-exporter reports fewer than 1 available Kafka broker for more than 1 minute."
+          impact: "Asynchronous event choreography between orchestrator-service, planning-service, and execution-service is halted."
+          runbook_url: "docs/runbooks/KafkaUnavailable.md"
+
+      - alert: KafkaConsumerLagHigh
+        expr: orynx:kafka:consumer_lag:by_group_topic > 100
+        for: 3m
+        labels:
+          severity: warning
+          category: infrastructure
+          service: "kafka"
+        annotations:
+          summary: "Kafka consumer group {{ $labels.consumergroup }} lag exceeds 100 messages on topic {{ $labels.topic }}"
+          description: "Consumer group {{ $labels.consumergroup }} on topic {{ $labels.topic }} has lag {{ $value }} for over 3 minutes."
+          impact: "Workflow planning or task execution events are queued in Kafka, increasing end-to-end workflow latency."
+          runbook_url: "docs/runbooks/KafkaUnavailable.md"
+
+      - alert: OtelCollectorSpanDrops
+        expr: >-
+          (sum(rate(otelcol_exporter_send_failed_spans_total[5m])) or vector(0)) > 0
+          or
+          (sum(rate(otelcol_processor_dropped_spans_total[5m])) or vector(0)) > 0
+        for: 2m
+        labels:
+          severity: warning
+          category: infrastructure
+          service: "otel-collector"
+        annotations:
+          summary: "OpenTelemetry Collector is dropping or failing to export spans"
+          description: "OTel Collector has reported non-zero failed or dropped spans over the last 5 minutes."
+          impact: "Distributed traces in Grafana/Tempo will have missing spans or broken parent-child relationships."
+          runbook_url: "docs/runbooks/ServiceUnavailable.md"
+
+  # ============================================================================
+  # 5. Multi-Window Multi-Burn-Rate SLO & Error Budget Alerts
+  # ============================================================================
+  - name: orynx_slo_burn_alerts
+    interval: 15s
+    rules:
+      - alert: ApiSloFastBurnCritical
+        expr: >-
+          orynx:api:burn_rate:1h > 14.4
+          and
+          orynx:api:burn_rate:5m > 14.4
+        for: 2m
+        labels:
+          severity: critical
+          category: slo
+          service: "orynx-api"
+        annotations:
+          summary: "API 99.9% availability SLO fast burn (>14.4x error budget burn over 1h and 5m)"
+          description: "API error budget is burning at {{ $value | printf \"%.2f\" }}x the sustainable 30-day rate across both 1h and 5m windows."
+          impact: "At >14.4x burn rate, 2% of the entire 30-day API error budget is consumed in 1 hour (exhaustion in ~50 hours)."
+          runbook_url: "docs/runbooks/SLOBurnRateHigh.md"
+
+      - alert: ApiSloSlowBurnWarning
+        expr: >-
+          orynx:api:burn_rate:6h > 6
+          and
+          orynx:api:burn_rate:30m > 6
+        for: 15m
+        labels:
+          severity: warning
+          category: slo
+          service: "orynx-api"
+        annotations:
+          summary: "API 99.9% availability SLO slow burn (>6x error budget burn over 6h and 30m)"
+          description: "API error budget is burning at {{ $value | printf \"%.2f\" }}x the sustainable 30-day rate across both 6h and 30m windows."
+          impact: "At >6x burn rate, 5% of the 30-day API error budget is consumed in 6 hours (exhaustion in 5 days)."
+          runbook_url: "docs/runbooks/SLOBurnRateHigh.md"
+
+      - alert: WorkflowSloFastBurnCritical
+        expr: >-
+          orynx:workflow:burn_rate:1h > 14.4
+          and
+          orynx:workflow:burn_rate:5m > 14.4
+        for: 2m
+        labels:
+          severity: critical
+          category: slo
+          service: "orchestrator-service"
+        annotations:
+          summary: "Workflow 99.0% reliability SLO fast burn (>14.4x error budget burn over 1h and 5m)"
+          description: "Workflow reliability error budget is burning at {{ $value | printf \"%.2f\" }}x the sustainable rate across 1h and 5m windows."
+          impact: "Rapid consumption of the 30-day workflow completion reliability error budget."
+          runbook_url: "docs/runbooks/SLOBurnRateHigh.md"
+
+      - alert: WorkflowSloSlowBurnWarning
+        expr: >-
+          orynx:workflow:burn_rate:6h > 6
+          and
+          orynx:workflow:burn_rate:30m > 6
+        for: 15m
+        labels:
+          severity: warning
+          category: slo
+          service: "orchestrator-service"
+        annotations:
+          summary: "Workflow 99.0% reliability SLO slow burn (>6x error budget burn over 6h and 30m)"
+          description: "Workflow reliability error budget is burning at {{ $value | printf \"%.2f\" }}x the sustainable rate across 6h and 30m windows."
+          impact: "Sustained degradation will exhaust the 30-day workflow error budget within 5 days."
+          runbook_url: "docs/runbooks/SLOBurnRateHigh.md"
+
+      - alert: TaskSloFastBurnCritical
+        expr: >-
+          orynx:task:burn_rate:1h > 14.4
+          and
+          orynx:task:burn_rate:5m > 14.4
+        for: 2m
+        labels:
+          severity: critical
+          category: slo
+          service: "execution-service"
+        annotations:
+          summary: "Task execution 99.0% reliability SLO fast burn (>14.4x error budget burn)"
+          description: "Task execution error budget is burning at {{ $value | printf \"%.2f\" }}x the sustainable rate across 1h and 5m windows."
+          impact: "High task failure rate threatens overall workflow orchestration SLO compliance."
+          runbook_url: "docs/runbooks/SLOBurnRateHigh.md"
+
+      - alert: ErrorBudgetExhausted
+        expr: >-
+          orynx:api:error_budget_remaining:ratio_30d <= 0
+          or
+          orynx:workflow:error_budget_remaining:ratio_30d <= 0
+          or
+          orynx:task:error_budget_remaining:ratio_30d <= 0
+        for: 5m
+        labels:
+          severity: critical
+          category: slo
+          service: "orynx-platform"
+        annotations:
+          summary: "30-day SLO error budget is exhausted (0% remaining)"
+          description: "One or more OrynX 30-day SLO error budgets (API availability, workflow completion, or task execution) has reached 0%."
+          impact: "Monthly reliability target breached; freeze non-essential feature rollouts and prioritize reliability remediation."
+          runbook_url: "docs/runbooks/ErrorBudgetExhausted.md"

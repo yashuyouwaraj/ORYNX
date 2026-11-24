@@ -1,0 +1,148 @@
+rule_files:
+  - /etc/prometheus/rules/slo-recording-rules.yml
+  - /etc/prometheus/rules/alert-rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  # 1. Idle baseline: zero traffic produces 100% availability (1.0), 0% error ratio, 100% budget remaining, and zero firing alerts
+  - interval: 1m
+    input_series:
+      - series: 'up{job="orynx-backend", instance="orchestrator-service:9100"}'
+        values: '1+0x10'
+      - series: 'up{job="otel-collector", instance="otel-collector:8888"}'
+        values: '1+0x10'
+      - series: 'up{job="postgres-exporter", instance="postgres-exporter:9187"}'
+        values: '1+0x10'
+      - series: 'up{job="redis-exporter", instance="redis-exporter:9121"}'
+        values: '1+0x10'
+      - series: 'up{job="kafka-exporter", instance="kafka-exporter:9308"}'
+        values: '1+0x10'
+      - series: 'up{job="alertmanager", instance="alertmanager:9093"}'
+        values: '1+0x10'
+      - series: 'pg_up{job="postgres-exporter"}'
+        values: '1+0x10'
+      - series: 'redis_up{job="redis-exporter"}'
+        values: '1+0x10'
+      - series: 'kafka_brokers{job="kafka-exporter"}'
+        values: '1+0x10'
+      - series: 'orynx_workflows_completed_total{status="COMPLETED"}'
+        values: '0+0x10'
+      - series: 'orynx_workflows_completed_total{status="FAILED"}'
+        values: '0+0x10'
+      - series: 'orynx_tasks_executed_total{status="COMPLETED"}'
+        values: '0+0x10'
+      - series: 'orynx_tasks_executed_total{status="FAILED"}'
+        values: '0+0x10'
+    promql_expr_test:
+      - expr: orynx:api:availability:ratio_rate5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'orynx:api:availability:ratio_rate5m'
+            value: 1
+      - expr: orynx:workflow:success_ratio:rate5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'orynx:workflow:success_ratio:rate5m'
+            value: 1
+      - expr: orynx:task:success_ratio:rate5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'orynx:task:success_ratio:rate5m'
+            value: 1
+      - expr: orynx:api:error_budget_remaining:ratio_30d
+        eval_time: 5m
+        exp_samples:
+          - labels: 'orynx:api:error_budget_remaining:ratio_30d'
+            value: 1
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: WorkflowFailureRateHigh
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: BackendServiceDown
+        exp_alerts: []
+
+  # 2. Failure & outage scenario: BackendServiceDown, PostgreSQLUnavailable, WorkflowFailureRateHigh, and TaskFailureRateHigh fire
+  - interval: 1m
+    input_series:
+      - series: 'up{job="orynx-backend", instance="orchestrator-service:9100"}'
+        values: '0+0x10'
+      - series: 'pg_up{job="postgres-exporter", instance="postgres-exporter:9187"}'
+        values: '0+0x10'
+      - series: 'redis_up{job="redis-exporter", instance="redis-exporter:9121"}'
+        values: '1+0x10'
+      - series: 'kafka_brokers{job="kafka-exporter", instance="kafka-exporter:9308"}'
+        values: '1+0x10'
+      - series: 'orynx_workflows_completed_total{status="COMPLETED"}'
+        values: '0+10x10'
+      - series: 'orynx_workflows_completed_total{status="FAILED"}'
+        values: '0+10x10'
+      - series: 'orynx_tasks_executed_total{status="COMPLETED"}'
+        values: '0+10x10'
+      - series: 'orynx_tasks_executed_total{status="FAILED"}'
+        values: '0+5x10'
+    promql_expr_test:
+      - expr: orynx:workflow:failure_ratio:rate5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'orynx:workflow:failure_ratio:rate5m'
+            value: 0.5
+      - expr: orynx:workflow:success_ratio:rate5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'orynx:workflow:success_ratio:rate5m'
+            value: 0.5
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: BackendServiceDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              category: platform
+              service: orchestrator-service:9100
+              instance: orchestrator-service:9100
+              job: orynx-backend
+            exp_annotations:
+              summary: "OrynX backend service orchestrator-service:9100 is down"
+              description: "Prometheus failed to scrape metrics from orchestrator-service:9100 (job=orynx-backend) for more than 1 minute."
+              impact: "API traffic, authentication, AI workflow planning, orchestration, or task execution handled by orchestrator-service:9100 is unavailable."
+              runbook_url: "docs/runbooks/ServiceUnavailable.md"
+      - eval_time: 5m
+        alertname: PostgreSQLUnavailable
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              category: infrastructure
+              service: postgres
+              instance: postgres-exporter:9187
+              job: postgres-exporter
+            exp_annotations:
+              summary: "PostgreSQL database is unavailable (pg_up == 0)"
+              description: "postgres-exporter reports pg_up == 0 for more than 1 minute."
+              impact: "All persistent state operations for auth-service and orchestrator-service fail; new logins and workflows cannot be persisted."
+              runbook_url: "docs/runbooks/PostgreSQLUnavailable.md"
+      - eval_time: 5m
+        alertname: WorkflowFailureRateHigh
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              category: workflow
+              service: orchestrator-service
+            exp_annotations:
+              summary: "Workflow failure rate exceeds 10% over the last 5 minutes"
+              description: "Workflow failure ratio is 50% over the last 5m (threshold: 10%)."
+              impact: "User workflows are failing at an elevated rate and rapidly consuming the 99% workflow reliability error budget."
+              runbook_url: "docs/runbooks/WorkflowFailureRateHigh.md"
+      - eval_time: 5m
+        alertname: TaskFailureRateHigh
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              category: task
+              service: execution-service
+            exp_annotations:
+              summary: "Task execution failure rate exceeds 10% over the last 5 minutes"
+              description: "Task failure ratio is 33.33% over the last 5m (threshold: 10%)."
+              impact: "DAG task nodes are failing in execution-service, triggering retries or cascading workflow failures."
+              runbook_url: "docs/runbooks/TaskFailureRateHigh.md"
