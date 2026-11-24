@@ -246,8 +246,36 @@ groups:
         annotations:
           summary: "Redis instance is unavailable (redis_up == 0)"
           description: "redis-exporter reports redis_up == 0 for more than 1 minute."
-          impact: "The Redis infrastructure service is down (note: current OrynX microservices do not route active workflow traffic through Redis)."
+          impact: "Distributed workflow admission control and coordination are degraded. Workflows may be rejected or fail-open based on configured policy."
           runbook_url: "docs/runbooks/RedisUnavailable.md"
+
+      - alert: RedisCoordinationErrorsHigh
+        expr: >-
+          sum(rate(orynx_redis_operations_total{status="failure"}[5m]))
+          / clamp_min(sum(rate(orynx_redis_operations_total[5m])), 0.1) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+          category: infrastructure
+          service: "orchestrator-service"
+        annotations:
+          summary: "High failure rate on Redis distributed coordination operations (>5%)"
+          description: "Over 5% of Redis operations in orchestrator-service failed in the last 5 minutes (failure rate: {{ $value | humanizePercentage }})."
+          impact: "Workflow admission decisions may experience fallback degradation or latency spikes."
+          runbook_url: "docs/runbooks/RedisUnavailable.md"
+
+      - alert: WorkflowAdmissionCapacitySaturated
+        expr: orynx_admission_utilization > 0.90
+        for: 3m
+        labels:
+          severity: warning
+          category: workflow
+          service: "orchestrator-service"
+        annotations:
+          summary: "Workflow execution admission capacity saturated (>90%)"
+          description: "Cluster workflow execution capacity is {{ $value | humanizePercentage }} utilized for over 3 minutes."
+          impact: "New workflow execution requests risk rejection (HTTP 429) or scheduling deferral."
+          runbook_url: "docs/runbooks/WorkflowLatencyHigh.md"
 
       - alert: KafkaUnavailable
         expr: kafka_brokers < 1

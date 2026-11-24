@@ -362,6 +362,19 @@
         { "expr": "up{job=\"alertmanager\"}", "legendFormat": "Alertmanager (up)", "refId": "D" },
         { "expr": "up{job=\"otel-collector\"}", "legendFormat": "OTel Collector (up)", "refId": "E" }
       ]
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Workflow Admission Control & Redis Coordination",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+      "targets": [
+        { "expr": "orynx_admission_active_workflows", "legendFormat": "Active Admitted Workflows", "refId": "A" },
+        { "expr": "sum(rate(orynx_admission_requests_total{status=\"accepted\"}[5m]))", "legendFormat": "Admissions Accepted/sec", "refId": "B" },
+        { "expr": "sum(rate(orynx_admission_requests_total{status=\"rejected\"}[5m]))", "legendFormat": "Admissions Rejected/sec", "refId": "C" },
+        { "expr": "sum(rate(orynx_redis_operations_total[5m]))", "legendFormat": "Redis Coordination Ops/sec", "refId": "D" }
+      ]
     }
   ]
 }
