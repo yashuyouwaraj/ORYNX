@@ -2,11 +2,25 @@ groups:
   # ============================================================================
   # 1. API SLIs, SLO Targets, Error Budgets & Burn Rates
   #    Target Availability: 99.9% (0.999) | Error Budget: 0.1% (0.001)
-  #    Target P95 Latency:  0.5s (500ms) excluding /actuator/health*
+  #    Target P95 Latency:  0.5s (500ms) excluding /actuator.*
+  #
+  #    Missing-data semantics:
+  #    - Idle-but-healthy (count(up{job="orynx-backend"} == 1) > 0) returns
+  #      0.0 error ratio / 1.0 availability / 0.0 burn rate.
+  #    - If all backends are down or telemetry is absent, ratios return EMPTY
+  #      (No Data) rather than falsely reporting 100% availability or 0 burn.
+  #    - 30d error_budget_remaining:ratio_30d requires >= 30d (2592000s) of
+  #      TSDB history coverage; observed_30d tracks the observed window.
   # ============================================================================
   - name: orynx_api_sli_rules
     interval: 15s
     rules:
+      - record: orynx:slo:history_coverage_seconds
+        expr: time() - max(prometheus_tsdb_lowest_timestamp_seconds)
+
+      - record: orynx:slo:history_coverage_days
+        expr: orynx:slo:history_coverage_seconds / 86400
+
       - record: orynx:api:slo_target_availability
         expr: vector(0.999)
 
@@ -16,7 +30,7 @@ groups:
       - record: orynx:api:requests:rate5m
         expr: >-
           sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[5m]))
-          or vector(0)
+          or (0 * (count(up{job="orynx-backend"} == 1) > 0))
 
       - record: orynx:api:requests:rate5m_by_service
         expr: >-
@@ -25,78 +39,107 @@ groups:
       - record: orynx:api:errors:rate5m
         expr: >-
           sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*",outcome="SERVER_ERROR"}[5m]))
-          or vector(0)
+          or (0 * sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[5m])))
+          or (0 * (count(up{job="orynx-backend"} == 1) > 0))
 
       - record: orynx:api:errors:rate5m_by_service
         expr: >-
           sum by (application) (rate(http_server_requests_seconds_count{uri!~"/actuator.*",outcome="SERVER_ERROR"}[5m]))
           or (0 * sum by (application) (rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[5m])))
 
-      # Multi-window API error ratios (0 when idle so idle periods do not trigger false alerts)
+      # Multi-window API error ratios (empty when telemetry missing / all backends down)
       - record: orynx:api:error_ratio:rate5m
         expr: >-
-          clamp_max(
-            (sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*",outcome="SERVER_ERROR"}[5m])) or vector(0))
-            /
-            clamp_min((sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[5m])) or vector(0)), 1e-12),
-            1
+          (
+            clamp_max(
+              (sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*",outcome="SERVER_ERROR"}[5m])) or (0 * sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[5m]))))
+              /
+              clamp_min(sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[5m])), 1e-12),
+              1
+            )
+            or (0 * (count(up{job="orynx-backend"} == 1) > 0))
           )
+          and on() (count(up{job="orynx-backend"} == 1) > 0)
 
       - record: orynx:api:error_ratio:rate30m
         expr: >-
-          clamp_max(
-            (sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*",outcome="SERVER_ERROR"}[30m])) or vector(0))
-            /
-            clamp_min((sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[30m])) or vector(0)), 1e-12),
-            1
+          (
+            clamp_max(
+              (sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*",outcome="SERVER_ERROR"}[30m])) or (0 * sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[30m]))))
+              /
+              clamp_min(sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[30m])), 1e-12),
+              1
+            )
+            or (0 * (count(up{job="orynx-backend"} == 1) > 0))
           )
+          and on() (count(up{job="orynx-backend"} == 1) > 0)
 
       - record: orynx:api:error_ratio:rate1h
         expr: >-
-          clamp_max(
-            (sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*",outcome="SERVER_ERROR"}[1h])) or vector(0))
-            /
-            clamp_min((sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[1h])) or vector(0)), 1e-12),
-            1
+          (
+            clamp_max(
+              (sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*",outcome="SERVER_ERROR"}[1h])) or (0 * sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[1h]))))
+              /
+              clamp_min(sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[1h])), 1e-12),
+              1
+            )
+            or (0 * (count(up{job="orynx-backend"} == 1) > 0))
           )
+          and on() (count(up{job="orynx-backend"} == 1) > 0)
 
       - record: orynx:api:error_ratio:rate6h
         expr: >-
-          clamp_max(
-            (sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*",outcome="SERVER_ERROR"}[6h])) or vector(0))
-            /
-            clamp_min((sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[6h])) or vector(0)), 1e-12),
-            1
+          (
+            clamp_max(
+              (sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*",outcome="SERVER_ERROR"}[6h])) or (0 * sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[6h]))))
+              /
+              clamp_min(sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[6h])), 1e-12),
+              1
+            )
+            or (0 * (count(up{job="orynx-backend"} == 1) > 0))
           )
+          and on() (count(up{job="orynx-backend"} == 1) > 0)
 
       - record: orynx:api:error_ratio:rate24h
         expr: >-
-          clamp_max(
-            (sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*",outcome="SERVER_ERROR"}[24h])) or vector(0))
-            /
-            clamp_min((sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[24h])) or vector(0)), 1e-12),
-            1
+          (
+            clamp_max(
+              (sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*",outcome="SERVER_ERROR"}[24h])) or (0 * sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[24h]))))
+              /
+              clamp_min(sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[24h])), 1e-12),
+              1
+            )
+            or (0 * (count(up{job="orynx-backend"} == 1) > 0))
           )
+          and on() (count(up{job="orynx-backend"} == 1) > 0)
 
       - record: orynx:api:error_ratio:rate7d
         expr: >-
-          clamp_max(
-            (sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*",outcome="SERVER_ERROR"}[7d])) or vector(0))
-            /
-            clamp_min((sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[7d])) or vector(0)), 1e-12),
-            1
+          (
+            clamp_max(
+              (sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*",outcome="SERVER_ERROR"}[7d])) or (0 * sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[7d]))))
+              /
+              clamp_min(sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[7d])), 1e-12),
+              1
+            )
+            or (0 * (count(up{job="orynx-backend"} == 1) > 0))
           )
+          and on() (count(up{job="orynx-backend"} == 1) > 0)
 
       - record: orynx:api:error_ratio:rate30d
         expr: >-
-          clamp_max(
-            (sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*",outcome="SERVER_ERROR"}[30d])) or vector(0))
-            /
-            clamp_min((sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[30d])) or vector(0)), 1e-12),
-            1
+          (
+            clamp_max(
+              (sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*",outcome="SERVER_ERROR"}[30d])) or (0 * sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[30d]))))
+              /
+              clamp_min(sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[30d])), 1e-12),
+              1
+            )
+            or (0 * (count(up{job="orynx-backend"} == 1) > 0))
           )
+          and on() (count(up{job="orynx-backend"} == 1) > 0)
 
-      # Multi-window API availability ratios (1.0 when zero errors / idle)
+      # Multi-window API availability ratios (empty when telemetry missing / all backends down)
       - record: orynx:api:availability:ratio_rate5m
         expr: 1 - orynx:api:error_ratio:rate5m
 
@@ -115,7 +158,7 @@ groups:
       - record: orynx:api:availability:ratio_rate30d
         expr: 1 - orynx:api:error_ratio:rate30d
 
-      # API Latency SLIs (P95, P99, and Average in seconds, excluding /actuator.*)
+      # API Latency SLIs (P95, P99 in seconds, excluding /actuator.*; empty when no traffic)
       - record: orynx:api:latency_p95:rate5m
         expr: >-
           (
@@ -126,9 +169,9 @@ groups:
           )
           or
           (
-            (sum(rate(http_server_requests_seconds_sum{uri!~"/actuator.*"}[5m])) or vector(0))
+            sum(rate(http_server_requests_seconds_sum{uri!~"/actuator.*"}[5m]))
             /
-            clamp_min((sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[5m])) or vector(0)), 1e-12)
+            clamp_min(sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[5m])) > 0, 1e-12)
           )
 
       - record: orynx:api:latency_p99:rate5m
@@ -141,13 +184,15 @@ groups:
           )
           or
           (
-            (sum(rate(http_server_requests_seconds_sum{uri!~"/actuator.*"}[5m])) or vector(0))
+            sum(rate(http_server_requests_seconds_sum{uri!~"/actuator.*"}[5m]))
             /
-            clamp_min((sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[5m])) or vector(0)), 1e-12)
+            clamp_min(sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[5m])) > 0, 1e-12)
           )
 
-      # API Error Budget Remaining (1.0 = 100% left, 0.0 = exhausted) & Burn Rates (1.0 = 1x budget burn)
-      - record: orynx:api:error_budget_remaining:ratio_30d
+      # API Error Budget Remaining:
+      # - observed_30d reflects the available window so far (empty if telemetry missing)
+      # - ratio_30d requires >= 30 days (2592000s) of TSDB history so fresh deployments do not falsely claim 100%
+      - record: orynx:api:error_budget_remaining:observed_30d
         expr: >-
           clamp_min(
             clamp_max(
@@ -156,6 +201,11 @@ groups:
             ),
             0
           )
+
+      - record: orynx:api:error_budget_remaining:ratio_30d
+        expr: >-
+          orynx:api:error_budget_remaining:observed_30d
+          and on() (orynx:slo:history_coverage_seconds >= 2592000)
 
       - record: orynx:api:burn_rate:5m
         expr: orynx:api:error_ratio:rate5m / (1 - 0.999)
@@ -184,93 +234,94 @@ groups:
         expr: vector(30.0)
 
       - record: orynx:workflow:created:rate5m
-        expr: sum(rate(orynx_workflows_total[5m])) or vector(0)
+        expr: sum(rate(orynx_workflows_total[5m]))
 
       - record: orynx:workflow:started:rate5m
-        expr: sum(rate(orynx_workflows_started_total[5m])) or vector(0)
+        expr: sum(rate(orynx_workflows_started_total[5m]))
 
       - record: orynx:workflow:completed:rate5m
-        expr: sum(rate(orynx_workflows_completed_total{status="COMPLETED"}[5m])) or vector(0)
+        expr: sum(rate(orynx_workflows_completed_total{status="COMPLETED"}[5m]))
 
       - record: orynx:workflow:failed:rate5m
-        expr: sum(rate(orynx_workflows_completed_total{status="FAILED"}[5m])) or vector(0)
+        expr: sum(rate(orynx_workflows_completed_total{status="FAILED"}[5m]))
 
       - record: orynx:workflow:cancelled:rate5m
-        expr: sum(rate(orynx_workflows_cancelled_total[5m])) or vector(0)
+        expr: sum(rate(orynx_workflows_cancelled_total[5m]))
 
       - record: orynx:workflow:retried:rate5m
-        expr: sum(rate(orynx_workflows_retried_total[5m])) or vector(0)
+        expr: sum(rate(orynx_workflows_retried_total[5m]))
 
       - record: orynx:workflow:retry_ratio:rate5m
         expr: >-
           clamp_max(
-            (sum(rate(orynx_workflows_retried_total[5m])) or vector(0))
+            sum(rate(orynx_workflows_retried_total[5m]))
             /
-            clamp_min((sum(rate(orynx_workflows_started_total[5m])) or vector(0)), 1e-12),
+            clamp_min(sum(rate(orynx_workflows_started_total[5m])), 1e-12),
             1
           )
 
       # Multi-window workflow failure ratios: FAILED / (COMPLETED + FAILED)
+      # Empty when orchestrator workflow metrics are missing
       - record: orynx:workflow:failure_ratio:rate5m
         expr: >-
           clamp_max(
-            (sum(rate(orynx_workflows_completed_total{status="FAILED"}[5m])) or vector(0))
+            (sum(rate(orynx_workflows_completed_total{status="FAILED"}[5m])) or (0 * sum(rate(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[5m]))))
             /
-            clamp_min((sum(rate(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[5m])) or vector(0)), 1e-12),
+            clamp_min(sum(rate(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[5m])), 1e-12),
             1
           )
 
       - record: orynx:workflow:failure_ratio:rate30m
         expr: >-
           clamp_max(
-            (sum(rate(orynx_workflows_completed_total{status="FAILED"}[30m])) or vector(0))
+            (sum(rate(orynx_workflows_completed_total{status="FAILED"}[30m])) or (0 * sum(rate(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[30m]))))
             /
-            clamp_min((sum(rate(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[30m])) or vector(0)), 1e-12),
+            clamp_min(sum(rate(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[30m])), 1e-12),
             1
           )
 
       - record: orynx:workflow:failure_ratio:rate1h
         expr: >-
           clamp_max(
-            (sum(rate(orynx_workflows_completed_total{status="FAILED"}[1h])) or vector(0))
+            (sum(rate(orynx_workflows_completed_total{status="FAILED"}[1h])) or (0 * sum(rate(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[1h]))))
             /
-            clamp_min((sum(rate(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[1h])) or vector(0)), 1e-12),
+            clamp_min(sum(rate(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[1h])), 1e-12),
             1
           )
 
       - record: orynx:workflow:failure_ratio:rate6h
         expr: >-
           clamp_max(
-            (sum(rate(orynx_workflows_completed_total{status="FAILED"}[6h])) or vector(0))
+            (sum(rate(orynx_workflows_completed_total{status="FAILED"}[6h])) or (0 * sum(rate(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[6h]))))
             /
-            clamp_min((sum(rate(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[6h])) or vector(0)), 1e-12),
+            clamp_min(sum(rate(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[6h])), 1e-12),
             1
           )
 
       - record: orynx:workflow:failure_ratio:rate24h
         expr: >-
           clamp_max(
-            (sum(rate(orynx_workflows_completed_total{status="FAILED"}[24h])) or vector(0))
+            (sum(rate(orynx_workflows_completed_total{status="FAILED"}[24h])) or (0 * sum(rate(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[24h]))))
             /
-            clamp_min((sum(rate(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[24h])) or vector(0)), 1e-12),
+            clamp_min(sum(rate(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[24h])), 1e-12),
             1
           )
 
       - record: orynx:workflow:failure_ratio:rate7d
         expr: >-
           clamp_max(
-            (sum(rate(orynx_workflows_completed_total{status="FAILED"}[7d])) or vector(0))
+            (sum(rate(orynx_workflows_completed_total{status="FAILED"}[7d])) or (0 * sum(rate(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[7d]))))
             /
-            clamp_min((sum(rate(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[7d])) or vector(0)), 1e-12),
+            clamp_min(sum(rate(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[7d])), 1e-12),
             1
           )
 
       - record: orynx:workflow:failure_ratio:rate30d
         expr: >-
           clamp_max(
-            (sum(rate(orynx_workflows_completed_total{status="FAILED"}[30d])) or vector(0))
+            (sum(rate(orynx_workflows_completed_total{status="FAILED"}[30d])) or (0 * sum(rate(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[30d]))))
             /
-            clamp_min((sum(rate(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[30d])) or vector(0)), 1e-12),
+            clamp_min(sum(rate(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[30d])), 1e-12),
             1
           )
 
@@ -293,12 +344,12 @@ groups:
       - record: orynx:workflow:success_ratio:rate30d
         expr: 1 - orynx:workflow:failure_ratio:rate30d
 
-      # Workflow Duration SLIs (Average and P95 in seconds)
+      # Workflow Duration SLIs (Average and P95 in seconds; empty when no completions)
       - record: orynx:workflow:duration_avg_seconds:rate5m
         expr: >-
-          (sum(rate(orynx_workflows_duration_seconds_sum[5m])) or vector(0))
+          sum(rate(orynx_workflows_duration_seconds_sum[5m]))
           /
-          clamp_min((sum(rate(orynx_workflows_duration_seconds_count[5m])) or vector(0)), 1e-12)
+          clamp_min(sum(rate(orynx_workflows_duration_seconds_count[5m])) > 0, 1e-12)
 
       - record: orynx:workflow:duration_p95_seconds:rate5m
         expr: >-
@@ -311,7 +362,7 @@ groups:
           or orynx:workflow:duration_avg_seconds:rate5m
 
       # Workflow Error Budget Remaining & Burn Rates
-      - record: orynx:workflow:error_budget_remaining:ratio_30d
+      - record: orynx:workflow:error_budget_remaining:observed_30d
         expr: >-
           clamp_min(
             clamp_max(
@@ -320,6 +371,11 @@ groups:
             ),
             0
           )
+
+      - record: orynx:workflow:error_budget_remaining:ratio_30d
+        expr: >-
+          orynx:workflow:error_budget_remaining:observed_30d
+          and on() (orynx:slo:history_coverage_seconds >= 2592000)
 
       - record: orynx:workflow:burn_rate:5m
         expr: orynx:workflow:failure_ratio:rate5m / (1 - 0.99)
@@ -344,56 +400,56 @@ groups:
         expr: vector(0.99)
 
       - record: orynx:task:executed:rate5m
-        expr: sum(rate(orynx_tasks_executed_total[5m])) or vector(0)
+        expr: sum(rate(orynx_tasks_executed_total[5m]))
 
       - record: orynx:task:completed:rate5m
-        expr: sum(rate(orynx_tasks_executed_total{status="COMPLETED"}[5m])) or vector(0)
+        expr: sum(rate(orynx_tasks_executed_total{status="COMPLETED"}[5m]))
 
       - record: orynx:task:failed:rate5m
-        expr: sum(rate(orynx_tasks_executed_total{status="FAILED"}[5m])) or vector(0)
+        expr: sum(rate(orynx_tasks_executed_total{status="FAILED"}[5m]))
 
       - record: orynx:task:failure_ratio:rate5m
         expr: >-
           clamp_max(
-            (sum(rate(orynx_tasks_executed_total{status="FAILED"}[5m])) or vector(0))
+            (sum(rate(orynx_tasks_executed_total{status="FAILED"}[5m])) or (0 * sum(rate(orynx_tasks_executed_total{status=~"COMPLETED|FAILED"}[5m]))))
             /
-            clamp_min((sum(rate(orynx_tasks_executed_total{status=~"COMPLETED|FAILED"}[5m])) or vector(0)), 1e-12),
+            clamp_min(sum(rate(orynx_tasks_executed_total{status=~"COMPLETED|FAILED"}[5m])), 1e-12),
             1
           )
 
       - record: orynx:task:failure_ratio:rate30m
         expr: >-
           clamp_max(
-            (sum(rate(orynx_tasks_executed_total{status="FAILED"}[30m])) or vector(0))
+            (sum(rate(orynx_tasks_executed_total{status="FAILED"}[30m])) or (0 * sum(rate(orynx_tasks_executed_total{status=~"COMPLETED|FAILED"}[30m]))))
             /
-            clamp_min((sum(rate(orynx_tasks_executed_total{status=~"COMPLETED|FAILED"}[30m])) or vector(0)), 1e-12),
+            clamp_min(sum(rate(orynx_tasks_executed_total{status=~"COMPLETED|FAILED"}[30m])), 1e-12),
             1
           )
 
       - record: orynx:task:failure_ratio:rate1h
         expr: >-
           clamp_max(
-            (sum(rate(orynx_tasks_executed_total{status="FAILED"}[1h])) or vector(0))
+            (sum(rate(orynx_tasks_executed_total{status="FAILED"}[1h])) or (0 * sum(rate(orynx_tasks_executed_total{status=~"COMPLETED|FAILED"}[1h]))))
             /
-            clamp_min((sum(rate(orynx_tasks_executed_total{status=~"COMPLETED|FAILED"}[1h])) or vector(0)), 1e-12),
+            clamp_min(sum(rate(orynx_tasks_executed_total{status=~"COMPLETED|FAILED"}[1h])), 1e-12),
             1
           )
 
       - record: orynx:task:failure_ratio:rate6h
         expr: >-
           clamp_max(
-            (sum(rate(orynx_tasks_executed_total{status="FAILED"}[6h])) or vector(0))
+            (sum(rate(orynx_tasks_executed_total{status="FAILED"}[6h])) or (0 * sum(rate(orynx_tasks_executed_total{status=~"COMPLETED|FAILED"}[6h]))))
             /
-            clamp_min((sum(rate(orynx_tasks_executed_total{status=~"COMPLETED|FAILED"}[6h])) or vector(0)), 1e-12),
+            clamp_min(sum(rate(orynx_tasks_executed_total{status=~"COMPLETED|FAILED"}[6h])), 1e-12),
             1
           )
 
       - record: orynx:task:failure_ratio:rate30d
         expr: >-
           clamp_max(
-            (sum(rate(orynx_tasks_executed_total{status="FAILED"}[30d])) or vector(0))
+            (sum(rate(orynx_tasks_executed_total{status="FAILED"}[30d])) or (0 * sum(rate(orynx_tasks_executed_total{status=~"COMPLETED|FAILED"}[30d]))))
             /
-            clamp_min((sum(rate(orynx_tasks_executed_total{status=~"COMPLETED|FAILED"}[30d])) or vector(0)), 1e-12),
+            clamp_min(sum(rate(orynx_tasks_executed_total{status=~"COMPLETED|FAILED"}[30d])), 1e-12),
             1
           )
 
@@ -406,7 +462,7 @@ groups:
       - record: orynx:task:success_ratio:rate30d
         expr: 1 - orynx:task:failure_ratio:rate30d
 
-      - record: orynx:task:error_budget_remaining:ratio_30d
+      - record: orynx:task:error_budget_remaining:observed_30d
         expr: >-
           clamp_min(
             clamp_max(
@@ -416,6 +472,11 @@ groups:
             0
           )
 
+      - record: orynx:task:error_budget_remaining:ratio_30d
+        expr: >-
+          orynx:task:error_budget_remaining:observed_30d
+          and on() (orynx:slo:history_coverage_seconds >= 2592000)
+
       - record: orynx:task:burn_rate:5m
         expr: orynx:task:failure_ratio:rate5m / (1 - 0.99)
 
@@ -423,23 +484,23 @@ groups:
         expr: orynx:task:failure_ratio:rate1h / (1 - 0.99)
 
   # ============================================================================
-  # 4. Infrastructure & Observability Pipeline SLIs
+  # 4. Infrastructure & Observability Pipeline SLIs (missing-data aware)
   # ============================================================================
   - name: orynx_infrastructure_sli_rules
     interval: 15s
     rules:
       - record: orynx:backend:availability_ratio
         expr: >-
-          (count(up{job="orynx-backend"} == 1) or vector(0))
+          ((count(up{job="orynx-backend"} == 1)) or (0 * count(up{job="orynx-backend"})))
           /
-          clamp_min((count(up{job="orynx-backend"}) or vector(5)), 1)
+          count(up{job="orynx-backend"})
 
       - record: orynx:postgres:connection_utilization_ratio
         expr: >-
           clamp_max(
-            (sum(pg_stat_activity_count) or vector(0))
+            sum(pg_stat_activity_count)
             /
-            clamp_min((max(pg_settings_max_connections) or vector(100)), 1),
+            clamp_min(max(pg_settings_max_connections), 1),
             1
           )
 
@@ -449,16 +510,17 @@ groups:
 
       - record: orynx:kafka:consumer_lag:max
         expr: >-
-          max(sum by (consumergroup, topic) (kafka_consumergroup_lag)) or vector(0)
+          max(sum by (consumergroup, topic) (kafka_consumergroup_lag))
+          or (0 * (kafka_brokers >= 0))
 
       - record: orynx:otel:export_failure_ratio:rate5m
         expr: >-
           clamp_max(
-            (sum(rate(otelcol_exporter_send_failed_spans_total[5m])) or vector(0))
+            (sum(rate(otelcol_exporter_send_failed_spans_total[5m])) or (0 * sum(rate(otelcol_exporter_sent_spans_total[5m]))))
             /
             clamp_min(
-              ((sum(rate(otelcol_exporter_sent_spans_total[5m])) or vector(0))
-              + (sum(rate(otelcol_exporter_send_failed_spans_total[5m])) or vector(0))),
+              sum(rate(otelcol_exporter_sent_spans_total[5m]))
+              + (sum(rate(otelcol_exporter_send_failed_spans_total[5m])) or (0 * sum(rate(otelcol_exporter_sent_spans_total[5m])))),
               1e-12
             ),
             1

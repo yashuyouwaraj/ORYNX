@@ -11,7 +11,7 @@ groups:
         labels:
           severity: critical
           category: platform
-          service: "{{ $labels.instance }}"
+          service: '{{ $labels.instance | reReplaceAll ":[0-9]+$" "" }}'
         annotations:
           summary: "OrynX backend service {{ $labels.instance }} is down"
           description: "Prometheus failed to scrape metrics from {{ $labels.instance }} (job={{ $labels.job }}) for more than 1 minute."
@@ -48,13 +48,13 @@ groups:
         expr: up{job="postgres-exporter"} == 0
         for: 1m
         labels:
-          severity: warning
+          severity: critical
           category: platform
           service: "postgres-exporter"
         annotations:
           summary: "PostgreSQL Prometheus exporter is down"
           description: "postgres-exporter:9187 has been unreachable for more than 1 minute."
-          impact: "Database telemetry and connection pool utilization alerts are blind."
+          impact: "PostgreSQL availability (pg_up) and connection pool utilization alerts are blind."
           runbook_url: "docs/runbooks/PostgreSQLUnavailable.md"
 
       - alert: RedisExporterDown
@@ -74,13 +74,13 @@ groups:
         expr: up{job="kafka-exporter"} == 0
         for: 1m
         labels:
-          severity: warning
+          severity: critical
           category: platform
           service: "kafka-exporter"
         annotations:
           summary: "Kafka Prometheus exporter is down"
           description: "kafka-exporter:9308 has been unreachable for more than 1 minute."
-          impact: "Kafka broker count, partition status, and consumer group lag telemetry are unavailable."
+          impact: "Kafka broker availability (kafka_brokers), partition status, and consumer group lag alerts are blind."
           runbook_url: "docs/runbooks/KafkaUnavailable.md"
 
       - alert: AlertmanagerDown
@@ -106,7 +106,7 @@ groups:
         expr: >-
           orynx:workflow:failure_ratio:rate5m > 0.10
           and
-          (orynx:workflow:completed:rate5m + orynx:workflow:failed:rate5m) > 0
+          sum(increase(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[5m])) >= 3
         for: 2m
         labels:
           severity: critical
@@ -114,7 +114,7 @@ groups:
           service: "orchestrator-service"
         annotations:
           summary: "Workflow failure rate exceeds 10% over the last 5 minutes"
-          description: "Workflow failure ratio is {{ $value | humanizePercentage }} over the last 5m (threshold: 10%)."
+          description: "Workflow failure ratio is {{ $value | humanizePercentage }} over the last 5m with >= 3 terminal workflows (threshold: 10%)."
           impact: "User workflows are failing at an elevated rate and rapidly consuming the 99% workflow reliability error budget."
           runbook_url: "docs/runbooks/WorkflowFailureRateHigh.md"
 
@@ -154,7 +154,7 @@ groups:
         expr: >-
           orynx:workflow:retry_ratio:rate5m > 0.20
           and
-          orynx:workflow:retried:rate5m > 0
+          sum(increase(orynx_workflows_started_total[5m])) >= 3
         for: 3m
         labels:
           severity: warning
@@ -176,7 +176,7 @@ groups:
         expr: >-
           orynx:task:failure_ratio:rate5m > 0.10
           and
-          orynx:task:executed:rate5m > 0
+          sum(increase(orynx_tasks_executed_total{status=~"COMPLETED|FAILED"}[5m])) >= 5
         for: 2m
         labels:
           severity: critical
@@ -184,7 +184,7 @@ groups:
           service: "execution-service"
         annotations:
           summary: "Task execution failure rate exceeds 10% over the last 5 minutes"
-          description: "Task failure ratio is {{ $value | humanizePercentage }} over the last 5m (threshold: 10%)."
+          description: "Task failure ratio is {{ $value | humanizePercentage }} over the last 5m with >= 5 executed tasks (threshold: 10%)."
           impact: "DAG task nodes are failing in execution-service, triggering retries or cascading workflow failures."
           runbook_url: "docs/runbooks/TaskFailureRateHigh.md"
 
@@ -244,9 +244,9 @@ groups:
           category: infrastructure
           service: "redis"
         annotations:
-          summary: "Redis cache / state store is unavailable (redis_up == 0)"
+          summary: "Redis instance is unavailable (redis_up == 0)"
           description: "redis-exporter reports redis_up == 0 for more than 1 minute."
-          impact: "Gateway rate limiting, session caching, and fast state lookups are degraded or unavailable."
+          impact: "The Redis infrastructure service is down (note: current OrynX microservices do not route active workflow traffic through Redis)."
           runbook_url: "docs/runbooks/RedisUnavailable.md"
 
       - alert: KafkaUnavailable
@@ -277,9 +277,9 @@ groups:
 
       - alert: OtelCollectorSpanDrops
         expr: >-
-          (sum(rate(otelcol_exporter_send_failed_spans_total[5m])) or vector(0)) > 0
+          sum(rate(otelcol_exporter_send_failed_spans_total[5m])) > 0
           or
-          (sum(rate(otelcol_processor_dropped_spans_total[5m])) or vector(0)) > 0
+          sum(rate(otelcol_processor_dropped_spans_total[5m])) > 0
         for: 2m
         labels:
           severity: warning
@@ -293,6 +293,7 @@ groups:
 
   # ============================================================================
   # 5. Multi-Window Multi-Burn-Rate SLO & Error Budget Alerts
+  #    Guarded against isolated single-request noise on near-zero traffic
   # ============================================================================
   - name: orynx_slo_burn_alerts
     interval: 15s
@@ -302,6 +303,10 @@ groups:
           orynx:api:burn_rate:1h > 14.4
           and
           orynx:api:burn_rate:5m > 14.4
+          and
+          sum(increase(http_server_requests_seconds_count{uri!~"/actuator.*"}[5m])) >= 5
+          and
+          sum(increase(http_server_requests_seconds_count{uri!~"/actuator.*"}[1h])) >= 20
         for: 2m
         labels:
           severity: critical
@@ -318,6 +323,10 @@ groups:
           orynx:api:burn_rate:6h > 6
           and
           orynx:api:burn_rate:30m > 6
+          and
+          sum(increase(http_server_requests_seconds_count{uri!~"/actuator.*"}[30m])) >= 10
+          and
+          sum(increase(http_server_requests_seconds_count{uri!~"/actuator.*"}[6h])) >= 40
         for: 15m
         labels:
           severity: warning
@@ -334,6 +343,8 @@ groups:
           orynx:workflow:burn_rate:1h > 14.4
           and
           orynx:workflow:burn_rate:5m > 14.4
+          and
+          sum(increase(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[5m])) >= 3
         for: 2m
         labels:
           severity: critical
@@ -350,6 +361,8 @@ groups:
           orynx:workflow:burn_rate:6h > 6
           and
           orynx:workflow:burn_rate:30m > 6
+          and
+          sum(increase(orynx_workflows_completed_total{status=~"COMPLETED|FAILED"}[30m])) >= 5
         for: 15m
         labels:
           severity: warning
@@ -366,6 +379,8 @@ groups:
           orynx:task:burn_rate:1h > 14.4
           and
           orynx:task:burn_rate:5m > 14.4
+          and
+          sum(increase(orynx_tasks_executed_total{status=~"COMPLETED|FAILED"}[5m])) >= 5
         for: 2m
         labels:
           severity: critical
@@ -384,13 +399,19 @@ groups:
           orynx:workflow:error_budget_remaining:ratio_30d <= 0
           or
           orynx:task:error_budget_remaining:ratio_30d <= 0
+          or
+          orynx:api:error_budget_remaining:observed_30d <= 0
+          or
+          orynx:workflow:error_budget_remaining:observed_30d <= 0
+          or
+          orynx:task:error_budget_remaining:observed_30d <= 0
         for: 5m
         labels:
           severity: critical
           category: slo
           service: "orynx-platform"
         annotations:
-          summary: "30-day SLO error budget is exhausted (0% remaining)"
-          description: "One or more OrynX 30-day SLO error budgets (API availability, workflow completion, or task execution) has reached 0%."
-          impact: "Monthly reliability target breached; freeze non-essential feature rollouts and prioritize reliability remediation."
+          summary: "SLO error budget is exhausted (0% remaining)"
+          description: "One or more OrynX SLO error budgets (API availability, workflow completion, or task execution) has reached 0%."
+          impact: "Reliability target breached; freeze non-essential feature rollouts and prioritize reliability remediation."
           runbook_url: "docs/runbooks/ErrorBudgetExhausted.md"
