@@ -1,0 +1,15 @@
+# Local host-development override exposing PostgreSQL, Redis, and Kafka on 127.0.0.1 only.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres redis kafka
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  redis:
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  kafka:
+    ports:
+      - "127.0.0.1:9092:9092"
+      - "127.0.0.1:29092:29092"

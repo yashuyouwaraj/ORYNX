@@ -1,81 +1,240 @@
-services:
+networks:
+  orynx-edge:
+    driver: bridge
+  orynx-backend:
+    driver: bridge
 
+volumes:
+  orynx_postgres_data:
+  orynx_kafka_data:
+  orynx_redis_data:
+
+services:
   postgres:
     image: postgres:17
-    container_name: orynx-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-orynx}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    ports:
-      - "127.0.0.1:5432:5432"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - orynx_postgres_data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    networks:
+      - orynx-backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-orynx}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   redis:
     image: redis:7
-    container_name: orynx-redis
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - orynx_redis_data:/data
+    expose:
+      - "6379"
+    networks:
+      - orynx-backend
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   kafka:
     image: apache/kafka:latest
-    container_name: orynx-kafka
     restart: unless-stopped
-
-    ports:
-      - "127.0.0.1:9092:9092"
-      - "127.0.0.1:29092:29092"
-
     environment:
       KAFKA_NODE_ID: 1
-
       KAFKA_PROCESS_ROLES: broker,controller
-
       KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:29092,CONTROLLER://:9093
-
       KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
-
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
-
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
-
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
-
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - orynx_kafka_data:/var/lib/kafka/data
+    expose:
+      - "9092"
+    networks:
+      - orynx-backend
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 25s
 
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: true
+  auth-service:
+    build:
+      context: ./services/auth-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-orynx}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-postgres}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:?SPRING_DATASOURCE_PASSWORD is required}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      JWT_EXPIRATION: ${JWT_EXPIRATION:-3600000}
+      JAVA_OPTS: ${JAVA_OPTS:--XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0}
+    expose:
+      - "8081"
+    networks:
+      - orynx-backend
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/actuator/health/readiness"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
 
-  # auth-service:
-  #   build:
-  #     context: ./services/auth-service
+  planning-service:
+    build:
+      context: ./services/planning-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:?NVIDIA_API_KEY is required}
+      JAVA_OPTS: ${JAVA_OPTS:--XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0}
+    expose:
+      - "8083"
+    networks:
+      - orynx-backend
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8083/actuator/health/readiness"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 35s
 
-  #   container_name: orynx-auth-service
+  orchestrator-service:
+    build:
+      context: ./services/orchestrator-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-orynx}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-postgres}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:?SPRING_DATASOURCE_PASSWORD is required}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      PLANNING_SERVICE_URL: http://planning-service:8083
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:?NVIDIA_API_KEY is required}
+      WEBSOCKET_ALLOWED_ORIGINS: ${WEBSOCKET_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      JAVA_OPTS: ${JAVA_OPTS:--XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0}
+    expose:
+      - "8082"
+    networks:
+      - orynx-backend
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8082/actuator/health/readiness"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
 
-  #   restart: unless-stopped
+  execution-service:
+    build:
+      context: ./services/execution-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-orynx}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-postgres}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:?SPRING_DATASOURCE_PASSWORD is required}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      ORYNX_EXECUTION_WORKER_CORE_POOL_SIZE: ${ORYNX_EXECUTION_WORKER_CORE_POOL_SIZE:-4}
+      ORYNX_EXECUTION_WORKER_MAX_POOL_SIZE: ${ORYNX_EXECUTION_WORKER_MAX_POOL_SIZE:-8}
+      ORYNX_EXECUTION_WORKER_QUEUE_CAPACITY: ${ORYNX_EXECUTION_WORKER_QUEUE_CAPACITY:-50}
+      JAVA_OPTS: ${JAVA_OPTS:--XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0}
+    expose:
+      - "8084"
+    networks:
+      - orynx-backend
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8084/actuator/health/readiness"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
 
-  #   # Internal container-to-container networking uses expose without host port publishing.
-  #   # If host ports are published for local debugging on backend services (8081-8084),
-  #   # bind strictly to host loopback (e.g. "127.0.0.1:8081:8081"); only gateway-service (8080)
-  #   # should publish external ingress.
-  #   expose:
-  #     - "8081"
+  gateway-service:
+    build:
+      context: ./services/gateway-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      orchestrator-service:
+        condition: service_healthy
+      planning-service:
+        condition: service_healthy
+    environment:
+      AUTH_SERVICE_URL: http://auth-service:8081
+      ORCHESTRATOR_SERVICE_URL: http://orchestrator-service:8082
+      PLANNING_SERVICE_URL: http://planning-service:8083
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      JAVA_OPTS: ${JAVA_OPTS:--XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0}
+    ports:
+      - "8080:8080"
+    networks:
+      - orynx-edge
+      - orynx-backend
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/actuator/health/readiness"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 35s
 
-  #   depends_on:
-  #     - postgres
-  #     - kafka
-
-  #   environment:
-  #     SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/orynx
-  #     SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-postgres}
-  #     SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD}
-
-  #     SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8080}
+        NEXT_PUBLIC_WS_BASE_URL: ${NEXT_PUBLIC_WS_BASE_URL:-http://localhost:8080}
+    restart: unless-stopped
+    depends_on:
+      gateway-service:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    networks:
+      - orynx-edge
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
