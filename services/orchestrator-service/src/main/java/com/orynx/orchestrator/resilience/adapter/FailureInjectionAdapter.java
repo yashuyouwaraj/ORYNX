@@ -1,0 +1,47 @@
+package com.orynx.orchestrator.resilience.adapter;
+
+import com.orynx.orchestrator.resilience.model.ExperimentDefinition;
+import com.orynx.orchestrator.resilience.model.ScenarioType;
+
+/**
+ * Standard SPI contract for failure injection adapters.
+ * Each adapter handles the mechanics of simulating a specific failure scenario
+ * in an isolated environment, verifying the injection, recovering, and performing cleanup.
+ */
+public interface FailureInjectionAdapter {
+
+    /**
+     * The scenario type handled by this adapter.
+     */
+    ScenarioType getSupportedScenario();
+
+    /**
+     * Scenario-specific parameter validation before execution.
+     */
+    void validate(ExperimentDefinition definition);
+
+    /**
+     * Injects the failure into the isolated target.
+     */
+    void inject(ExperimentDefinition definition);
+
+    /**
+     * Verifies that the failure was successfully injected and observable.
+     */
+    boolean verifyInjected(ExperimentDefinition definition);
+
+    /**
+     * Restores the target component to normal operational state.
+     */
+    void recover(ExperimentDefinition definition);
+
+    /**
+     * Verifies that normal operational state was restored.
+     */
+    boolean verifyRecovered(ExperimentDefinition definition);
+
+    /**
+     * Performs mandatory cleanup and teardown of any ephemeral resources created for the experiment.
+     */
+    void cleanup(ExperimentDefinition definition);
+}
