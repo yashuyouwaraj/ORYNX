@@ -57,6 +57,18 @@ public class WorkflowScheduler {
 
             workflowService.startWorkflow(workflow.getId());
 
+        } catch (com.orynx.orchestrator.coordination.admission.WorkflowAdmissionException wae) {
+            log.warn(
+                    "Scheduled workflow {} admission deferred due to capacity/coordination limits: {}",
+                    workflow.getId(),
+                    wae.getMessage()
+            );
+            try {
+                workflowRepository.releaseScheduledWorkflow(workflow.getId());
+                log.info("Released scheduler claim for deferred workflow {}", workflow.getId());
+            } catch (Exception releaseEx) {
+                log.error("Error releasing claim for deferred workflow {}: {}", workflow.getId(), releaseEx.getMessage());
+            }
         } catch (Exception e) {
 
             log.error(

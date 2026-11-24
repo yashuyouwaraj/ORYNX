@@ -1,6 +1,7 @@
 package com.orynx.orchestrator.common.exception;
 
 import com.orynx.orchestrator.common.response.ApiErrorResponse;
+import com.orynx.orchestrator.coordination.admission.WorkflowAdmissionException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.data.mapping.PropertyReferenceException;
 import org.springframework.http.HttpStatus;
@@ -14,6 +15,21 @@ import java.time.Instant;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    @ExceptionHandler(WorkflowAdmissionException.class)
+    public ResponseEntity<ApiErrorResponse> handleWorkflowAdmission(WorkflowAdmissionException ex, HttpServletRequest request) {
+        return ResponseEntity.status(ex.getHttpStatus())
+                .header("Retry-After", String.valueOf(ex.getRetryAfterSeconds()))
+                .body(
+                        ApiErrorResponse.builder()
+                                .timestamp(Instant.now().toString())
+                                .status(ex.getHttpStatus().value())
+                                .error(ex.getMessage())
+                                .path(request.getRequestURI())
+                                .requestId(request.getHeader("X-Request-ID"))
+                                .build()
+                );
+    }
 
     @ExceptionHandler(WorkflowNotFoundException.class)
     @ResponseStatus(HttpStatus.NOT_FOUND)

@@ -55,6 +55,13 @@ public class WorkflowService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private WorkflowMetrics workflowMetrics;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.orynx.orchestrator.coordination.admission.WorkflowAdmissionController workflowAdmissionController;
+
+    public void setWorkflowAdmissionController(com.orynx.orchestrator.coordination.admission.WorkflowAdmissionController workflowAdmissionController) {
+        this.workflowAdmissionController = workflowAdmissionController;
+    }
+
     public Workflow createWorkflow(CreateWorkflowRequest request) {
         return createWorkflow(request, UserContext.getUserId());
     }
@@ -139,6 +146,10 @@ public class WorkflowService {
                         dependency.getId(), dependency.getStatus()
                 ));
             }
+        }
+
+        if (workflowAdmissionController != null) {
+            workflowAdmissionController.tryAdmit(workflow.getId(), workflow.getUserId());
         }
 
         ensureWorkflowTasksExist(workflow);
@@ -543,6 +554,10 @@ public class WorkflowService {
 
         Workflow updatedWorkflow = workflowRepository.save(workflow);
 
+        if (workflowAdmissionController != null) {
+            workflowAdmissionController.release(workflow.getId(), workflow.getUserId());
+        }
+
         workflowCancellationProducer.publishWorkflowCancelled(
                 WorkflowCancelledEvent.builder()
                         .workflowId(workflow.getId())
@@ -611,6 +626,10 @@ public class WorkflowService {
         workflow.setStatus(WorkflowStatus.PAUSED);
 
         Workflow updatedWorkflow = workflowRepository.save(workflow);
+
+        if (workflowAdmissionController != null) {
+            workflowAdmissionController.release(workflow.getId(), workflow.getUserId());
+        }
 
         workflowPauseProducer.publishWorkflowPaused(
                 WorkflowPausedEvent.builder()
@@ -703,6 +722,10 @@ public class WorkflowService {
                 ? execution.getExecutionGeneration()
                 : 1L) + 1L;
 
+        if (workflowAdmissionController != null) {
+            workflowAdmissionController.tryAdmit(workflow.getId(), workflow.getUserId());
+        }
+
         workflow.setStatus(WorkflowStatus.RUNNING);
 
         Workflow updatedWorkflow =
@@ -775,6 +798,10 @@ public class WorkflowService {
         }
 
         WorkflowStateValidator.validateTransition(workflow.getStatus(), WorkflowStatus.RUNNING, "retry");
+
+        if (workflowAdmissionController != null) {
+            workflowAdmissionController.tryAdmit(workflow.getId(), workflow.getUserId());
+        }
 
         long retryStartedAt = System.currentTimeMillis();
         workflow.setStatus(WorkflowStatus.RUNNING);

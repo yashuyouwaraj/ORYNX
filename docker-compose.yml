@@ -181,11 +181,19 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-orynx}
       SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-postgres}
       SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:?SPRING_DATASOURCE_PASSWORD is required}
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      ORYNX_ADMISSION_ENABLED: ${ORYNX_ADMISSION_ENABLED:-true}
+      ORYNX_ADMISSION_MAX_GLOBAL: ${ORYNX_ADMISSION_MAX_GLOBAL:-100}
+      ORYNX_ADMISSION_MAX_PER_USER: ${ORYNX_ADMISSION_MAX_PER_USER:-10}
+      ORYNX_ADMISSION_FAILURE_POLICY: ${ORYNX_ADMISSION_FAILURE_POLICY:-FAIL_CLOSED}
       PLANNING_SERVICE_URL: http://planning-service:8083
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:?NVIDIA_API_KEY is required}

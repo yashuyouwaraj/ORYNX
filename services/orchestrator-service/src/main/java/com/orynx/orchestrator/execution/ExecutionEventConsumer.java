@@ -36,6 +36,13 @@ public class ExecutionEventConsumer {
     @Autowired(required = false)
     private WorkflowMetrics workflowMetrics;
 
+    @Autowired(required = false)
+    private com.orynx.orchestrator.coordination.admission.WorkflowAdmissionController workflowAdmissionController;
+
+    public void setWorkflowAdmissionController(com.orynx.orchestrator.coordination.admission.WorkflowAdmissionController workflowAdmissionController) {
+        this.workflowAdmissionController = workflowAdmissionController;
+    }
+
     public ExecutionEventConsumer(
             WorkflowRepository workflowRepository,
             WorkflowTaskRepository workflowTaskRepository,
@@ -353,6 +360,10 @@ public class ExecutionEventConsumer {
 
         workflowRepository.save(workflow);
 
+        if (workflowAdmissionController != null) {
+            workflowAdmissionController.release(workflow.getId(), workflow.getUserId());
+        }
+
         if (executionOptional.isPresent()) {
 
             WorkflowExecution execution = executionOptional.get();
@@ -501,6 +512,11 @@ public class ExecutionEventConsumer {
         }
 
         workflowExecutionRepository.save(execution);
+
+        if (workflowAdmissionController != null) {
+            Optional<Workflow> wfOpt = workflowRepository.findById(event.getWorkflowId());
+            wfOpt.ifPresent(wf -> workflowAdmissionController.release(wf.getId(), wf.getUserId()));
+        }
 
         log.info(
                 "Workflow execution {} marked PAUSED",
