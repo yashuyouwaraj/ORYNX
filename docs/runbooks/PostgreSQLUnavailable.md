@@ -1,9 +1,9 @@
 # Runbook: PostgreSQLUnavailable (`PostgreSQLUnavailable`, `PostgreSQLConnectionsHigh`, `PostgresExporterDown`)
 
 ## 1. What the Alert Means
-- **`PostgreSQLUnavailable` (`critical`)**: `postgres-exporter` reports `pg_up == 0` for more than 1 minute, indicating the PostgreSQL database (`postgres:5432`) is unreachable or rejecting connections. (Note: `PostgreSQLUnavailable` automatically inhibits downstream `workflow`, `task`, and `slo` alerts in Alertmanager.)
+- **`PostgreSQLUnavailable` (`critical`)**: `postgres-exporter` reports `pg_up == 0` for more than 1 minute, indicating the PostgreSQL database (`postgres:5432`) is unreachable or rejecting connections. (Note: `PostgreSQLUnavailable` inhibits `warning`-level `workflow` and `task` symptoms in Alertmanager while keeping `critical` workflow/task/SLO alerts visible.)
 - **`PostgreSQLConnectionsHigh` (`warning`)**: Active database connections exceed 80% of `max_connections` (`orynx:postgres:connection_utilization_ratio > 0.80`) for more than 3 minutes.
-- **`PostgresExporterDown` (`warning`)**: Prometheus cannot scrape `postgres-exporter:9187` for more than 1 minute.
+- **`PostgresExporterDown` (`critical`)**: Prometheus cannot scrape `postgres-exporter:9187` for more than 1 minute, blinding database health and connection pool monitoring.
 
 ## 2. User / Business Impact
 PostgreSQL stores users, credentials, workflows, DAG task states, execution history, timeline events, and distributed execution coordination leases. When PostgreSQL is unavailable or out of connections, authentication, workflow creation, orchestration, and task execution fail.
@@ -55,8 +55,9 @@ max(pg_settings_max_connections)
    ```bash
    docker compose --profile observability up -d postgres postgres-exporter
    ```
-2. If `PostgreSQLConnectionsHigh` is caused by orphaned `idle in transaction` connections blocking locks, terminate stalled backend PIDs carefully:
+2. **DISRUPTIVE ACTION WARNING**: If `PostgreSQLConnectionsHigh` is caused by orphaned `idle in transaction` connections holding locks for several minutes, inspect the PIDs and owning service first. Calling `pg_terminate_backend(pid)` **aborts the in-flight transaction on that connection, rolls back uncommitted work, and causes the owning service's HikariCP pool to log connection-closed errors and reconnect**. Only terminate confirmed stalled sessions:
    ```bash
+   # Use POSTGRES_USER (default: postgres) and POSTGRES_DB (default: orynx)
    docker compose --profile observability exec postgres psql -U postgres -d orynx -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state = 'idle in transaction' AND now() - state_change > interval '5 minutes';"
    ```
 3. If `pg_up == 0` is due only to `postgres-exporter` connection state after a DB restart, restart `postgres-exporter`:

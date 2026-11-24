@@ -7,7 +7,7 @@ One or more OrynX platform microservices (`gateway-service`, `auth-service`, `or
 - **`gateway-service` down**: All external REST and WebSocket traffic to OrynX fails.
 - **`auth-service` down**: User login, registration, and token generation fail.
 - **`orchestrator-service` down**: Workflow creation, lifecycle actions (`start`, `pause`, `resume`, `cancel`, `retry`), and real-time status updates fail.
-- **`planning-service` down**: AI workflow generation (`/api/workflows/ai`) fails.
+- **`planning-service` down**: AI workflow generation (`/api/v1/ai/**`) fails.
 - **`execution-service` down**: Distributed DAG task execution stalls.
 - **`otel-collector` / `alertmanager` down**: Distributed trace ingestion or alert notification delivery is interrupted.
 
@@ -34,7 +34,8 @@ docker compose --profile observability exec prometheus wget -qO- http://orchestr
 
 ## 5. Relevant Grafana Dashboards
 - **OrynX SLO & Operational Reliability** (`uid: orynx-slo-reliability`) — *Backend Services Availability Ratio* and *Active Prometheus Alerts* panels.
-- **OrynX System Overview** (`uid: orynx-system-overview`) — *Service Up Status*, *JVM Heap Memory Used*, and *Process CPU Usage* panels.
+- **OrynX Platform Overview** (`uid: orynx-platform-overview`) — *Backend Services Up*, *HTTP Request Rate*, and *HTTP 5xx Error Rate* panels.
+- **OrynX Backend Service Health** (`uid: orynx-backend-service-health`) — *JVM Heap Memory Used* and *Process CPU Usage* panels.
 
 ## 6. Relevant Prometheus Queries
 ```promql

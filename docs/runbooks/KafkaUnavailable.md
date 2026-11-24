@@ -1,9 +1,9 @@
 # Runbook: KafkaUnavailable (`KafkaUnavailable`, `KafkaConsumerLagHigh`, `KafkaExporterDown`)
 
 ## 1. What the Alert Means
-- **`KafkaUnavailable` (`critical`)**: `kafka-exporter` reports fewer than 1 active Kafka broker (`kafka_brokers < 1`) for more than 1 minute. (Note: `KafkaUnavailable` automatically inhibits downstream `workflow`, `task`, and `slo` alerts in Alertmanager to prevent alert storms.)
+- **`KafkaUnavailable` (`critical`)**: `kafka-exporter` reports fewer than 1 active Kafka broker (`kafka_brokers < 1`) for more than 1 minute. (Note: `KafkaUnavailable` inhibits `warning`-level `workflow` and `task` symptoms in Alertmanager while keeping `critical` workflow/task/SLO alerts visible.)
 - **`KafkaConsumerLagHigh` (`warning`)**: A consumer group's lag on a topic (`orynx:kafka:consumer_lag:by_group_topic`) exceeds 100 messages for over 3 minutes.
-- **`KafkaExporterDown` (`warning`)**: Prometheus cannot scrape `kafka-exporter:9308` for over 1 minute.
+- **`KafkaExporterDown` (`critical`)**: Prometheus cannot scrape `kafka-exporter:9308` for over 1 minute, blinding broker and lag monitoring.
 
 ## 2. User / Business Impact
 OrynX relies on Kafka event choreography across `workflow-execution`, `task-started`, `task-completed`, `workflow-completed`, `workflow-paused`, `workflow-resumed`, and `workflow-cancelled`. When Kafka is unavailable, new workflows cannot be dispatched to `execution-service` and task completions cannot be reported back to `orchestrator-service`.
@@ -29,7 +29,7 @@ docker compose --profile observability exec kafka /opt/kafka/bin/kafka-consumer-
 ```
 
 ## 5. Relevant Grafana Dashboards
-- **OrynX Infrastructure & Messaging** (`uid: orynx-infrastructure`) — *Kafka Active Brokers*, *Kafka Topic Partitions*, and *Kafka Consumer Group Lag by Topic*.
+- **OrynX Kafka Messaging** (`uid: orynx-kafka-messaging`) — *Kafka Active Brokers*, *Kafka Topic Partitions*, and *Kafka Consumer Group Lag by Topic*.
 - **OrynX SLO & Operational Reliability** (`uid: orynx-slo-reliability`) — *Max Kafka Consumer Group Lag* and *Infrastructure & Backing Store Health*.
 
 ## 6. Relevant Prometheus Queries

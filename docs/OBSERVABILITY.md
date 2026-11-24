@@ -47,7 +47,7 @@ OrynX implements a hardened observability and operational reliability stack usin
 | Kafka Exporter | `danielqsj/kafka-exporter:v1.8.0` | `9308` | Internal only | `http://127.0.0.1:9308/metrics` | `128m` / `0.25` |
 | Backend Metrics | Spring Boot `PrometheusMetricsServer` | `9100` | Internal (`172.29.22.x:9100`) | Scraped by Prometheus | Container JVM limit |
 
-All monitoring resource limits are configurable via `.env` (`PROMETHEUS_MEM_LIMIT`, `ALERTMANAGER_MEM_LIMIT`, `GRAFANA_MEM_LIMIT`, `TEMPO_MEM_LIMIT`, `OTEL_COLLECTOR_MEM_LIMIT`, `EXPORTER_MEM_LIMIT`, and corresponding `*_CPU_LIMIT` variables).
+All monitoring resource limits and retention settings are configurable via `.env` (`PROMETHEUS_MEM_LIMIT`, `PROMETHEUS_RETENTION_TIME=35d`, `PROMETHEUS_RETENTION_SIZE=10GB`, `ALERTMANAGER_MEM_LIMIT`, `GRAFANA_MEM_LIMIT`, `TEMPO_MEM_LIMIT`, `OTEL_COLLECTOR_MEM_LIMIT`, `EXPORTER_MEM_LIMIT`, and corresponding `*_CPU_LIMIT` variables).
 
 ---
 

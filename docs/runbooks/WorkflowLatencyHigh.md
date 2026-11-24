@@ -9,8 +9,8 @@ Workflows take significantly longer than expected to finish or appear stuck in `
 
 ## 3. Initial Investigation Steps
 1. Check whether `KafkaConsumerLagHigh` or `TaskExecutionStalled` is also firing.
-2. Inspect the **OrynX Infrastructure & Messaging** dashboard for Kafka consumer lag on `workflow-execution`, `task-started`, `task-completed`, and `workflow-completed`.
-3. Inspect the **OrynX System Overview** dashboard for CPU throttling, JVM GC pauses (`jvm_gc_pause_seconds`), or high PostgreSQL connection utilization.
+2. Inspect the **OrynX Kafka Messaging** (`uid: orynx-kafka-messaging`) and **OrynX Infrastructure** (`uid: orynx-infrastructure`) dashboards for Kafka consumer lag on `workflow-execution`, `task-started`, `task-completed`, and `workflow-completed`.
+3. Inspect the **OrynX Backend Service Health** (`uid: orynx-backend-service-health`) dashboard for CPU throttling, JVM GC pauses (`jvm_gc_pause_seconds`), and **OrynX Infrastructure** for PostgreSQL connection utilization.
 4. Sample a slow workflow trace in **Grafana Explore -> Tempo** (filter by duration `> 10s`) to identify whether time is spent in Kafka queueing, database locks, AI planning (`planning-service`), or task execution (`execution-service`).
 
 ## 4. Useful Commands
@@ -26,7 +26,8 @@ docker compose --profile observability logs --tail=150 execution-service
 ## 5. Relevant Grafana Dashboards
 - **OrynX SLO & Operational Reliability** (`uid: orynx-slo-reliability`) — *Latency Percentiles vs SLO Targets* and *Max Kafka Consumer Group Lag*.
 - **OrynX Workflow Execution** (`uid: orynx-workflow-execution`) — *Workflow Execution Duration (Avg & Max)* and *Workflow Completion Throughput*.
-- **OrynX Infrastructure & Messaging** (`uid: orynx-infrastructure`) — *Kafka Consumer Group Lag by Topic* and *PostgreSQL Active Connections*.
+- **OrynX Infrastructure** (`uid: orynx-infrastructure`) — *PostgreSQL Active Connections* and *Redis Memory Used*.
+- **OrynX Kafka Messaging** (`uid: orynx-kafka-messaging`) — *Kafka Consumer Group Lag by Topic*.
 
 ## 6. Relevant Prometheus Queries
 ```promql
@@ -56,8 +57,8 @@ rate(jvm_gc_pause_seconds_sum[5m])
    ```bash
    docker compose --profile observability up -d execution-service
    ```
-2. If a specific runaway workflow is monopolizing worker threads, pause or cancel it via `POST /api/workflows/{id}/pause` or `POST /api/workflows/{id}/cancel`.
-3. If PostgreSQL connection utilization is high (`> 80%`), check for long-running idle-in-transaction sessions in Postgres and terminate stalled queries.
+2. If a specific runaway workflow is monopolizing worker threads, pause or cancel it via `PATCH /api/v1/workflows/{id}/pause` or `PATCH /api/v1/workflows/{id}/cancel` (authenticated with `Authorization: Bearer <jwt>`).
+3. If PostgreSQL connection utilization is high (`> 80%`), inspect active queries in Postgres before taking any disruptive action (see `PostgreSQLUnavailable.md` for safe inspection and transaction-termination warnings).
 
 ## 9. Escalation Criteria
 - Escalate to the **Workflow Orchestration On-Call Engineer** if `WorkflowCompletionDegraded` persists for more than 10 minutes (zero workflows completing) or if P95 duration exceeds `120s`.

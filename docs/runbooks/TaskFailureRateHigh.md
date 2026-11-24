@@ -55,7 +55,7 @@ orynx:task:burn_rate:1h
    docker compose --profile observability restart execution-service
    ```
 2. Verify `kafka` and `postgres` containers are healthy (`docker compose --profile observability ps kafka postgres`).
-3. After recovery, retry affected failed workflows via `POST /api/workflows/{id}/retry`.
+3. After recovery, retry affected failed workflows via `PATCH /api/v1/workflows/{id}/retry` (authenticated with `Authorization: Bearer <jwt>`).
 
 ## 9. Escalation Criteria
 - Escalate to the **Execution Engine On-Call Engineer** if `TaskSloFastBurnCritical` fires (`burn_rate > 14.4x`) or if restarting `execution-service` does not resume task execution within 3 minutes.

@@ -57,7 +57,7 @@ orynx:workflow:error_budget_remaining:ratio_30d
    ```bash
    docker compose --profile observability up -d execution-service
    ```
-3. Once the underlying cause is resolved, retry affected failed workflows via `POST /api/workflows/{id}/retry` (or the OrynX UI Retry button). Generation fencing in `orchestrator-service` guarantees old execution attempts cannot corrupt the retried run.
+3. Once the underlying cause is resolved, retry affected failed workflows via `PATCH /api/v1/workflows/{id}/retry` (with `Authorization: Bearer <jwt>`, or via the OrynX UI Retry button). Generation fencing in `orchestrator-service` guarantees old execution attempts cannot corrupt the retried run.
 
 ## 9. Escalation Criteria
 - Escalate immediately to the **Workflow Orchestration On-Call Engineer** if `WorkflowSloFastBurnCritical` fires alongside `WorkflowFailureRateHigh` or if `orynx:workflow:error_budget_remaining:ratio_30d` drops below `0.25` (25%).

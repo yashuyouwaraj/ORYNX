@@ -1,11 +1,11 @@
 # Runbook: RedisUnavailable (`RedisUnavailable`, `RedisExporterDown`)
 
 ## 1. What the Alert Means
-- **`RedisUnavailable` (`critical`)**: `redis-exporter` reports `redis_up == 0` for more than 1 minute, indicating the Redis instance (`redis:6379`) is unreachable. (Note: `RedisUnavailable` automatically inhibits downstream `workflow`, `task`, and `slo` alerts in Alertmanager.)
+- **`RedisUnavailable` (`critical`)**: `redis-exporter` reports `redis_up == 0` for more than 1 minute, indicating the Redis instance (`redis:6379`) is unreachable.
 - **`RedisExporterDown` (`warning`)**: Prometheus cannot scrape `redis-exporter:9121` for more than 1 minute.
 
 ## 2. User / Business Impact
-Redis backs low-latency caching, distributed coordination helpers, and session/rate-limiting primitives. An outage degrades API responsiveness or causes Redis-dependent operations in backend services to fail.
+Redis (`redis:7`) is provisioned in `docker-compose.yml` as a platform infrastructure service and monitored by `redis-exporter`. **Current OrynX microservices (`gateway-service`, `auth-service`, `orchestrator-service`, `planning-service`, `execution-service`) do not route active workflow or authentication traffic through Redis**, so a Redis outage does not directly halt workflow execution, though it indicates an infrastructure container failure in the Compose stack.
 
 ## 3. Initial Investigation Steps
 1. Check the status of `redis` and `redis-exporter` via `docker compose --profile observability ps`.
