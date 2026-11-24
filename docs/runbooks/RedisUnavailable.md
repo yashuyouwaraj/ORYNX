@@ -5,7 +5,10 @@
 - **`RedisExporterDown` (`warning`)**: Prometheus cannot scrape `redis-exporter:9121` for more than 1 minute.
 
 ## 2. User / Business Impact
-Redis (`redis:7`) is provisioned in `docker-compose.yml` as a platform infrastructure service and monitored by `redis-exporter`. **Current OrynX microservices (`gateway-service`, `auth-service`, `orchestrator-service`, `planning-service`, `execution-service`) do not route active workflow or authentication traffic through Redis**, so a Redis outage does not directly halt workflow execution, though it indicates an infrastructure container failure in the Compose stack.
+Redis (`redis:7`) is utilized by `orchestrator-service` for distributed coordination and cluster-wide workflow admission control:
+- Under the default **`FAIL_CLOSED`** policy: An outage of Redis causes new workflow start, resume, and retry requests to be rejected with HTTP `503 Service Unavailable` (`Retry-After: 15`). Scheduled workflows are safely deferred to subsequent polling cycles. Existing running workflows continue executing on worker nodes.
+- Under the **`FAIL_OPEN`** policy: Admission control degrades to bypass Redis checks, logging warnings and allowing workflows to execute without global or per-user concurrency limit enforcement.
+- Distributed locks held by leader election or reconciliation jobs cannot be acquired or refreshed until Redis is restored.
 
 ## 3. Initial Investigation Steps
 1. Check the status of `redis` and `redis-exporter` via `docker compose --profile observability ps`.
