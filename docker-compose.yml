@@ -3,11 +3,16 @@ networks:
     driver: bridge
   orynx-backend:
     driver: bridge
+  orynx-monitoring:
+    driver: bridge
 
 volumes:
   orynx_postgres_data:
   orynx_kafka_data:
   orynx_redis_data:
+  orynx_prometheus_data:
+  orynx_tempo_data:
+  orynx_grafana_data:
 
 services:
   postgres:
@@ -95,11 +100,25 @@ services:
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       JWT_EXPIRATION: ${JWT_EXPIRATION:-3600000}
+      SPRING_PROFILES_ACTIVE: docker
+      ORYNX_OBSERVABILITY_METRICS_ENABLED: "true"
+      ORYNX_OBSERVABILITY_METRICS_PORT: "9100"
+      OTEL_JAVAAGENT_ENABLED: ${OTEL_JAVAAGENT_ENABLED:-true}
+      OTEL_SERVICE_NAME: auth-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_TRACES_SAMPLER: parentbased_traceidratio
+      OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1.0}
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
+      OTEL_INSTRUMENTATION_KAFKA_EXPERIMENTAL_SPAN_ATTRIBUTES: "true"
       JAVA_OPTS: ${JAVA_OPTS:--XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0}
     expose:
       - "8081"
+      - "9100"
     networks:
       - orynx-backend
+      - orynx-monitoring
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/actuator/health/readiness"]
       interval: 20s
@@ -114,11 +133,24 @@ services:
     restart: unless-stopped
     environment:
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:?NVIDIA_API_KEY is required}
+      SPRING_PROFILES_ACTIVE: docker
+      ORYNX_OBSERVABILITY_METRICS_ENABLED: "true"
+      ORYNX_OBSERVABILITY_METRICS_PORT: "9100"
+      OTEL_JAVAAGENT_ENABLED: ${OTEL_JAVAAGENT_ENABLED:-true}
+      OTEL_SERVICE_NAME: planning-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_TRACES_SAMPLER: parentbased_traceidratio
+      OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1.0}
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
       JAVA_OPTS: ${JAVA_OPTS:--XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0}
     expose:
       - "8083"
+      - "9100"
     networks:
       - orynx-backend
+      - orynx-monitoring
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8083/actuator/health/readiness"]
       interval: 20s
@@ -145,11 +177,25 @@ services:
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:?NVIDIA_API_KEY is required}
       WEBSOCKET_ALLOWED_ORIGINS: ${WEBSOCKET_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      SPRING_PROFILES_ACTIVE: docker
+      ORYNX_OBSERVABILITY_METRICS_ENABLED: "true"
+      ORYNX_OBSERVABILITY_METRICS_PORT: "9100"
+      OTEL_JAVAAGENT_ENABLED: ${OTEL_JAVAAGENT_ENABLED:-true}
+      OTEL_SERVICE_NAME: orchestrator-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_TRACES_SAMPLER: parentbased_traceidratio
+      OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1.0}
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
+      OTEL_INSTRUMENTATION_KAFKA_EXPERIMENTAL_SPAN_ATTRIBUTES: "true"
       JAVA_OPTS: ${JAVA_OPTS:--XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0}
     expose:
       - "8082"
+      - "9100"
     networks:
       - orynx-backend
+      - orynx-monitoring
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8082/actuator/health/readiness"]
       interval: 20s
@@ -175,11 +221,25 @@ services:
       ORYNX_EXECUTION_WORKER_CORE_POOL_SIZE: ${ORYNX_EXECUTION_WORKER_CORE_POOL_SIZE:-4}
       ORYNX_EXECUTION_WORKER_MAX_POOL_SIZE: ${ORYNX_EXECUTION_WORKER_MAX_POOL_SIZE:-8}
       ORYNX_EXECUTION_WORKER_QUEUE_CAPACITY: ${ORYNX_EXECUTION_WORKER_QUEUE_CAPACITY:-50}
+      SPRING_PROFILES_ACTIVE: docker
+      ORYNX_OBSERVABILITY_METRICS_ENABLED: "true"
+      ORYNX_OBSERVABILITY_METRICS_PORT: "9100"
+      OTEL_JAVAAGENT_ENABLED: ${OTEL_JAVAAGENT_ENABLED:-true}
+      OTEL_SERVICE_NAME: execution-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_TRACES_SAMPLER: parentbased_traceidratio
+      OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1.0}
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
+      OTEL_INSTRUMENTATION_KAFKA_EXPERIMENTAL_SPAN_ATTRIBUTES: "true"
       JAVA_OPTS: ${JAVA_OPTS:--XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0}
     expose:
       - "8084"
+      - "9100"
     networks:
       - orynx-backend
+      - orynx-monitoring
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8084/actuator/health/readiness"]
       interval: 20s
@@ -204,12 +264,26 @@ services:
       ORCHESTRATOR_SERVICE_URL: http://orchestrator-service:8082
       PLANNING_SERVICE_URL: http://planning-service:8083
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      SPRING_PROFILES_ACTIVE: docker
+      ORYNX_OBSERVABILITY_METRICS_ENABLED: "true"
+      ORYNX_OBSERVABILITY_METRICS_PORT: "9100"
+      OTEL_JAVAAGENT_ENABLED: ${OTEL_JAVAAGENT_ENABLED:-true}
+      OTEL_SERVICE_NAME: gateway-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_TRACES_SAMPLER: parentbased_traceidratio
+      OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1.0}
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
       JAVA_OPTS: ${JAVA_OPTS:--XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0}
     ports:
       - "8080:8080"
+    expose:
+      - "9100"
     networks:
       - orynx-edge
       - orynx-backend
+      - orynx-monitoring
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/actuator/health/readiness"]
       interval: 20s
@@ -235,6 +309,132 @@ services:
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/"]
       interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    profiles: ["observability"]
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./monitoring/tempo/tempo.yaml:/etc/tempo.yaml:ro
+      - orynx_tempo_data:/var/tempo
+    expose:
+      - "3200"
+      - "4317"
+      - "4318"
+    ports:
+      - "3200:3200"
+    networks:
+      - orynx-monitoring
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.114.0
+    profiles: ["observability"]
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    depends_on:
+      - tempo
+    volumes:
+      - ./monitoring/otel/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    expose:
+      - "4317"
+      - "4318"
+      - "8888"
+      - "13133"
+    networks:
+      - orynx-monitoring
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.16.0
+    profiles: ["observability"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-orynx}?sslmode=disable"
+    expose:
+      - "9187"
+    networks:
+      - orynx-backend
+      - orynx-monitoring
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.66.0
+    profiles: ["observability"]
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+    expose:
+      - "9121"
+    networks:
+      - orynx-backend
+      - orynx-monitoring
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.8.0
+    profiles: ["observability"]
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: ["--kafka.server=kafka:9092"]
+    expose:
+      - "9308"
+    networks:
+      - orynx-backend
+      - orynx-monitoring
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles: ["observability"]
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - orynx_prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - orynx-monitoring
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    profiles: ["observability"]
+    restart: unless-stopped
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - orynx_grafana_data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    networks:
+      - orynx-monitoring
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 15s
       timeout: 5s
       retries: 5
       start_period: 20s
