@@ -1,17 +1,23 @@
--- KEYS[1]: orynx:admission:active_workflows (Global Set of active workflow IDs)
--- KEYS[2]: orynx:admission:user_workflows:{userId} (Per-user Set of active workflow IDs)
--- KEYS[3]: orynx:admission:lease:{workflowId} (Lease key for specific workflow)
+-- KEYS[1]: orynx:{admission}:active_workflows (Global Set of active workflow IDs)
+-- KEYS[2]: orynx:{admission}:user_workflows:{userId} (Per-user Set of active workflow IDs)
+-- KEYS[3]: orynx:{admission}:lease:{workflowId} (Lease key for specific workflow)
 -- ARGV[1]: workflowId
 -- ARGV[2]: maxGlobal (number, <= 0 means unlimited)
 -- ARGV[3]: maxUser (number, <= 0 means unlimited)
 -- ARGV[4]: ttlSeconds (lease TTL in seconds)
 -- ARGV[5]: leaseToken (metadata token / instance ID)
+-- ARGV[6]: userId (optional, user identifier for metadata tracking)
+-- ARGV[7]: admittedAtMs (optional, epoch timestamp in ms)
 
 local workflowId = ARGV[1]
 local maxGlobal = tonumber(ARGV[2])
 local maxUser = tonumber(ARGV[3])
 local ttlSeconds = tonumber(ARGV[4])
 local leaseToken = ARGV[5]
+local userId = ARGV[6] or "0"
+local admittedAtMs = ARGV[7] or tostring(redis.call('TIME')[1] * 1000)
+
+local leaseValue = tostring(userId) .. ":" .. tostring(leaseToken) .. ":" .. tostring(admittedAtMs)
 
 -- 1. Idempotency Check: Already admitted?
 if redis.call('SISMEMBER', KEYS[1], workflowId) == 1 then
@@ -38,7 +44,7 @@ end
 -- 4. Admit Workflow Atomically
 redis.call('SADD', KEYS[1], workflowId)
 redis.call('SADD', KEYS[2], workflowId)
-redis.call('SET', KEYS[3], leaseToken, 'EX', ttlSeconds)
+redis.call('SET', KEYS[3], leaseValue, 'EX', ttlSeconds)
 
 -- Fallback safety TTL on per-user set (2x lease TTL) to prevent permanent key leak
 redis.call('EXPIRE', KEYS[2], ttlSeconds * 2)

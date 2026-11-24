@@ -17,13 +17,14 @@ import java.util.function.Supplier;
  * Production Redis token-fenced distributed lock service.
  * Employs atomic SET NX EX for acquisition and Lua-based token-verified DEL for release,
  * preventing stale holders or expired leases from releasing locks held by new owners.
+ * Uses Redis cluster hash tags {lock} for multi-node compatibility.
  */
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class RedisDistributedLockService implements DistributedLockService {
 
-    public static final String LOCK_KEY_PREFIX = "orynx:lock:";
+    public static final String LOCK_KEY_PREFIX = "orynx:{lock}:";
 
     private final StringRedisTemplate redisTemplate;
     private final RedisScript<Long> releaseLockScript;

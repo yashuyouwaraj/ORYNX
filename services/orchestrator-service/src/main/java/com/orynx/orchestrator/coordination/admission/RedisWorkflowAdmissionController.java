@@ -14,16 +14,18 @@ import java.util.UUID;
 /**
  * Production Redis-backed implementation of distributed workflow admission control.
  * Coordinates execution slots globally and per-user using atomic Lua scripts.
+ * Uses Redis cluster hash tags {admission} to prevent CROSSSLOT errors.
  */
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class RedisWorkflowAdmissionController implements WorkflowAdmissionController {
 
-    public static final String KEY_PREFIX = "orynx:admission:";
+    public static final String KEY_PREFIX = "orynx:{admission}:";
     public static final String GLOBAL_ACTIVE_KEY = KEY_PREFIX + "active_workflows";
     public static final String USER_WORKFLOWS_PREFIX = KEY_PREFIX + "user_workflows:";
     public static final String LEASE_PREFIX = KEY_PREFIX + "lease:";
+    public static final String INITIALIZED_KEY = KEY_PREFIX + "initialized";
 
     private final StringRedisTemplate redisTemplate;
     private final RedisScript<List> admitWorkflowScript;
@@ -46,6 +48,7 @@ public class RedisWorkflowAdmissionController implements WorkflowAdmissionContro
         String userKey = USER_WORKFLOWS_PREFIX + safeUserId;
         String leaseKey = LEASE_PREFIX + workflowId;
         String leaseToken = UUID.randomUUID().toString();
+        long now = System.currentTimeMillis();
 
         List<String> keys = List.of(GLOBAL_ACTIVE_KEY, userKey, leaseKey);
         Object[] args = new Object[]{
@@ -53,7 +56,9 @@ public class RedisWorkflowAdmissionController implements WorkflowAdmissionContro
                 String.valueOf(properties.getMaxGlobalConcurrentWorkflows()),
                 String.valueOf(properties.getMaxUserConcurrentWorkflows()),
                 String.valueOf(properties.getWorkflowLeaseTtlSeconds()),
-                leaseToken
+                leaseToken,
+                String.valueOf(safeUserId),
+                String.valueOf(now)
         };
 
         long startTime = System.currentTimeMillis();
