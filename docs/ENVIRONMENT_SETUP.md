@@ -137,7 +137,32 @@ To persist permanently, add the export statements above to your `~/.bashrc` or `
 
 ---
 
-## 8. Security Guardrails
+## 8. Containerization & Deployment Architecture (Step 21)
+
+- **Multi-Stage Non-Root Images**:
+  - All 5 Spring Boot services (`gateway-service`, `auth-service`, `orchestrator-service`, `planning-service`, `execution-service`) use multi-stage Maven + `eclipse-temurin:21-jre-alpine` Dockerfiles with `.dockerignore`, layer-cached `dependency:go-offline`, non-root `orynx` user, container-aware `JAVA_OPTS` (`-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0`), `exec java` for direct `SIGTERM` graceful shutdown, and `/actuator/health/readiness` `HEALTHCHECK` probes.
+  - `frontend` uses Next.js `output: "standalone"` (`frontend/next.config.ts`) in a 3-stage `node:22-alpine` Dockerfile running as non-root `nextjs` on port `3000`.
+- **Network Boundaries & Port Exposure (`docker-compose.yml`)**:
+  - `orynx-edge`: `frontend` (`3000:3000`) and `gateway-service` (`8080:8080`) are the only host-published entry points.
+  - `orynx-backend`: internal network hosting `auth-service` (`8081`), `orchestrator-service` (`8082`), `planning-service` (`8083`), `execution-service` (`8084`), `postgres` (`5432`), `kafka` (`9092`), and `redis` (`6379`) via `expose` only (no host-published ports by default).
+  - Persistent named volumes: `orynx_postgres_data`, `orynx_kafka_data`, `orynx_redis_data`.
+  - Readiness-gated `depends_on` (`condition: service_healthy`) prevents premature startup failures.
+- **Full-Stack Container Startup & Operations**:
+  - Copy `.env.example` to `.env` and populate all mandatory secrets (`POSTGRES_PASSWORD`, `SPRING_DATASOURCE_PASSWORD`, `JWT_SECRET`, `NVIDIA_API_KEY`). Compose fails fast if mandatory variables are missing.
+  - Validate & build: `docker compose config -q && docker compose build`
+  - Start full stack: `docker compose up -d`
+  - Inspect health & logs: `docker compose ps` and `docker compose logs -f <service>`
+  - Restart a service: `docker compose restart <service>`
+  - Stop without deleting volumes: `docker compose down`
+- **Local Host-Based Development Override (`docker-compose.dev.yml`)**:
+  - To run backend services via `mvnw.cmd` on the host while keeping Postgres/Redis/Kafka in containers on loopback `127.0.0.1`, run:
+    `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres redis kafka`
+- **Production Limitations**:
+  - Docker Compose is intended for reproducible single-host/staging deployments, not full production secrets management or multi-node orchestration; production environments should inject secrets via a dedicated vault/KMS and add TLS termination at an ingress/reverse proxy.
+
+---
+
+## 9. Security Guardrails
 - **NEVER** commit `.env` or any file containing real passwords or keys to Git.
 - Root `.gitignore` automatically ignores `.env`, `.env.*`, and `*.env`.
 - Any missing required variable will cause services to fail fast on startup with an explicit placeholder resolution error.
