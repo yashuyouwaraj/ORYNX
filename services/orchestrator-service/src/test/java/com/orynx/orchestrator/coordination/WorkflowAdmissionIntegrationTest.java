@@ -281,4 +281,55 @@ class WorkflowAdmissionIntegrationTest {
         controller.release(7001L, 1L);
         assertThat(controller.getActiveGlobalCount()).isEqualTo(0L);
     }
+
+    @Test
+    @Order(7)
+    @DisplayName("Release with null userId cleans user quota set using stored lease metadata (M-03)")
+    void testReleaseWithNullUserIdCleansUserQuotaFromLeaseMetadata() {
+        long workflowId = 8001L;
+        long realUserId = 42L;
+
+        controller.tryAdmit(workflowId, realUserId);
+        assertThat(controller.getActiveGlobalCount()).isEqualTo(1L);
+        assertThat(controller.getActiveUserCount(realUserId)).isEqualTo(1L);
+
+        // Caller releases with null userId (as done when workflow missing from DB)
+        controller.release(workflowId, null);
+
+        // User quota must NOT leak
+        assertThat(controller.getActiveGlobalCount()).isEqualTo(0L);
+        assertThat(controller.getActiveUserCount(realUserId)).isEqualTo(0L);
+        assertThat(redisTemplate.hasKey(RedisWorkflowAdmissionController.LEASE_PREFIX + workflowId)).isFalse();
+    }
+
+    @Test
+    @Order(8)
+    @DisplayName("Release with mismatched userId cleans real user quota set using stored lease metadata (M-03)")
+    void testReleaseWithMismatchedUserIdCleansRealUserQuotaFromLeaseMetadata() {
+        long workflowId = 8002L;
+        long realUserId = 42L;
+        long wrongUserId = 999L;
+
+        controller.tryAdmit(workflowId, realUserId);
+        assertThat(controller.getActiveGlobalCount()).isEqualTo(1L);
+        assertThat(controller.getActiveUserCount(realUserId)).isEqualTo(1L);
+
+        // Caller releases with mismatched userId
+        controller.release(workflowId, wrongUserId);
+
+        // Real user's quota must NOT leak
+        assertThat(controller.getActiveGlobalCount()).isEqualTo(0L);
+        assertThat(controller.getActiveUserCount(realUserId)).isEqualTo(0L);
+        assertThat(redisTemplate.hasKey(RedisWorkflowAdmissionController.LEASE_PREFIX + workflowId)).isFalse();
+    }
+
+    @Test
+    @Order(9)
+    @DisplayName("Cluster hash slot tagging: all admission keys share {admission} hash tag (m-01)")
+    void testClusterHashSlotTagging() {
+        assertThat(RedisWorkflowAdmissionController.GLOBAL_ACTIVE_KEY).contains("{admission}");
+        assertThat(RedisWorkflowAdmissionController.USER_WORKFLOWS_PREFIX).contains("{admission}");
+        assertThat(RedisWorkflowAdmissionController.LEASE_PREFIX).contains("{admission}");
+        assertThat(RedisWorkflowAdmissionController.INITIALIZED_KEY).contains("{admission}");
+    }
 }

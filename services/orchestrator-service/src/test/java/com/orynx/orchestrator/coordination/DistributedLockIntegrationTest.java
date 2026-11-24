@@ -44,13 +44,13 @@ class DistributedLockIntegrationTest {
         lockService = new RedisDistributedLockService(redisTemplate, releaseLockScript, metrics);
 
         // Clean up test lock
-        redisTemplate.delete("orynx:lock:" + LOCK_NAME);
+        redisTemplate.delete(RedisDistributedLockService.LOCK_KEY_PREFIX + LOCK_NAME);
     }
 
     @AfterEach
     void tearDown() {
         if (redisTemplate != null) {
-            redisTemplate.delete("orynx:lock:" + LOCK_NAME);
+            redisTemplate.delete(RedisDistributedLockService.LOCK_KEY_PREFIX + LOCK_NAME);
         }
         if (connectionFactory != null) {
             connectionFactory.destroy();
@@ -65,12 +65,12 @@ class DistributedLockIntegrationTest {
         assertThat(acquired).isTrue();
 
         // Verify key exists in Redis with expected value
-        String storedToken = redisTemplate.opsForValue().get("orynx:lock:" + LOCK_NAME);
+        String storedToken = redisTemplate.opsForValue().get(RedisDistributedLockService.LOCK_KEY_PREFIX + LOCK_NAME);
         assertThat(storedToken).isEqualTo(token);
 
         boolean released = lockService.release(LOCK_NAME, token);
         assertThat(released).isTrue();
-        assertThat(redisTemplate.hasKey("orynx:lock:" + LOCK_NAME)).isFalse();
+        assertThat(redisTemplate.hasKey(RedisDistributedLockService.LOCK_KEY_PREFIX + LOCK_NAME)).isFalse();
     }
 
     @Test
@@ -103,7 +103,7 @@ class DistributedLockIntegrationTest {
 
         boolean released = lockService.release(LOCK_NAME, "wrong-token-abc");
         assertThat(released).isFalse();
-        assertThat(redisTemplate.hasKey("orynx:lock:" + LOCK_NAME)).isTrue();
+        assertThat(redisTemplate.hasKey(RedisDistributedLockService.LOCK_KEY_PREFIX + LOCK_NAME)).isTrue();
 
         // Clean up with correct token
         assertThat(lockService.release(LOCK_NAME, token)).isTrue();
@@ -116,6 +116,6 @@ class DistributedLockIntegrationTest {
 
         assertThat(result).contains("success-result");
         // Lock should be released automatically
-        assertThat(redisTemplate.hasKey("orynx:lock:" + LOCK_NAME)).isFalse();
+        assertThat(redisTemplate.hasKey(RedisDistributedLockService.LOCK_KEY_PREFIX + LOCK_NAME)).isFalse();
     }
 }

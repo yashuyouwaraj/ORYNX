@@ -298,4 +298,37 @@ class WorkflowServiceAdmissionControlTest {
         verify(workflowExecutionRepository, times(1)).save(execution);
         assertThat(execution.getStatus()).isEqualTo(WorkflowStatus.PAUSED);
     }
+
+    @Test
+    @DisplayName("startWorkflow rolls back admission slot if subsequent database or dispatch operation fails")
+    void startWorkflowRollsBackAdmissionIfSubsequentOperationFails() {
+        Long workflowId = 109L;
+        Long userId = 42L;
+
+        Workflow workflow = Workflow.builder()
+                .id(workflowId)
+                .userId(userId)
+                .name("test-wf-failure-rollback")
+                .status(WorkflowStatus.CREATED)
+                .build();
+
+        when(workflowRepository.findByIdAndUserIdForUpdate(workflowId, userId))
+                .thenReturn(Optional.of(workflow));
+        when(admissionController.tryAdmit(workflowId, userId))
+                .thenReturn(AdmissionDecision.admitted("ADMITTED", 1, 1, "test-token"));
+        when(workflowTaskRepository.findByWorkflowIdOrderByExecutionOrder(workflowId))
+                .thenReturn(List.of(WorkflowTask.builder().id(1L).workflow(workflow).build()));
+
+        // Simulate database save failure after admission
+        when(workflowRepository.save(any(Workflow.class)))
+                .thenThrow(new RuntimeException("Database constraint violation"));
+
+        assertThatThrownBy(() -> workflowService.startWorkflow(workflowId, userId))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Database constraint violation");
+
+        // Verify admission was requested AND then rolled back / released
+        verify(admissionController, times(1)).tryAdmit(workflowId, userId);
+        verify(admissionController, times(1)).release(workflowId, userId);
+    }
 }

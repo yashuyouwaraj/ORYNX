@@ -42,7 +42,7 @@ class RedisDistributedLockServiceUnitTest {
     @Test
     @DisplayName("tryAcquire succeeds when lock key is free in Redis")
     void tryAcquireSuccess() {
-        when(valueOperations.setIfAbsent(eq("orynx:lock:scheduler-leader"), eq("token-1"), eq(Duration.ofSeconds(10))))
+        when(valueOperations.setIfAbsent(eq(RedisDistributedLockService.LOCK_KEY_PREFIX + "scheduler-leader"), eq("token-1"), eq(Duration.ofSeconds(10))))
                 .thenReturn(true);
 
         boolean acquired = lockService.tryAcquire("scheduler-leader", "token-1", Duration.ofSeconds(10));
@@ -75,7 +75,7 @@ class RedisDistributedLockServiceUnitTest {
     @Test
     @DisplayName("release succeeds only when token matches expected owner")
     void releaseSuccessWhenTokenMatches() {
-        when(redisTemplate.execute(eq(releaseLockScript), eq(List.of("orynx:lock:scheduler-leader")), eq("token-1")))
+        when(redisTemplate.execute(eq(releaseLockScript), eq(List.of(RedisDistributedLockService.LOCK_KEY_PREFIX + "scheduler-leader")), eq("token-1")))
                 .thenReturn(1L);
 
         boolean released = lockService.release("scheduler-leader", "token-1");
