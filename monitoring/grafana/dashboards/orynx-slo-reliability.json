@@ -1,0 +1,357 @@
+{
+  "uid": "orynx-slo-reliability",
+  "title": "OrynX SLO & Operational Reliability",
+  "tags": ["orynx", "slo", "sli", "error-budget", "alerting", "reliability"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "API Availability SLI (5m vs 99.9% SLO)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.99 },
+              { "color": "green", "value": 0.999 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "orynx:api:availability:ratio_rate5m", "legendFormat": "API Availability (5m)", "refId": "A" },
+        { "expr": "orynx:api:slo_target_availability", "legendFormat": "SLO Target (99.9%)", "refId": "B" }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Workflow Success Rate SLI (5m vs 99.0% SLO)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.95 },
+              { "color": "green", "value": 0.99 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "orynx:workflow:success_ratio:rate5m", "legendFormat": "Workflow Success (5m)", "refId": "A" },
+        { "expr": "orynx:workflow:slo_target_success_ratio", "legendFormat": "SLO Target (99.0%)", "refId": "B" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Task Execution Success SLI (5m vs 99.0% SLO)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.95 },
+              { "color": "green", "value": 0.99 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "orynx:task:success_ratio:rate5m", "legendFormat": "Task Success (5m)", "refId": "A" },
+        { "expr": "orynx:task:slo_target_success_ratio", "legendFormat": "SLO Target (99.0%)", "refId": "B" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "gauge",
+      "title": "API Error Budget Remaining (30d)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.25 },
+              { "color": "green", "value": 0.5 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "orynx:api:error_budget_remaining:ratio_30d", "refId": "A" }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "gauge",
+      "title": "Workflow Error Budget Remaining (30d)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.25 },
+              { "color": "green", "value": 0.5 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "orynx:workflow:error_budget_remaining:ratio_30d", "refId": "A" }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "gauge",
+      "title": "Task Error Budget Remaining (30d)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.25 },
+              { "color": "green", "value": 0.5 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "orynx:task:error_budget_remaining:ratio_30d", "refId": "A" }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Multi-Window Error Budget Burn Rates (Fast 5m/1h vs Slow 30m/6h)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        { "expr": "orynx:api:burn_rate:5m", "legendFormat": "API Fast Burn (5m)", "refId": "A" },
+        { "expr": "orynx:api:burn_rate:1h", "legendFormat": "API Fast Burn (1h)", "refId": "B" },
+        { "expr": "orynx:api:burn_rate:6h", "legendFormat": "API Slow Burn (6h)", "refId": "C" },
+        { "expr": "orynx:workflow:burn_rate:5m", "legendFormat": "Workflow Fast Burn (5m)", "refId": "D" },
+        { "expr": "orynx:workflow:burn_rate:1h", "legendFormat": "Workflow Fast Burn (1h)", "refId": "E" },
+        { "expr": "orynx:task:burn_rate:5m", "legendFormat": "Task Fast Burn (5m)", "refId": "F" }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Latency Percentiles vs SLO Targets (API P95/P99 & Workflow P95)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
+      "targets": [
+        { "expr": "orynx:api:latency_p95:rate5m", "legendFormat": "API P95 Latency (s)", "refId": "A" },
+        { "expr": "orynx:api:latency_p99:rate5m", "legendFormat": "API P99 Latency (s)", "refId": "B" },
+        { "expr": "orynx:api:slo_target_p95_seconds", "legendFormat": "API P95 SLO Target (0.5s)", "refId": "C" },
+        { "expr": "orynx:workflow:duration_p95_seconds:rate5m", "legendFormat": "Workflow P95 Duration (s)", "refId": "D" },
+        { "expr": "orynx:workflow:duration_avg_seconds:rate5m", "legendFormat": "Workflow Avg Duration (s)", "refId": "E" }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Active Firing Alerts",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 12 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "count(ALERTS{alertstate=\"firing\"}) or vector(0)", "refId": "A" }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Pending Alerts",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 12 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "count(ALERTS{alertstate=\"pending\"}) or vector(0)", "refId": "A" }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Backend Services Availability Ratio",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 12 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.8 },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "orynx:backend:availability_ratio", "refId": "A" }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "PostgreSQL Connection Utilization",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 12 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.7 },
+              { "color": "red", "value": 0.85 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "orynx:postgres:connection_utilization_ratio", "refId": "A" }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "Max Kafka Consumer Group Lag",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 12 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 50 },
+              { "color": "red", "value": 100 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "orynx:kafka:consumer_lag:max", "refId": "A" }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "OTel Collector Span Export Success Ratio",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 12 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.99 },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "orynx:otel:export_success_ratio:rate5m", "refId": "A" }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Active Prometheus Alerts by Severity & Category",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "expr": "sum by (alertname, severity, category, alertstate) (ALERTS)",
+          "legendFormat": "{{alertname}} [{{severity}}/{{category}}] ({{alertstate}})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Infrastructure & Backing Store Health (Up Status)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        { "expr": "pg_up", "legendFormat": "PostgreSQL (pg_up)", "refId": "A" },
+        { "expr": "redis_up", "legendFormat": "Redis (redis_up)", "refId": "B" },
+        { "expr": "kafka_brokers", "legendFormat": "Kafka Active Brokers", "refId": "C" },
+        { "expr": "up{job=\"alertmanager\"}", "legendFormat": "Alertmanager (up)", "refId": "D" },
+        { "expr": "up{job=\"otel-collector\"}", "legendFormat": "OTel Collector (up)", "refId": "E" }
+      ]
+    }
+  ]
+}
