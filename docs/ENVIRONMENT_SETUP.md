@@ -162,7 +162,19 @@ To persist permanently, add the export statements above to your `~/.bashrc` or `
 
 ---
 
-## 9. Security Guardrails
+## 9. Observability & Monitoring Stack (Step 22)
+
+- **Profile-Gated Observability (`docker-compose.yml`)**:
+  - Start the core platform plus Prometheus, Grafana, Tempo, OpenTelemetry Collector, and Postgres/Redis/Kafka exporters with:
+    `docker compose --profile observability up -d`
+  - Grafana is exposed on `http://localhost:3001` (requires `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD` in `.env`), Prometheus on `http://localhost:9090`, and Tempo on `http://localhost:3200`.
+  - Backend services expose Prometheus metrics on internal-only port `9100` (`/metrics`), preserving Actuator `health`-only boundaries on ports `8080`–`8084`.
+  - OpenTelemetry Java Agent (`v2.11.0`) is controlled via `OTEL_JAVAAGENT_ENABLED` (default `true`) and `OTEL_TRACES_SAMPLER_ARG` (default `1.0`).
+  - See [docs/OBSERVABILITY.md](./OBSERVABILITY.md) for full architecture, metrics, tracing, structured logging, and dashboard documentation.
+
+---
+
+## 10. Security Guardrails
 - **NEVER** commit `.env` or any file containing real passwords or keys to Git.
 - Root `.gitignore` automatically ignores `.env`, `.env.*`, and `*.env`.
 - Any missing required variable will cause services to fail fast on startup with an explicit placeholder resolution error.
