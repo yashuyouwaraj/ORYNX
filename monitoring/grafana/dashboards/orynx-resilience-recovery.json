@@ -69,16 +69,18 @@
     {
       "id": 6,
       "type": "timeseries",
-      "title": "Admission Control Rejections & Bypasses",
+      "title": "Admission Control Rejections & Non-Accepted Decisions",
+      "description": "Rate of non-accepted workflow admission control decisions (rejected, deferred, error) grouped by status and reason from orynx_admission_requests_total.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
       "targets": [
         {
-          "expr": "sum by (result, reason) (rate(orynx_workflow_admission_total{result!=\"accepted\"}[5m]))",
-          "legendFormat": "{{result}} ({{reason}})",
+          "expr": "sum by (status, reason) (rate(orynx_admission_requests_total{status!=\"accepted\"}[5m]))",
+          "legendFormat": "{{status}} ({{reason}})",
           "refId": "A"
         }
-      ]
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
     },
     {
       "id": 7,

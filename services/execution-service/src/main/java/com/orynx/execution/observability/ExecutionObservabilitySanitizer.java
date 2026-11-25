@@ -60,4 +60,43 @@ public final class ExecutionObservabilitySanitizer {
         }
         return redacted;
     }
+
+    /**
+     * Classifies an exception into a bounded, low-cardinality operational error category.
+     * Never returns exception messages or unbounded user input.
+     */
+    public static String classifyErrorCategory(Throwable throwable) {
+        if (throwable == null) {
+            return "INTERNAL";
+        }
+        Throwable curr = throwable;
+        for (int depth = 0; curr != null && depth < 6; depth++, curr = curr.getCause()) {
+            String name = curr.getClass().getSimpleName();
+            if (name.contains("StaleWorker")) {
+                return "FENCING";
+            }
+            if (name.contains("WorkerQueueFull") || curr instanceof java.util.concurrent.RejectedExecutionException) {
+                return "CAPACITY";
+            }
+            if (name.contains("Deserialization") || name.contains("MessageConversion")
+                    || name.contains("Conversion") || name.contains("JsonProcessing")) {
+                return "DESERIALIZATION";
+            }
+            if (name.contains("Validation") || curr instanceof IllegalArgumentException) {
+                return "VALIDATION";
+            }
+            if (name.contains("Timeout")) {
+                return "TIMEOUT";
+            }
+            if (name.contains("Redis") || name.contains("Kafka")
+                    || name.contains("DataAccess") || name.contains("SQL")
+                    || curr instanceof java.io.IOException) {
+                return "INFRASTRUCTURE";
+            }
+            if (curr instanceof IllegalStateException) {
+                return "STATE_CONFLICT";
+            }
+        }
+        return "INTERNAL";
+    }
 }

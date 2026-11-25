@@ -44,13 +44,21 @@ processors:
     log_statements:
       - context: log
         statements:
+          - replace_pattern(body, "(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", "[REDACTED_PRIVATE_KEY]")
+          - replace_pattern(body, "([a-zA-Z][a-zA-Z0-9+.-]*://)[^\\s/@:]+:[^\\s/@]+@", "$$1[REDACTED]@")
           - replace_pattern(body, "(?i)Bearer\\s+[A-Za-z0-9\\-._~+/]+=*", "Bearer [REDACTED]")
           - replace_pattern(body, "eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}", "[REDACTED_JWT]")
-          - replace_pattern(body, "(?i)(password|passwd|secret|token|api[_-]?key|authorization)\\s*[:=]\\s*[^\\s,;\"'&]+", "$1=[REDACTED]")
+          - replace_pattern(body, "(?i)(password|passwd|secret|token|api[_-]?key|authorization)\\s*[:=]\\s*[^\\s,;\"'&]+", "$$1=[REDACTED]")
+          - replace_pattern(body, "[\\r\\n]+", " ")
           - delete_key(attributes, "authorization")
           - delete_key(attributes, "password")
+          - delete_key(attributes, "passwd")
           - delete_key(attributes, "secret")
           - delete_key(attributes, "token")
+          - delete_key(attributes, "api_key")
+          - delete_key(attributes, "cookie")
+          - delete_key(attributes, "x_api_key")
+          - delete_key(attributes, "x-api-key")
   batch:
     timeout: 2s
     send_batch_size: 512

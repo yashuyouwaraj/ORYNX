@@ -89,26 +89,28 @@ public class WorkflowService {
                 .build();
 
         Workflow savedWorkflow = workflowRepository.save(workflow);
-        WorkflowTracingHelper.tagSpanLifecycle(savedWorkflow.getId(), null, null, "CREATED");
 
         createWorkflowTasks(savedWorkflow);
 
-        WorkflowCreatedEvent event = WorkflowCreatedEvent.builder()
-                .workflowId(savedWorkflow.getId())
-                .workflowName(savedWorkflow.getName())
-                .goal(savedWorkflow.getGoal())
-                .build();
+        try (WorkflowTracingHelper.MdcScope ignored =
+                     WorkflowTracingHelper.scopedWorkflowLifecycle(savedWorkflow.getId(), null, null, "CREATED")) {
+            WorkflowCreatedEvent event = WorkflowCreatedEvent.builder()
+                    .workflowId(savedWorkflow.getId())
+                    .workflowName(savedWorkflow.getName())
+                    .goal(savedWorkflow.getGoal())
+                    .build();
 
-        kafkaProducer.publishWorkflowCreatedEvent(event);
+            kafkaProducer.publishWorkflowCreatedEvent(event);
 
-        WorkflowExecutionEvent executionEvent = WorkflowExecutionEvent.builder()
-                .workflowId(savedWorkflow.getId())
-                .workflowName(savedWorkflow.getName())
-                .status(savedWorkflow.getStatus().name())
-                .userId(savedWorkflow.getUserId())
-                .build();
+            WorkflowExecutionEvent executionEvent = WorkflowExecutionEvent.builder()
+                    .workflowId(savedWorkflow.getId())
+                    .workflowName(savedWorkflow.getName())
+                    .status(savedWorkflow.getStatus().name())
+                    .userId(savedWorkflow.getUserId())
+                    .build();
 
-        workflowEventPublisher.publishWorkflowUpdate(executionEvent);
+            workflowEventPublisher.publishWorkflowUpdate(executionEvent);
+        }
 
         if (workflowMetrics != null) {
             workflowMetrics.recordWorkflowCreated();
@@ -172,48 +174,54 @@ public class WorkflowService {
                     .executionGeneration(1L)
                     .build();
 
-            workflowExecutionRepository.save(execution);
-            WorkflowTracingHelper.tagSpanLifecycle(updatedWorkflow.getId(), execution.getId(), 1L, "CREATED->RUNNING");
+            WorkflowExecution savedExecution = workflowExecutionRepository.save(execution);
+            if (savedExecution == null) {
+                savedExecution = execution;
+            }
+            String executionEventId = UUID.randomUUID().toString();
 
-            log.info(
-                    "Created execution history record for workflow {}",
-                    updatedWorkflow.getName()
-            );
+            try (WorkflowTracingHelper.MdcScope ignored = WorkflowTracingHelper.scopedWorkflowLifecycle(
+                    updatedWorkflow.getId(), savedExecution.getId(), 1L, "CREATED->RUNNING", executionEventId)) {
+                log.info(
+                        "Created execution history record for workflow {}",
+                        updatedWorkflow.getName()
+                );
 
-            List<WorkflowTask> workflowTasks =
-                    workflowTaskRepository.findByWorkflowIdOrderByExecutionOrder(
-                            workflow.getId()
-                    );
-            List<TaskExecutionRequest> taskRequests = workflowTasks.stream()
-                    .map((task -> TaskExecutionRequest.builder()
-                            .name(task.getName())
-                            .executionOrder(task.getExecutionOrder())
-                            .maxRetries(task.getMaxRetries())
-                            .build()
-                    ))
-                    .toList();
+                List<WorkflowTask> workflowTasks =
+                        workflowTaskRepository.findByWorkflowIdOrderByExecutionOrder(
+                                workflow.getId()
+                        );
+                List<TaskExecutionRequest> taskRequests = workflowTasks.stream()
+                        .map((task -> TaskExecutionRequest.builder()
+                                .name(task.getName())
+                                .executionOrder(task.getExecutionOrder())
+                                .maxRetries(task.getMaxRetries())
+                                .build()
+                        ))
+                        .toList();
 
-            executionRequestProducer.publishExecutionRequest(
-                    WorkflowExecutionRequestEvent.builder()
-                            .workflowId(workflow.getId())
-                            .workflowName(workflow.getName())
-                            .tasks(taskRequests)
-                            .eventId(UUID.randomUUID().toString())
-                            .executionId(execution.getId())
-                            .resume(false)
-                            .generation(1L)
-                            .build()
-            );
+                executionRequestProducer.publishExecutionRequest(
+                        WorkflowExecutionRequestEvent.builder()
+                                .workflowId(workflow.getId())
+                                .workflowName(workflow.getName())
+                                .tasks(taskRequests)
+                                .eventId(executionEventId)
+                                .executionId(savedExecution.getId())
+                                .resume(false)
+                                .generation(1L)
+                                .build()
+                );
 
-            WorkflowExecutionEvent event = WorkflowExecutionEvent.builder()
-                    .workflowId(updatedWorkflow.getId())
-                    .workflowName(updatedWorkflow.getName())
-                    .status(updatedWorkflow.getStatus().name())
-                    .userId(updatedWorkflow.getUserId())
-                    .generation(1L)
-                    .build();
+                WorkflowExecutionEvent event = WorkflowExecutionEvent.builder()
+                        .workflowId(updatedWorkflow.getId())
+                        .workflowName(updatedWorkflow.getName())
+                        .status(updatedWorkflow.getStatus().name())
+                        .userId(updatedWorkflow.getUserId())
+                        .generation(1L)
+                        .build();
 
-            workflowEventPublisher.publishWorkflowUpdate(event);
+                workflowEventPublisher.publishWorkflowUpdate(event);
+            }
 
             if (workflowMetrics != null) {
                 workflowMetrics.recordWorkflowStarted();
@@ -573,47 +581,52 @@ public class WorkflowService {
             workflowAdmissionController.release(workflow.getId(), workflow.getUserId());
         }
 
-        workflowCancellationProducer.publishWorkflowCancelled(
-                WorkflowCancelledEvent.builder()
-                        .workflowId(workflow.getId())
-                        .workflowName(workflow.getName())
-                        .eventId(UUID.randomUUID().toString())
-                        .build()
-        );
-
         Optional<WorkflowExecution> executionOptional = workflowExecutionRepository.findFirstByWorkflowIdOrderByStartedAtDesc(workflowId);
+        Long activeExecutionId = executionOptional.map(WorkflowExecution::getId).orElse(null);
+        Long activeGeneration = executionOptional.map(WorkflowExecution::getExecutionGeneration).orElse(null);
+        String cancelEventId = UUID.randomUUID().toString();
 
-        if (executionOptional.isPresent()) {
-            WorkflowExecution execution = executionOptional.get();
+        try (WorkflowTracingHelper.MdcScope ignored = WorkflowTracingHelper.scopedWorkflowLifecycle(
+                updatedWorkflow.getId(), activeExecutionId, activeGeneration, "CANCELLED", cancelEventId)) {
+            workflowCancellationProducer.publishWorkflowCancelled(
+                    WorkflowCancelledEvent.builder()
+                            .workflowId(workflow.getId())
+                            .workflowName(workflow.getName())
+                            .eventId(cancelEventId)
+                            .build()
+            );
 
-            execution.setStatus(WorkflowStatus.CANCELLED);
+            if (executionOptional.isPresent()) {
+                WorkflowExecution execution = executionOptional.get();
 
-            long completedTime = System.currentTimeMillis();
+                execution.setStatus(WorkflowStatus.CANCELLED);
 
-            execution.setCompletedAt(completedTime);
+                long completedTime = System.currentTimeMillis();
 
-            if (execution.getStartedAt() != null) {
-                execution.setDurationMs(completedTime - execution.getStartedAt());
+                execution.setCompletedAt(completedTime);
+
+                if (execution.getStartedAt() != null) {
+                    execution.setDurationMs(completedTime - execution.getStartedAt());
+                }
+
+                workflowExecutionRepository.save(execution);
             }
 
-            workflowExecutionRepository.save(execution);
-            WorkflowTracingHelper.tagSpanLifecycle(updatedWorkflow.getId(), execution.getId(), execution.getExecutionGeneration(), "CANCELLED");
+            WorkflowExecutionEvent event = WorkflowExecutionEvent.builder()
+                    .workflowId(updatedWorkflow.getId())
+                    .workflowName(updatedWorkflow.getName())
+                    .status(updatedWorkflow.getStatus().name())
+                    .userId(updatedWorkflow.getUserId())
+                    .build();
+
+            workflowEventPublisher.publishWorkflowUpdate(event);
+
+            if (workflowMetrics != null) {
+                workflowMetrics.recordWorkflowCancelled();
+            }
+
+            log.info("Workflow {} cancelled.", updatedWorkflow.getName());
         }
-
-        WorkflowExecutionEvent event = WorkflowExecutionEvent.builder()
-                .workflowId(updatedWorkflow.getId())
-                .workflowName(updatedWorkflow.getName())
-                .status(updatedWorkflow.getStatus().name())
-                .userId(updatedWorkflow.getUserId())
-                .build();
-
-        workflowEventPublisher.publishWorkflowUpdate(event);
-
-        if (workflowMetrics != null) {
-            workflowMetrics.recordWorkflowCancelled();
-        }
-
-        log.info("Workflow {} cancelled.", updatedWorkflow.getName());
 
         return updatedWorkflow;
     }
@@ -647,27 +660,31 @@ public class WorkflowService {
             workflowAdmissionController.release(workflow.getId(), workflow.getUserId());
         }
 
-        workflowPauseProducer.publishWorkflowPaused(
-                WorkflowPausedEvent.builder()
-                        .workflowId(updatedWorkflow.getId())
-                        .workflowName(updatedWorkflow.getName())
-                        .eventId(UUID.randomUUID().toString())
-                        .build()
-        );
+        String pauseEventId = UUID.randomUUID().toString();
+        try (WorkflowTracingHelper.MdcScope ignored = WorkflowTracingHelper.scopedWorkflowLifecycle(
+                updatedWorkflow.getId(), null, null, "RUNNING->PAUSED", pauseEventId)) {
+            workflowPauseProducer.publishWorkflowPaused(
+                    WorkflowPausedEvent.builder()
+                            .workflowId(updatedWorkflow.getId())
+                            .workflowName(updatedWorkflow.getName())
+                            .eventId(pauseEventId)
+                            .build()
+            );
 
-        WorkflowExecutionEvent event = WorkflowExecutionEvent.builder()
-                .workflowId(updatedWorkflow.getId())
-                .workflowName(updatedWorkflow.getName())
-                .status(updatedWorkflow.getStatus().name())
-                .userId(updatedWorkflow.getUserId())
-                .build();
+            WorkflowExecutionEvent event = WorkflowExecutionEvent.builder()
+                    .workflowId(updatedWorkflow.getId())
+                    .workflowName(updatedWorkflow.getName())
+                    .status(updatedWorkflow.getStatus().name())
+                    .userId(updatedWorkflow.getUserId())
+                    .build();
 
-        workflowEventPublisher.publishWorkflowUpdate(event);
+            workflowEventPublisher.publishWorkflowUpdate(event);
 
-        log.info(
-                "Workflow {} paused.",
-                updatedWorkflow.getName()
-        );
+            log.info(
+                    "Workflow {} paused.",
+                    updatedWorkflow.getName()
+            );
+        }
 
         return updatedWorkflow;
     }
@@ -752,44 +769,51 @@ public class WorkflowService {
             execution.setExecutionGeneration(nextExecutionGeneration);
 
             workflowExecutionRepository.save(execution);
-            WorkflowTracingHelper.tagSpanLifecycle(updatedWorkflow.getId(), execution.getId(), nextExecutionGeneration, "PAUSED->RUNNING");
+            String resumeEventId = UUID.randomUUID().toString();
+            String execRequestEventId = UUID.randomUUID().toString();
 
-            workflowResumeProducer.publishWorkflowResumed(
-                    WorkflowResumedEvent.builder()
-                            .workflowId(updatedWorkflow.getId())
-                            .workflowName(updatedWorkflow.getName())
-                            .eventId(UUID.randomUUID().toString())
-                            .build()
-            );
+            try (WorkflowTracingHelper.MdcScope ignored = WorkflowTracingHelper.scopedWorkflowLifecycle(
+                    updatedWorkflow.getId(), execution.getId(), nextExecutionGeneration, "PAUSED->RUNNING", resumeEventId)) {
+                workflowResumeProducer.publishWorkflowResumed(
+                        WorkflowResumedEvent.builder()
+                                .workflowId(updatedWorkflow.getId())
+                                .workflowName(updatedWorkflow.getName())
+                                .eventId(resumeEventId)
+                                .build()
+                );
+            }
 
-            executionRequestProducer.publishExecutionRequest(
-                    WorkflowExecutionRequestEvent.builder()
-                            .workflowId(updatedWorkflow.getId())
-                            .workflowName(updatedWorkflow.getName())
-                            .tasks(remainingTasks)
-                            .eventId(UUID.randomUUID().toString())
-                            .executionId(execution.getId())
-                            .resume(true)
-                            .generation(nextExecutionGeneration)
-                            .build()
-            );
+            try (WorkflowTracingHelper.MdcScope ignored = WorkflowTracingHelper.scopedWorkflowLifecycle(
+                    updatedWorkflow.getId(), execution.getId(), nextExecutionGeneration, "PAUSED->RUNNING", execRequestEventId)) {
+                executionRequestProducer.publishExecutionRequest(
+                        WorkflowExecutionRequestEvent.builder()
+                                .workflowId(updatedWorkflow.getId())
+                                .workflowName(updatedWorkflow.getName())
+                                .tasks(remainingTasks)
+                                .eventId(execRequestEventId)
+                                .executionId(execution.getId())
+                                .resume(true)
+                                .generation(nextExecutionGeneration)
+                                .build()
+                );
 
-            WorkflowExecutionEvent event = WorkflowExecutionEvent.builder()
-                    .workflowId(updatedWorkflow.getId())
-                    .workflowName(updatedWorkflow.getName())
-                    .status(updatedWorkflow.getStatus().name())
-                    .userId(updatedWorkflow.getUserId())
-                    .generation(nextExecutionGeneration)
-                    .build();
+                WorkflowExecutionEvent event = WorkflowExecutionEvent.builder()
+                        .workflowId(updatedWorkflow.getId())
+                        .workflowName(updatedWorkflow.getName())
+                        .status(updatedWorkflow.getStatus().name())
+                        .userId(updatedWorkflow.getUserId())
+                        .generation(nextExecutionGeneration)
+                        .build();
 
-            workflowEventPublisher.publishWorkflowUpdate(event);
+                workflowEventPublisher.publishWorkflowUpdate(event);
 
-            log.info(
-                    "Workflow {} resumed from execution order {}. Remaining tasks: {}",
-                    updatedWorkflow.getName(),
-                    resumeFromOrder + 1,
-                    remainingTasks.size()
-            );
+                log.info(
+                        "Workflow {} resumed from execution order {}. Remaining tasks: {}",
+                        updatedWorkflow.getName(),
+                        resumeFromOrder + 1,
+                        remainingTasks.size()
+                );
+            }
 
             return updatedWorkflow;
         } catch (Exception e) {
@@ -870,52 +894,58 @@ public class WorkflowService {
                             .executionGeneration(nextExecutionGeneration)
                             .build();
 
-            workflowExecutionRepository.save(execution);
-            WorkflowTracingHelper.tagSpanLifecycle(updatedWorkflow.getId(), execution.getId(), nextExecutionGeneration, "FAILED->RUNNING");
-
-            List<TaskExecutionRequest> taskRequests =
-                    workflowTasks.stream()
-                            .map(task ->
-                                    TaskExecutionRequest.builder()
-                                            .name(task.getName())
-                                            .executionOrder(task.getExecutionOrder())
-                                            .maxRetries(task.getMaxRetries())
-                                            .build()
-                            )
-                            .toList();
-
-            executionRequestProducer.publishExecutionRequest(
-                    WorkflowExecutionRequestEvent.builder()
-                            .workflowId(updatedWorkflow.getId())
-                            .workflowName(updatedWorkflow.getName())
-                            .tasks(taskRequests)
-                            .eventId(UUID.randomUUID().toString())
-                            .executionId(execution.getId())
-                            .resume(false)
-                            .generation(nextExecutionGeneration)
-                            .build()
-            );
-
-            WorkflowExecutionEvent event = WorkflowExecutionEvent.builder()
-                    .workflowId(updatedWorkflow.getId())
-                    .workflowName(updatedWorkflow.getName())
-                    .status(updatedWorkflow.getStatus().name())
-                    .userId(updatedWorkflow.getUserId())
-                    .generation(nextExecutionGeneration)
-                    .build();
-
-            workflowEventPublisher.publishWorkflowUpdate(event);
-
-            if (workflowMetrics != null) {
-                workflowMetrics.recordWorkflowRetried();
-                workflowMetrics.recordWorkflowStarted();
+            WorkflowExecution savedExecution = workflowExecutionRepository.save(execution);
+            if (savedExecution == null) {
+                savedExecution = execution;
             }
+            String retryEventId = UUID.randomUUID().toString();
 
-            log.info(
-                    "Workflow {} retry started with {} tasks",
-                    updatedWorkflow.getName(),
-                    taskRequests.size()
-            );
+            try (WorkflowTracingHelper.MdcScope ignored = WorkflowTracingHelper.scopedWorkflowLifecycle(
+                    updatedWorkflow.getId(), savedExecution.getId(), nextExecutionGeneration, "FAILED->RUNNING", retryEventId)) {
+                List<TaskExecutionRequest> taskRequests =
+                        workflowTasks.stream()
+                                .map(task ->
+                                        TaskExecutionRequest.builder()
+                                                .name(task.getName())
+                                                .executionOrder(task.getExecutionOrder())
+                                                .maxRetries(task.getMaxRetries())
+                                                .build()
+                                )
+                                .toList();
+
+                executionRequestProducer.publishExecutionRequest(
+                        WorkflowExecutionRequestEvent.builder()
+                                .workflowId(updatedWorkflow.getId())
+                                .workflowName(updatedWorkflow.getName())
+                                .tasks(taskRequests)
+                                .eventId(retryEventId)
+                                .executionId(savedExecution.getId())
+                                .resume(false)
+                                .generation(nextExecutionGeneration)
+                                .build()
+                );
+
+                WorkflowExecutionEvent event = WorkflowExecutionEvent.builder()
+                        .workflowId(updatedWorkflow.getId())
+                        .workflowName(updatedWorkflow.getName())
+                        .status(updatedWorkflow.getStatus().name())
+                        .userId(updatedWorkflow.getUserId())
+                        .generation(nextExecutionGeneration)
+                        .build();
+
+                workflowEventPublisher.publishWorkflowUpdate(event);
+
+                if (workflowMetrics != null) {
+                    workflowMetrics.recordWorkflowRetried();
+                    workflowMetrics.recordWorkflowStarted();
+                }
+
+                log.info(
+                        "Workflow {} retry started with {} tasks",
+                        updatedWorkflow.getName(),
+                        taskRequests.size()
+                );
+            }
 
             return updatedWorkflow;
         } catch (Exception e) {

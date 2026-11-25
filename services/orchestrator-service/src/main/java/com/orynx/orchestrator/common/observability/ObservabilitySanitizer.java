@@ -70,4 +70,46 @@ public final class ObservabilitySanitizer {
         }
         return redacted;
     }
+
+    /**
+     * Classifies an exception into a bounded, low-cardinality operational error category.
+     * Never returns exception messages or unbounded user input.
+     */
+    public static String classifyErrorCategory(Throwable throwable) {
+        if (throwable == null) {
+            return "INTERNAL";
+        }
+        Throwable curr = throwable;
+        for (int depth = 0; curr != null && depth < 6; depth++, curr = curr.getCause()) {
+            String name = curr.getClass().getSimpleName();
+            if (name.contains("Deserialization") || name.contains("MessageConversion")
+                    || name.contains("Conversion") || name.contains("JsonProcessing")
+                    || name.contains("HttpMessageNotReadable")) {
+                return "DESERIALIZATION";
+            }
+            if (name.contains("NotFound") || curr instanceof java.util.NoSuchElementException) {
+                return "NOT_FOUND";
+            }
+            if (name.contains("Validation") || name.contains("ConstraintViolation")
+                    || curr instanceof IllegalArgumentException) {
+                return "VALIDATION";
+            }
+            if (name.contains("Timeout")) {
+                return "TIMEOUT";
+            }
+            if (name.contains("AccessDenied") || name.contains("Authentication")
+                    || curr instanceof SecurityException) {
+                return "SECURITY";
+            }
+            if (name.contains("Redis") || name.contains("Kafka")
+                    || name.contains("DataAccess") || name.contains("SQL")
+                    || curr instanceof java.io.IOException) {
+                return "INFRASTRUCTURE";
+            }
+            if (curr instanceof IllegalStateException) {
+                return "STATE_CONFLICT";
+            }
+        }
+        return "INTERNAL";
+    }
 }

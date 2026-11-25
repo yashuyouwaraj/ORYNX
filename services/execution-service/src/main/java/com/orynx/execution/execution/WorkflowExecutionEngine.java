@@ -8,7 +8,9 @@ import com.orynx.execution.event.dto.WorkflowCompletedEvent;
 import com.orynx.execution.event.dto.WorkflowExecutionPausedEvent;
 import com.orynx.execution.execution.dto.TaskExecutionResult;
 import com.orynx.execution.kafka.ExecutionEventProducer;
+import com.orynx.execution.observability.ExecutionKafkaTracePropagator;
 import com.orynx.execution.observability.ExecutionMetrics;
+import com.orynx.execution.observability.ExecutionObservabilitySanitizer;
 import com.orynx.execution.workflow.event.WorkflowExecutionRequestEvent;
 import com.orynx.execution.workflow.event.dto.TaskExecutionRequest;
 import io.opentelemetry.api.GlobalOpenTelemetry;
@@ -70,14 +72,24 @@ public class WorkflowExecutionEngine {
         String workflowName = event.getWorkflowName();
 
         long startMs = System.currentTimeMillis();
+        String prevWorkflowId = MDC.get("workflowId");
+        String prevExecutionId = MDC.get("executionId");
+        String prevWorkerId = MDC.get("workerId");
+        String prevEventId = MDC.get("eventId");
+        String canonicalExecutionId = ExecutionKafkaTracePropagator.resolveCanonicalExecutionId(event, generation);
+        String safeEventId = ExecutionObservabilitySanitizer.sanitizeCorrelationId(event.getEventId());
+
         if (workflowId != null) {
             MDC.put("workflowId", String.valueOf(workflowId));
         }
-        if (generation != null && workflowId != null) {
-            MDC.put("executionId", "wf-" + workflowId + "-gen-" + generation);
+        if (canonicalExecutionId != null) {
+            MDC.put("executionId", canonicalExecutionId);
         }
         if (instanceId != null) {
             MDC.put("workerId", instanceId);
+        }
+        if (safeEventId != null) {
+            MDC.put("eventId", safeEventId);
         }
         Tracer tracer = GlobalOpenTelemetry.getTracer("com.orynx.execution.engine");
         try {
@@ -127,6 +139,7 @@ public class WorkflowExecutionEngine {
 
                 Span taskSpan = tracer.spanBuilder("orynx.task.execute")
                         .setAttribute("orynx.workflow.id", workflowId != null ? String.valueOf(workflowId) : "unknown")
+                        .setAttribute("orynx.execution.id", canonicalExecutionId != null ? canonicalExecutionId : "unknown")
                         .setAttribute("orynx.task.name", task.getName() != null ? task.getName() : "unknown")
                         .setAttribute("orynx.task.order", task.getExecutionOrder() != null ? task.getExecutionOrder() : 0)
                         .startSpan();
@@ -272,10 +285,19 @@ public class WorkflowExecutionEngine {
                 generation
         );
         } finally {
-            MDC.remove("workflowId");
-            MDC.remove("executionId");
-            MDC.remove("workerId");
+            restoreMdc("workflowId", prevWorkflowId);
+            restoreMdc("executionId", prevExecutionId);
+            restoreMdc("workerId", prevWorkerId);
+            restoreMdc("eventId", prevEventId);
             MDC.remove("attemptNumber");
+        }
+    }
+
+    private static void restoreMdc(String key, String previousValue) {
+        if (previousValue == null) {
+            MDC.remove(key);
+        } else {
+            MDC.put(key, previousValue);
         }
     }
 

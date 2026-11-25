@@ -148,37 +148,31 @@ export const getTimeline = async (
 };
 
 export const getPerformance = async (token?: string) => {
-  const response = await fetch(`${API_BASE_URL}/api/v1/performance`, {
-    headers: createHeaders(token),
-  });
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch performance");
-  }
+  const response = await fetchWithCorrelation(
+    `${API_BASE_URL}/api/v1/performance`,
+    token,
+    "Failed to fetch performance",
+  );
 
   return response.json();
 };
 
 export const getPerformanceSummary = async (token?: string) => {
-  const response = await fetch(`${API_BASE_URL}/api/v1/performance/summary`, {
-    headers: createHeaders(token),
-  });
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch performance summary");
-  }
+  const response = await fetchWithCorrelation(
+    `${API_BASE_URL}/api/v1/performance/summary`,
+    token,
+    "Failed to fetch performance summary",
+  );
 
   return response.json();
 };
 
 export const getWorkflowHealth = async (token?: string) => {
-  const response = await fetch(`${API_BASE_URL}/api/v1/performance/health`, {
-    headers: createHeaders(token),
-  });
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch workflow health");
-  }
+  const response = await fetchWithCorrelation(
+    `${API_BASE_URL}/api/v1/performance/health`,
+    token,
+    "Failed to fetch workflow health",
+  );
 
   return response.json();
 };

@@ -1,6 +1,7 @@
 package com.orynx.orchestrator.execution;
 
 import com.orynx.orchestrator.common.metrics.WorkflowMetrics;
+import com.orynx.orchestrator.common.observability.WorkflowTracingHelper;
 import com.orynx.orchestrator.event.dto.WorkflowExecutionPausedEvent;
 import com.orynx.orchestrator.execution.event.TaskCompletedEvent;
 import com.orynx.orchestrator.execution.event.TaskStartedEvent;
@@ -15,7 +16,6 @@ import com.orynx.orchestrator.workflow.task.TaskStatus;
 import com.orynx.orchestrator.workflow.task.WorkflowTask;
 import com.orynx.orchestrator.workflow.task.WorkflowTaskRepository;
 import lombok.extern.slf4j.Slf4j;
-import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
@@ -78,8 +78,8 @@ public class ExecutionEventConsumer {
             log.warn("Received null or malformed TaskStartedEvent. Ignoring.");
             return;
         }
-        MDC.put("workflowId", String.valueOf(event.getWorkflowId()));
-        try {
+        try (WorkflowTracingHelper.MdcScope ignored = WorkflowTracingHelper.scopedWorkflowLifecycle(
+                event.getWorkflowId(), null, event.getGeneration(), "TASK_STARTED", event.getEventId())) {
             log.info("Task Started -> Workflow: {}, Task: {}, gen={}",
                     event.getWorkflowName(), event.getTaskName(), event.getGeneration());
 
@@ -143,8 +143,6 @@ public class ExecutionEventConsumer {
         workflowTaskRepository.save(task);
 
         log.info("Task {} marked RUNNING", task.getName());
-        } finally {
-            MDC.remove("workflowId");
         }
     }
 
@@ -162,8 +160,8 @@ public class ExecutionEventConsumer {
             log.warn("Received null or malformed TaskCompletedEvent. Ignoring.");
             return;
         }
-        MDC.put("workflowId", String.valueOf(event.getWorkflowId()));
-        try {
+        try (WorkflowTracingHelper.MdcScope ignored = WorkflowTracingHelper.scopedWorkflowLifecycle(
+                event.getWorkflowId(), null, event.getGeneration(), "TASK_COMPLETED", event.getEventId())) {
         log.info(
                 "Task Completed -> Workflow: {}, Task: {}, Success: {}, gen={}",
                 event.getWorkflowName(),
@@ -265,8 +263,6 @@ public class ExecutionEventConsumer {
                 && execution.getStatus() != WorkflowStatus.CANCELLED) {
             workflowExecutionRepository.save(execution);
         }
-        } finally {
-            MDC.remove("workflowId");
         }
     }
 
@@ -284,8 +280,8 @@ public class ExecutionEventConsumer {
             log.warn("Received null or malformed WorkflowCompletedEvent. Ignoring.");
             return;
         }
-        MDC.put("workflowId", String.valueOf(event.getWorkflowId()));
-        try {
+        try (WorkflowTracingHelper.MdcScope ignored = WorkflowTracingHelper.scopedWorkflowLifecycle(
+                event.getWorkflowId(), null, event.getGeneration(), "WORKFLOW_COMPLETED", event.getEventId())) {
         log.info(
                 "Workflow Completed -> {} (success={}, gen={})",
                 event.getWorkflowName(),
@@ -434,8 +430,6 @@ public class ExecutionEventConsumer {
                     .eventId(UUID.randomUUID().toString())
                     .build());
         }
-        } finally {
-            MDC.remove("workflowId");
         }
     }
 
@@ -455,8 +449,8 @@ public class ExecutionEventConsumer {
             log.warn("Received null or malformed WorkflowExecutionPausedEvent. Ignoring.");
             return;
         }
-        MDC.put("workflowId", String.valueOf(event.getWorkflowId()));
-        try {
+        try (WorkflowTracingHelper.MdcScope ignored = WorkflowTracingHelper.scopedWorkflowLifecycle(
+                event.getWorkflowId(), null, event.getGeneration(), "WORKFLOW_PAUSED", event.getEventId())) {
         log.info(
                 "Workflow Execution Paused -> Id: {}, Workflow: {}, Last Completed Task: {}, gen={}",
                 event.getWorkflowId(),
@@ -522,8 +516,6 @@ public class ExecutionEventConsumer {
                 "Workflow execution {} marked PAUSED",
                 execution.getId()
         );
-        } finally {
-            MDC.remove("workflowId");
         }
     }
 

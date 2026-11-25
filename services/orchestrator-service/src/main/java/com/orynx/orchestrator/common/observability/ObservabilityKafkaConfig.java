@@ -10,6 +10,7 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.ProducerInterceptor;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
+import org.slf4j.MDC;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.context.annotation.Bean;
@@ -17,19 +18,22 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.listener.RecordInterceptor;
+import org.springframework.util.ReflectionUtils;
 
+import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Map;
 
 /**
  * Automatically wires W3C Trace Context and correlation header propagation onto Spring Kafka
- * producers and listeners without breaking existing KafkaTemplate method signatures or tests.
+ * producers and listeners without breaking existing KafkaTemplate method signatures, replacing
+ * existing RecordInterceptors, or creating duplicate consumer spans alongside the OTel Java agent.
  */
 @Configuration
 public class ObservabilityKafkaConfig {
 
     @Bean
-    public BeanPostProcessor kafkaObservabilityBeanPostProcessor() {
+    public static BeanPostProcessor kafkaObservabilityBeanPostProcessor() {
         return new BeanPostProcessor() {
             @Override
             @SuppressWarnings({"unchecked", "rawtypes"})
@@ -49,11 +53,31 @@ public class ObservabilityKafkaConfig {
                         factory.updateConfigs(Map.of("interceptor.classes", merged));
                     }
                 } else if (bean instanceof ConcurrentKafkaListenerContainerFactory factory) {
-                    factory.setRecordInterceptor(new TraceContextRecordInterceptor<>());
+                    RecordInterceptor existing = getExistingRecordInterceptor(factory);
+                    if (existing == null) {
+                        factory.setRecordInterceptor(new TraceContextRecordInterceptor<>());
+                    } else if (!(existing instanceof TraceContextRecordInterceptor)
+                            && !(existing instanceof ComposingRecordInterceptor)) {
+                        factory.setRecordInterceptor(new ComposingRecordInterceptor<>(
+                                new TraceContextRecordInterceptor<>(),
+                                existing
+                        ));
+                    }
                 }
                 return bean;
             }
         };
+    }
+
+    @SuppressWarnings("rawtypes")
+    private static RecordInterceptor getExistingRecordInterceptor(ConcurrentKafkaListenerContainerFactory<?, ?> factory) {
+        Field field = ReflectionUtils.findField(factory.getClass(), "recordInterceptor");
+        if (field == null) {
+            return null;
+        }
+        ReflectionUtils.makeAccessible(field);
+        Object val = ReflectionUtils.getField(field, factory);
+        return val instanceof RecordInterceptor interceptor ? interceptor : null;
     }
 
     public static class TraceContextProducerInterceptor<K, V> implements ProducerInterceptor<K, V> {
@@ -81,14 +105,93 @@ public class ObservabilityKafkaConfig {
         }
     }
 
+    /**
+     * Composes observability interception ahead of any pre-existing RecordInterceptor so trace/MDC
+     * context is available to the delegate and guaranteed to be cleaned up afterwards.
+     */
+    public static class ComposingRecordInterceptor<K, V> implements RecordInterceptor<K, V> {
+        private final TraceContextRecordInterceptor<K, V> primary;
+        private final RecordInterceptor<K, V> delegate;
+
+        public ComposingRecordInterceptor(
+                TraceContextRecordInterceptor<K, V> primary,
+                RecordInterceptor<K, V> delegate
+        ) {
+            this.primary = primary;
+            this.delegate = delegate;
+        }
+
+        @Override
+        public ConsumerRecord<K, V> intercept(ConsumerRecord<K, V> record, Consumer<K, V> consumer) {
+            ConsumerRecord<K, V> enriched = primary.intercept(record, consumer);
+            if (enriched == null) {
+                return null;
+            }
+            ConsumerRecord<K, V> result = delegate.intercept(enriched, consumer);
+            if (result == null) {
+                primary.afterRecord(enriched, consumer);
+            }
+            return result;
+        }
+
+        @Override
+        public void success(ConsumerRecord<K, V> record, Consumer<K, V> consumer) {
+            delegate.success(record, consumer);
+            primary.success(record, consumer);
+        }
+
+        @Override
+        public void failure(ConsumerRecord<K, V> record, Exception exception, Consumer<K, V> consumer) {
+            primary.failure(record, exception, consumer);
+            delegate.failure(record, exception, consumer);
+        }
+
+        @Override
+        public void afterRecord(ConsumerRecord<K, V> record, Consumer<K, V> consumer) {
+            try {
+                delegate.afterRecord(record, consumer);
+            } finally {
+                primary.afterRecord(record, consumer);
+            }
+        }
+
+        @Override
+        public void clearThreadState(Consumer<?, ?> consumer) {
+            try {
+                delegate.clearThreadState(consumer);
+            } finally {
+                primary.clearThreadState(consumer);
+            }
+        }
+    }
+
+    /**
+     * Populates MDC correlation fields and enriches the active Kafka consumer span.
+     * When the OTel Java agent has already started an authoritative SpanKind.CONSUMER span,
+     * this interceptor enriches that active span without creating a competing duplicate span.
+     * When no active span is present (e.g., agent disabled or unit tests), it creates a single
+     * fallback SpanKind.CONSUMER span parented to the extracted W3C traceparent header.
+     */
     public static class TraceContextRecordInterceptor<K, V> implements RecordInterceptor<K, V> {
         private static final ThreadLocal<SpanScopeHolder> ACTIVE_SCOPE = new ThreadLocal<>();
 
         @Override
         public ConsumerRecord<K, V> intercept(ConsumerRecord<K, V> record, Consumer<K, V> consumer) {
+            if (ACTIVE_SCOPE.get() != null) {
+                cleanup();
+            }
             if (record == null) {
                 return null;
             }
+            Span currentSpan = Span.current();
+            if (currentSpan != null && currentSpan.getSpanContext().isValid()) {
+                // OTel Java agent (or upstream instrumentation) already owns the consumer span.
+                KafkaTraceContextPropagator.enrichSpanFromHeaders(currentSpan, record.headers(), record.topic());
+                KafkaTraceContextPropagator.populateMdcFromHeaders(record.headers(), Context.current());
+                ACTIVE_SCOPE.set(new SpanScopeHolder(currentSpan, null, false));
+                return record;
+            }
+
             Tracer tracer = GlobalOpenTelemetry.getTracer("com.orynx.orchestrator.kafka");
             Span span = KafkaTraceContextPropagator.startConsumerSpan(
                     tracer,
@@ -98,15 +201,18 @@ public class ObservabilityKafkaConfig {
             );
             Scope scope = span.makeCurrent();
             KafkaTraceContextPropagator.populateMdcFromHeaders(record.headers(), Context.current());
-            ACTIVE_SCOPE.set(new SpanScopeHolder(span, scope));
+            ACTIVE_SCOPE.set(new SpanScopeHolder(span, scope, true));
             return record;
         }
 
         @Override
         public void failure(ConsumerRecord<K, V> record, Exception exception, Consumer<K, V> consumer) {
+            String errorCategory = ObservabilitySanitizer.classifyErrorCategory(exception);
+            MDC.put(KafkaTraceContextPropagator.MDC_ERROR_CATEGORY, errorCategory);
             SpanScopeHolder holder = ACTIVE_SCOPE.get();
             if (holder != null && holder.span != null && exception != null) {
                 holder.span.setAttribute("error.type", exception.getClass().getSimpleName());
+                holder.span.setAttribute("orynx.error.category", errorCategory);
                 holder.span.setAttribute("error.message", ObservabilitySanitizer.safeErrorMessage(exception));
             }
         }
@@ -125,19 +231,21 @@ public class ObservabilityKafkaConfig {
             SpanScopeHolder holder = ACTIVE_SCOPE.get();
             if (holder != null) {
                 ACTIVE_SCOPE.remove();
-                try {
-                    if (holder.scope != null) {
-                        holder.scope.close();
-                    }
-                } finally {
-                    if (holder.span != null) {
-                        holder.span.end();
+                if (holder.ownedByInterceptor) {
+                    try {
+                        if (holder.scope != null) {
+                            holder.scope.close();
+                        }
+                    } finally {
+                        if (holder.span != null) {
+                            holder.span.end();
+                        }
                     }
                 }
             }
             KafkaTraceContextPropagator.clearKafkaMdc();
         }
 
-        private record SpanScopeHolder(Span span, Scope scope) {}
+        private record SpanScopeHolder(Span span, Scope scope, boolean ownedByInterceptor) {}
     }
 }

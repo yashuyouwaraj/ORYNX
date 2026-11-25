@@ -1,8 +1,10 @@
 package com.orynx.orchestrator.common.config;
 
+import com.orynx.orchestrator.common.observability.KafkaTraceContextPropagator;
 import com.orynx.orchestrator.common.observability.ObservabilitySanitizer;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -62,12 +64,22 @@ public class KafkaReliabilityConfig {
             Object key = record != null ? record.key() : null;
             String exceptionType = exception != null ? exception.getClass().getName() : "unknown";
             String cause = exception != null ? exception.getMessage() : "unknown";
-
-            log.error(
-                    "Kafka consumer recovery exhausted/skipped poison record: topic={}, partition={}, offset={}, key={}, exceptionType={}, cause={}",
-                    topic, partition, offset, key, exceptionType, cause, exception
-            );
-            publishToDlt(record, exception, topic, partition, offset, key, exceptionType, cause);
+            String errorCategory = ObservabilitySanitizer.classifyErrorCategory(exception);
+            String prevErrorCategory = MDC.get(KafkaTraceContextPropagator.MDC_ERROR_CATEGORY);
+            MDC.put(KafkaTraceContextPropagator.MDC_ERROR_CATEGORY, errorCategory);
+            try {
+                log.error(
+                        "Kafka consumer recovery exhausted/skipped poison record: topic={}, partition={}, offset={}, key={}, errorCategory={}, exceptionType={}, cause={}",
+                        topic, partition, offset, key, errorCategory, exceptionType, cause, exception
+                );
+                publishToDlt(record, exception, topic, partition, offset, key, exceptionType, cause);
+            } finally {
+                if (prevErrorCategory == null) {
+                    MDC.remove(KafkaTraceContextPropagator.MDC_ERROR_CATEGORY);
+                } else {
+                    MDC.put(KafkaTraceContextPropagator.MDC_ERROR_CATEGORY, prevErrorCategory);
+                }
+            }
         };
 
         DefaultErrorHandler errorHandler = new DefaultErrorHandler(

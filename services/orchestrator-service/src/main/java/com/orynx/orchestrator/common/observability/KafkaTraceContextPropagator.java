@@ -26,6 +26,7 @@ public final class KafkaTraceContextPropagator {
     public static final String HEADER_REQUEST_ID = "X-Request-ID";
     public static final String HEADER_WORKFLOW_ID = "X-Workflow-ID";
     public static final String HEADER_EXECUTION_ID = "X-Execution-ID";
+    public static final String HEADER_EVENT_ID = "X-Event-ID";
     public static final String HEADER_TRACEPARENT = "traceparent";
 
     public static final String MDC_TRACE_ID = "trace_id";
@@ -34,6 +35,8 @@ public final class KafkaTraceContextPropagator {
     public static final String MDC_REQUEST_ID = "requestId";
     public static final String MDC_WORKFLOW_ID = "workflowId";
     public static final String MDC_EXECUTION_ID = "executionId";
+    public static final String MDC_EVENT_ID = "eventId";
+    public static final String MDC_ERROR_CATEGORY = "errorCategory";
 
     private static final TextMapSetter<Headers> KAFKA_HEADER_SETTER = (carrier, key, value) -> {
         if (carrier == null || key == null || value == null) {
@@ -85,6 +88,7 @@ public final class KafkaTraceContextPropagator {
         putSanitizedHeaderIfAbsent(headers, HEADER_REQUEST_ID, MDC.get(MDC_REQUEST_ID));
         putSanitizedHeaderIfAbsent(headers, HEADER_WORKFLOW_ID, MDC.get(MDC_WORKFLOW_ID));
         putSanitizedHeaderIfAbsent(headers, HEADER_EXECUTION_ID, MDC.get(MDC_EXECUTION_ID));
+        putSanitizedHeaderIfAbsent(headers, HEADER_EVENT_ID, MDC.get(MDC_EVENT_ID));
     }
 
     /**
@@ -106,6 +110,7 @@ public final class KafkaTraceContextPropagator {
             String requestId = ObservabilitySanitizer.sanitizeCorrelationId(getHeader(headers, HEADER_REQUEST_ID));
             String workflowId = ObservabilitySanitizer.sanitizeCorrelationId(getHeader(headers, HEADER_WORKFLOW_ID));
             String executionId = ObservabilitySanitizer.sanitizeCorrelationId(getHeader(headers, HEADER_EXECUTION_ID));
+            String eventId = ObservabilitySanitizer.sanitizeCorrelationId(getHeader(headers, HEADER_EVENT_ID));
 
             if (correlationId == null) {
                 correlationId = requestId;
@@ -122,18 +127,56 @@ public final class KafkaTraceContextPropagator {
             if (executionId != null) {
                 MDC.put(MDC_EXECUTION_ID, executionId);
             }
+            if (eventId != null) {
+                MDC.put(MDC_EVENT_ID, eventId);
+            }
         }
-        if (extractedContext != null) {
-            SpanContext spanContext = Span.fromContext(extractedContext).getSpanContext();
-            if (spanContext.isValid()) {
-                MDC.put(MDC_TRACE_ID, spanContext.getTraceId());
-                MDC.put(MDC_SPAN_ID, spanContext.getSpanId());
+        SpanContext spanContext = extractedContext != null
+                ? Span.fromContext(extractedContext).getSpanContext()
+                : SpanContext.getInvalid();
+        if (!spanContext.isValid() && headers != null) {
+            spanContext = Span.fromContext(extract(headers)).getSpanContext();
+        }
+        if (spanContext.isValid()) {
+            MDC.put(MDC_TRACE_ID, spanContext.getTraceId());
+            MDC.put(MDC_SPAN_ID, spanContext.getSpanId());
+        }
+    }
+
+    /**
+     * Enriches an active span (such as one created by the OTel Java agent's Kafka instrumentation)
+     * with sanitized OrynX correlation attributes without creating a duplicate consumer span.
+     */
+    public static void enrichSpanFromHeaders(Span span, Headers headers, String topic) {
+        if (span == null || !span.getSpanContext().isValid()) {
+            return;
+        }
+        if (topic != null && !topic.isBlank()) {
+            span.setAttribute("orynx.kafka.topic", topic);
+        }
+        if (headers != null) {
+            String correlationId = ObservabilitySanitizer.sanitizeCorrelationId(getHeader(headers, HEADER_CORRELATION_ID));
+            String workflowId = ObservabilitySanitizer.sanitizeCorrelationId(getHeader(headers, HEADER_WORKFLOW_ID));
+            String executionId = ObservabilitySanitizer.sanitizeCorrelationId(getHeader(headers, HEADER_EXECUTION_ID));
+            String eventId = ObservabilitySanitizer.sanitizeCorrelationId(getHeader(headers, HEADER_EVENT_ID));
+            if (correlationId != null) {
+                span.setAttribute("orynx.correlation.id", correlationId);
+            }
+            if (workflowId != null) {
+                span.setAttribute("orynx.workflow.id", workflowId);
+            }
+            if (executionId != null) {
+                span.setAttribute("orynx.execution.id", executionId);
+            }
+            if (eventId != null) {
+                span.setAttribute("orynx.event.id", eventId);
             }
         }
     }
 
     /**
      * Starts a consumer span parented to the extracted W3C trace context from Kafka headers.
+     * Used only when no active valid consumer span was already created by the OTel Java agent.
      */
     public static Span startConsumerSpan(Tracer tracer, String operation, Headers headers, String topic) {
         Context parent = extract(headers);
@@ -144,16 +187,7 @@ public final class KafkaTraceContextPropagator {
                 .setAttribute("messaging.destination.name", topic != null ? topic : "unknown")
                 .startSpan();
 
-        if (headers != null) {
-            String correlationId = ObservabilitySanitizer.sanitizeCorrelationId(getHeader(headers, HEADER_CORRELATION_ID));
-            String workflowId = ObservabilitySanitizer.sanitizeCorrelationId(getHeader(headers, HEADER_WORKFLOW_ID));
-            if (correlationId != null) {
-                span.setAttribute("orynx.correlation.id", correlationId);
-            }
-            if (workflowId != null) {
-                span.setAttribute("orynx.workflow.id", workflowId);
-            }
-        }
+        enrichSpanFromHeaders(span, headers, topic);
         return span;
     }
 
@@ -165,6 +199,8 @@ public final class KafkaTraceContextPropagator {
         MDC.remove(MDC_REQUEST_ID);
         MDC.remove(MDC_WORKFLOW_ID);
         MDC.remove(MDC_EXECUTION_ID);
+        MDC.remove(MDC_EVENT_ID);
+        MDC.remove(MDC_ERROR_CATEGORY);
         MDC.remove(MDC_TRACE_ID);
         MDC.remove(MDC_SPAN_ID);
     }

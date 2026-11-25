@@ -7,6 +7,8 @@ import com.orynx.execution.execution.ActiveExecutionTracker;
 import com.orynx.execution.execution.ExecutionService;
 import com.orynx.execution.execution.WorkflowExecutionDispatcher;
 import com.orynx.execution.execution.WorkflowPauseRegistry;
+import com.orynx.execution.observability.ExecutionKafkaTracePropagator;
+import com.orynx.execution.observability.ExecutionObservabilitySanitizer;
 import com.orynx.execution.worker.ExecutionWorkerProperties;
 import com.orynx.execution.worker.WorkerQueueFullException;
 import com.orynx.execution.workflow.event.WorkflowExecutionRequestEvent;
@@ -72,7 +74,19 @@ public class ExecutionRequestConsumer {
         String workflowName = event.getWorkflowName();
         boolean isResume = Boolean.TRUE.equals(event.getResume());
 
-        MDC.put("workflowId", String.valueOf(workflowId));
+        String prevWorkflowId = MDC.get(ExecutionKafkaTracePropagator.MDC_WORKFLOW_ID);
+        String prevExecutionId = MDC.get(ExecutionKafkaTracePropagator.MDC_EXECUTION_ID);
+        String prevEventId = MDC.get(ExecutionKafkaTracePropagator.MDC_EVENT_ID);
+        String canonicalExecutionId = ExecutionKafkaTracePropagator.resolveCanonicalExecutionId(event, event.getGeneration());
+        String safeEventId = ExecutionObservabilitySanitizer.sanitizeCorrelationId(event.getEventId());
+
+        MDC.put(ExecutionKafkaTracePropagator.MDC_WORKFLOW_ID, String.valueOf(workflowId));
+        if (canonicalExecutionId != null) {
+            MDC.put(ExecutionKafkaTracePropagator.MDC_EXECUTION_ID, canonicalExecutionId);
+        }
+        if (safeEventId != null) {
+            MDC.put(ExecutionKafkaTracePropagator.MDC_EVENT_ID, safeEventId);
+        }
         try {
         log.info("========================================");
         log.info("Received Workflow Execution Request (eventId={}, resume={})", event.getEventId(), isResume);
@@ -184,7 +198,17 @@ public class ExecutionRequestConsumer {
             throw e;
         }
         } finally {
-            MDC.remove("workflowId");
+            restoreMdc(ExecutionKafkaTracePropagator.MDC_WORKFLOW_ID, prevWorkflowId);
+            restoreMdc(ExecutionKafkaTracePropagator.MDC_EXECUTION_ID, prevExecutionId);
+            restoreMdc(ExecutionKafkaTracePropagator.MDC_EVENT_ID, prevEventId);
+        }
+    }
+
+    private static void restoreMdc(String key, String previousValue) {
+        if (previousValue == null) {
+            MDC.remove(key);
+        } else {
+            MDC.put(key, previousValue);
         }
     }
 }

@@ -16,12 +16,6 @@
             <includeMdcKeyName>span_id</includeMdcKeyName>
             <includeMdcKeyName>requestId</includeMdcKeyName>
             <includeMdcKeyName>correlationId</includeMdcKeyName>
-            <includeMdcKeyName>workflowId</includeMdcKeyName>
-            <includeMdcKeyName>executionId</includeMdcKeyName>
-            <includeMdcKeyName>attemptNumber</includeMdcKeyName>
-            <includeMdcKeyName>workerId</includeMdcKeyName>
-            <includeMdcKeyName>eventId</includeMdcKeyName>
-            <includeMdcKeyName>errorCategory</includeMdcKeyName>
         </encoder>
     </appender>
 
