@@ -510,6 +510,183 @@ class ResilienceExperimentEngineTest {
     }
 
     @Test
+    @DisplayName("M-01 (Step 25.8): Stale lock owner AND local neutralization failure still triggers CLEANUP_FAILED and quarantine")
+    void staleOwnerPlusLocalNeutralizationFailureActivatesQuarantineAndCleanupFailed() {
+        DistributedLockService lockService = mock(DistributedLockService.class);
+        when(lockService.tryAcquire(eq(ResilienceExperimentEngine.RESILIENCE_LOCK_KEY), any(), any()))
+                .thenReturn(true);
+        when(lockService.isLockHeldBy(eq(ResilienceExperimentEngine.RESILIENCE_LOCK_KEY), any()))
+                .thenReturn(true)   // before injection
+                .thenReturn(false); // before recovery & cleanup -> STALE OWNER
+
+        StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
+        @SuppressWarnings("unchecked")
+        org.springframework.data.redis.core.ValueOperations<String, String> valueOps = mock(org.springframework.data.redis.core.ValueOperations.class);
+        when(redisTemplate.hasKey(eq(ResilienceExperimentEngine.QUARANTINE_KEY))).thenReturn(false);
+        when(redisTemplate.opsForValue()).thenReturn(valueOps);
+
+        FailureInjectionAdapter adapter = mock(FailureInjectionAdapter.class);
+        when(adapter.getSupportedScenario()).thenReturn(ScenarioType.REDIS_INTERRUPTION);
+        when(adapter.verifyInjected(any())).thenReturn(true);
+        doThrow(new RuntimeException("Local registry neutralization crashed"))
+                .when(adapter).neutralizeLocalFault(any());
+
+        ResilienceExperimentEngine engine = new ResilienceExperimentEngine(
+                validator, metrics, registry, List.of(adapter), lockService, redisTemplate
+        );
+
+        ExperimentDefinition def = sampleDefinition("exp-stale-and-neutralize-fail").toBuilder().durationMs(50).build();
+        ExperimentResult result = engine.runExperiment(def);
+
+        // Must be CLEANUP_FAILED (NOT masked by FAIL from stale owner), quarantine MUST be active
+        assertEquals(ExperimentResult.Outcome.CLEANUP_FAILED, result.getOutcome());
+        assertEquals(com.orynx.orchestrator.resilience.model.ExperimentState.CLEANUP_FAILED, engine.getCurrentState());
+        assertFalse(result.isSuccessful());
+        assertFalse(result.isCleanupSuccessful());
+        assertTrue(engine.isQuarantined());
+        verify(valueOps).set(eq(ResilienceExperimentEngine.QUARANTINE_KEY), any());
+        verify(adapter, never()).cleanup(any());
+        verify(lockService, never()).release(any(), any());
+    }
+
+    @Test
+    @DisplayName("M-01 (Step 25.8): Lock check exception AND local neutralization failure activates local quarantine even if Redis quarantine write fails")
+    void lockCheckExceptionPlusNeutralizationFailurePreservesLocalQuarantine() {
+        DistributedLockService lockService = mock(DistributedLockService.class);
+        when(lockService.tryAcquire(eq(ResilienceExperimentEngine.RESILIENCE_LOCK_KEY), any(), any()))
+                .thenReturn(true);
+        when(lockService.isLockHeldBy(eq(ResilienceExperimentEngine.RESILIENCE_LOCK_KEY), any()))
+                .thenReturn(true)
+                .thenThrow(new RedisConnectionFailureException("Redis down during lock check"));
+
+        StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
+        @SuppressWarnings("unchecked")
+        org.springframework.data.redis.core.ValueOperations<String, String> valueOps = mock(org.springframework.data.redis.core.ValueOperations.class);
+        when(redisTemplate.hasKey(eq(ResilienceExperimentEngine.QUARANTINE_KEY))).thenReturn(false);
+        when(redisTemplate.opsForValue()).thenReturn(valueOps);
+        doThrow(new RedisConnectionFailureException("Redis down during quarantine persist"))
+                .when(valueOps).set(eq(ResilienceExperimentEngine.QUARANTINE_KEY), any());
+
+        FailureInjectionAdapter adapter = mock(FailureInjectionAdapter.class);
+        when(adapter.getSupportedScenario()).thenReturn(ScenarioType.REDIS_INTERRUPTION);
+        when(adapter.verifyInjected(any())).thenReturn(true);
+        doThrow(new RuntimeException("Local neutralization failed")).when(adapter).neutralizeLocalFault(any());
+
+        ResilienceExperimentEngine engine = new ResilienceExperimentEngine(
+                validator, metrics, registry, List.of(adapter), lockService, redisTemplate
+        );
+
+        ExperimentDefinition def = sampleDefinition("exp-redis-down-neutralize-fail").toBuilder().durationMs(50).build();
+        ExperimentResult result = engine.runExperiment(def);
+
+        assertEquals(ExperimentResult.Outcome.CLEANUP_FAILED, result.getOutcome());
+        assertFalse(result.isCleanupSuccessful());
+        assertTrue(engine.isQuarantined(), "Local quarantine must remain active even when Redis persistence fails");
+        verify(adapter, never()).cleanup(any());
+        verify(lockService, never()).release(any(), any());
+    }
+
+    @Test
+    @DisplayName("m-01 (Step 25.8): Timeout followed by stale lock loss preserves TIMED_OUT outcome")
+    void timeoutPlusStaleOwnerPreservesTimedOutOutcome() {
+        DistributedLockService lockService = mock(DistributedLockService.class);
+        when(lockService.tryAcquire(eq(ResilienceExperimentEngine.RESILIENCE_LOCK_KEY), any(), any()))
+                .thenReturn(true);
+        when(lockService.isLockHeldBy(eq(ResilienceExperimentEngine.RESILIENCE_LOCK_KEY), any()))
+                .thenReturn(true)   // before injection
+                .thenReturn(false); // during finally cleanup after timeout
+
+        FailureInjectionAdapter hangingAdapter = mock(FailureInjectionAdapter.class);
+        when(hangingAdapter.getSupportedScenario()).thenReturn(ScenarioType.REDIS_INTERRUPTION);
+        doAnswer(inv -> {
+            Thread.sleep(5000);
+            return null;
+        }).when(hangingAdapter).inject(any());
+
+        ResilienceExperimentEngine engine = new ResilienceExperimentEngine(
+                validator, metrics, registry, List.of(hangingAdapter), lockService, null
+        );
+
+        ExperimentDefinition def = sampleDefinition("exp-timeout-stale-001")
+                .toBuilder().durationMs(100).timeoutMs(200).build();
+        ExperimentResult result = engine.runExperiment(def);
+
+        assertEquals(ExperimentResult.Outcome.TIMED_OUT, result.getOutcome());
+        assertFalse(result.isSuccessful());
+        assertFalse(result.isCleanupSuccessful());
+        assertTrue(result.getVerificationErrors().stream().anyMatch(e -> e.contains("Stale owner detected")));
+        verify(hangingAdapter).neutralizeLocalFault(any());
+        verify(hangingAdapter, never()).cleanup(any());
+    }
+
+    @Test
+    @DisplayName("m-02 (Step 25.8): clearQuarantine preserves local quarantine when Redis deletion fails")
+    void clearQuarantineRedisFailurePreservesLocalQuarantine() {
+        StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
+        @SuppressWarnings("unchecked")
+        org.springframework.data.redis.core.ValueOperations<String, String> valueOps = mock(org.springframework.data.redis.core.ValueOperations.class);
+        when(redisTemplate.hasKey(eq(ResilienceExperimentEngine.QUARANTINE_KEY))).thenReturn(false);
+        when(redisTemplate.opsForValue()).thenReturn(valueOps);
+        when(redisTemplate.delete(eq(ResilienceExperimentEngine.QUARANTINE_KEY)))
+                .thenThrow(new RedisConnectionFailureException("Redis unavailable during delete"));
+
+        FailureInjectionAdapter faultyAdapter = mock(FailureInjectionAdapter.class);
+        when(faultyAdapter.getSupportedScenario()).thenReturn(ScenarioType.REDIS_INTERRUPTION);
+        when(faultyAdapter.verifyInjected(any())).thenReturn(true);
+        when(faultyAdapter.verifyRecovered(any())).thenReturn(true);
+        doThrow(new RuntimeException("Cleanup boom")).when(faultyAdapter).cleanup(any());
+
+        ResilienceExperimentEngine engine = new ResilienceExperimentEngine(
+                validator, metrics, registry, List.of(faultyAdapter), null, redisTemplate
+        );
+
+        ExperimentResult result = engine.runExperiment(sampleDefinition("exp-q-clear-fail").toBuilder().durationMs(50).build());
+        assertEquals(ExperimentResult.Outcome.CLEANUP_FAILED, result.getOutcome());
+        assertTrue(engine.isQuarantined());
+
+        // clearQuarantine must fail loudly AND preserve local quarantine!
+        assertThrows(IllegalStateException.class, () -> engine.clearQuarantine("Attempt reset during outage"));
+        assertTrue(engine.isQuarantined(), "Local quarantine must remain true when Redis delete fails");
+    }
+
+    @Test
+    @DisplayName("m-01 (Step 25.8): Operator abort followed by stale lock loss preserves ABORTED outcome")
+    void abortPlusStaleOwnerPreservesAbortedOutcome() throws Exception {
+        DistributedLockService lockService = mock(DistributedLockService.class);
+        when(lockService.tryAcquire(eq(ResilienceExperimentEngine.RESILIENCE_LOCK_KEY), any(), any()))
+                .thenReturn(true);
+        when(lockService.isLockHeldBy(eq(ResilienceExperimentEngine.RESILIENCE_LOCK_KEY), any()))
+                .thenReturn(true)   // before injection
+                .thenReturn(false); // during finally cleanup after operator abort
+
+        ResilienceExperimentEngine engineWithLock = new ResilienceExperimentEngine(
+                validator, metrics, registry, List.of(redisAdapter), lockService, null
+        );
+
+        ExperimentDefinition def = sampleDefinition("exp-abort-stale-001")
+                .toBuilder().durationMs(3000).timeoutMs(5000).build();
+        Thread t = new Thread(() -> engineWithLock.runExperiment(def));
+        t.start();
+        Thread.sleep(100);
+        assertTrue(engineWithLock.abort("exp-abort-stale-001"));
+        t.join(3000);
+
+        ExperimentResult result = registry.getResult("exp-abort-stale-001").orElseThrow();
+        assertEquals(ExperimentResult.Outcome.ABORTED, result.getOutcome());
+        assertFalse(result.isSuccessful());
+        assertFalse(result.isCleanupSuccessful());
+        assertTrue(result.getVerificationErrors().stream().anyMatch(e -> e.contains("Stale owner detected")));
+        assertFalse(redisAdapter.isSimulatedFailureActive());
+    }
+
+    @Test
+    @DisplayName("m-02 (Step 25.8): clearQuarantine rejects blank reason and preserves quarantine if concurrent activation occurs")
+    void clearQuarantineRejectsBlankReason() {
+        assertThrows(IllegalArgumentException.class, () -> engine.clearQuarantine(null));
+        assertThrows(IllegalArgumentException.class, () -> engine.clearQuarantine("   "));
+    }
+
+    @Test
     @DisplayName("Scheduler lifecycle shutdown executes without error (M-03)")
     void schedulerShutdownExecutesCleanly() {
         engine.shutdown();

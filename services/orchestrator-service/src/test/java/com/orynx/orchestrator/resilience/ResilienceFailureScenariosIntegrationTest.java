@@ -119,8 +119,8 @@ class ResilienceFailureScenariosIntegrationTest {
         assertTrue(normalDecision.admitted());
         assertFalse(normalDecision.bypassedDueToFailure());
 
-        // During experiment: fault is activated via faultRegistry
-        faultRegistry.activateFault(ScenarioType.REDIS_INTERRUPTION, "isolated-redis-primary", Map.of("policy", "FAIL_CLOSED"));
+        // During experiment: fault is activated via faultRegistry with explicit experimentId
+        faultRegistry.activateFault(ScenarioType.REDIS_INTERRUPTION, "exp-scenario-a-manual-closed", "isolated-redis-primary", Map.of("policy", "FAIL_CLOSED"));
         assertTrue(faultRegistry.isRedisFaultActive());
 
         // When fault is active with FAIL_CLOSED, admissionController throws 503 WITHOUT mutating props singleton
@@ -134,8 +134,8 @@ class ResilienceFailureScenariosIntegrationTest {
         // CRITICAL: Global configuration singleton was NOT mutated (F-02 remediation)
         assertEquals(AdmissionFailurePolicy.FAIL_OPEN, props.getFailurePolicy());
 
-        // Deactivate fault
-        faultRegistry.deactivateFault(ScenarioType.REDIS_INTERRUPTION);
+        // Deactivate fault with rightful experimentId
+        assertTrue(faultRegistry.deactivateFault(ScenarioType.REDIS_INTERRUPTION, "exp-scenario-a-manual-closed"));
         assertFalse(faultRegistry.isRedisFaultActive());
 
         // After fault deactivated: admission controller immediately recovers
@@ -166,8 +166,8 @@ class ResilienceFailureScenariosIntegrationTest {
                 mockRedis, mockScript, mockScript, props, coordMetrics, faultRegistry
         );
 
-        // Inject scoped fault with FAIL_OPEN policy
-        faultRegistry.activateFault(ScenarioType.REDIS_INTERRUPTION, "isolated-redis-primary", Map.of("policy", "FAIL_OPEN"));
+        // Inject scoped fault with FAIL_OPEN policy and explicit experimentId
+        faultRegistry.activateFault(ScenarioType.REDIS_INTERRUPTION, "exp-scenario-a-manual-open", "isolated-redis-primary", Map.of("policy", "FAIL_OPEN"));
         assertTrue(faultRegistry.isRedisFaultActive());
 
         // Under scoped fault with FAIL_OPEN, admission decision admits with bypass
@@ -179,7 +179,7 @@ class ResilienceFailureScenariosIntegrationTest {
         // Global config remains FAIL_CLOSED
         assertEquals(AdmissionFailurePolicy.FAIL_CLOSED, props.getFailurePolicy());
 
-        faultRegistry.deactivateFault(ScenarioType.REDIS_INTERRUPTION);
+        assertTrue(faultRegistry.deactivateFault(ScenarioType.REDIS_INTERRUPTION, "exp-scenario-a-manual-open"));
     }
 
     @Test

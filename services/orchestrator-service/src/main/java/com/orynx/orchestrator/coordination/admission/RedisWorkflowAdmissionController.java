@@ -72,16 +72,24 @@ public class RedisWorkflowAdmissionController implements WorkflowAdmissionContro
             throw new IllegalArgumentException("workflowId cannot be null for admission");
         }
 
-        // Check if an isolated resilience fault injection is active
-        if (faultRegistry != null && faultRegistry.isRedisFaultActive()) {
-            AdmissionFailurePolicy activePolicy = faultRegistry.getScopedRedisPolicy(properties.getFailurePolicy());
-            if (activePolicy == AdmissionFailurePolicy.FAIL_OPEN) {
-                log.warn("Resilience fault injected (FAIL_OPEN): allowing workflow {} to proceed", workflowId);
-                metrics.recordAdmission("accepted", "fail_open");
-                return AdmissionDecision.failOpenBypassed("FAIL_OPEN_REDIS_INJECTED_FAULT");
-            } else {
-                metrics.recordAdmission("error", "redis_unavailable");
-                throw WorkflowAdmissionException.redisUnavailable("Simulated Redis outage by resilience experiment", properties.getRetryAfterSeconds());
+        // Check if an isolated resilience fault injection is active via a single atomic snapshot
+        if (faultRegistry != null) {
+            java.util.Optional<com.orynx.orchestrator.resilience.adapter.ResilienceFaultRegistry.ActiveFault> activeRedisFault =
+                    faultRegistry.getActiveRedisFault();
+            if (activeRedisFault.isPresent()) {
+                com.orynx.orchestrator.resilience.adapter.ResilienceFaultRegistry.ActiveFault fault = activeRedisFault.get();
+                AdmissionFailurePolicy activePolicy = fault.getAdmissionFailurePolicy() != null
+                        ? fault.getAdmissionFailurePolicy()
+                        : properties.getFailurePolicy();
+                if (activePolicy == AdmissionFailurePolicy.FAIL_OPEN) {
+                    log.warn("Resilience fault injected (FAIL_OPEN, experiment={}): allowing workflow {} to proceed",
+                            fault.getExperimentId(), workflowId);
+                    metrics.recordAdmission("accepted", "fail_open");
+                    return AdmissionDecision.failOpenBypassed("FAIL_OPEN_REDIS_INJECTED_FAULT");
+                } else {
+                    metrics.recordAdmission("error", "redis_unavailable");
+                    throw WorkflowAdmissionException.redisUnavailable("Simulated Redis outage by resilience experiment", properties.getRetryAfterSeconds());
+                }
             }
         }
 

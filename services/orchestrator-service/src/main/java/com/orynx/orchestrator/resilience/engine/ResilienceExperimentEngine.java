@@ -30,6 +30,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -69,6 +70,7 @@ public class ResilienceExperimentEngine {
 
     // Quarantine guard: if cleanup fails, engine enters quarantine until operator reset
     private final AtomicBoolean quarantined = new AtomicBoolean(false);
+    private final AtomicLong quarantineGeneration = new AtomicLong(0);
 
     private final ScheduledExecutorService timeoutScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "resilience-timeout-watchdog");
@@ -300,6 +302,7 @@ public class ResilienceExperimentEngine {
             }
 
             boolean sharedCleanupSuccessful = false;
+            boolean sharedCleanupFailed = false;
             if (isStaleOwner) {
                 log.error("[RESILIENCE] Stale lock owner detected during cleanup. Lock is no longer held by token {}. Aborting shared-resource cleanup to protect active cluster owner.", lockToken);
                 verificationErrors.add("Stale owner detected: skipped shared cleanup to avoid interfering with new lock holder");
@@ -312,18 +315,8 @@ public class ResilienceExperimentEngine {
                 } catch (Exception cleanupEx) {
                     log.error("[RESILIENCE] Cleanup failed for experiment {}: {}", definition.getId(), cleanupEx.getMessage(), cleanupEx);
                     sharedCleanupSuccessful = false;
-                    quarantined.set(true);
-                    if (redisTemplate != null) {
-                        try {
-                            redisTemplate.opsForValue().set(QUARANTINE_KEY, "Quarantined due to cleanup failure in experiment " + definition.getId());
-                        } catch (Exception re) {
-                            log.error("Failed to set quarantine key in Redis", re);
-                        }
-                    }
+                    sharedCleanupFailed = true;
                     verificationErrors.add("Cleanup failed: " + cleanupEx.getMessage());
-                    forceState(ExperimentState.CLEANUP_FAILED);
-                    outcome = ExperimentResult.Outcome.CLEANUP_FAILED;
-                    resilienceMetrics.recordCleanupFailure(definition.getScenarioType());
                 }
             } else {
                 sharedCleanupSuccessful = true;
@@ -331,23 +324,23 @@ public class ResilienceExperimentEngine {
 
             cleanupSuccessful = localNeutralized && sharedCleanupSuccessful && !isStaleOwner;
 
-            // Step C: Ensure outcome and state consistency (M-01)
-            // If lock ownership was lost or local neutralization failed, the experiment CANNOT be PASS
-            if (isStaleOwner) {
-                outcome = ExperimentResult.Outcome.FAIL;
-                forceState(ExperimentState.FAILED);
-            } else if (!localNeutralized) {
-                outcome = ExperimentResult.Outcome.CLEANUP_FAILED;
+            // Step C: Deterministic cleanup failure, quarantine, and outcome reconciliation (Step 25.8 M-01 & m-01)
+            // Precedence:
+            //   1. Any cleanup failure (local neutralization failure OR shared cleanup failure) unconditionally
+            //      forces CLEANUP_FAILED and activates quarantine — even if lock ownership was also lost.
+            //   2. Stale lock ownership (with successful local neutralization) forbids PASS by downgrading
+            //      PASS -> FAIL/FAILED while preserving existing terminal causes (TIMED_OUT, ABORTED, FAILED).
+            boolean cleanupFailureOccurred = !localNeutralized || sharedCleanupFailed;
+            if (cleanupFailureOccurred) {
+                String quarantineReason = !localNeutralized
+                        ? "Quarantined due to local fault neutralization failure in experiment " + definition.getId()
+                        : "Quarantined due to cleanup failure in experiment " + definition.getId();
+                activateQuarantine(quarantineReason);
                 forceState(ExperimentState.CLEANUP_FAILED);
-                quarantined.set(true);
-                if (redisTemplate != null) {
-                    try {
-                        redisTemplate.opsForValue().set(QUARANTINE_KEY, "Quarantined due to local fault neutralization failure in experiment " + definition.getId());
-                    } catch (Exception re) {
-                        log.error("Failed to set quarantine key in Redis", re);
-                    }
-                }
+                outcome = ExperimentResult.Outcome.CLEANUP_FAILED;
                 resilienceMetrics.recordCleanupFailure(definition.getScenarioType());
+            } else if (isStaleOwner) {
+                outcome = reconcileStaleOwnerOutcome(outcome);
             }
 
             resilienceMetrics.recordExperimentCompleted(definition.getScenarioType(), outcome);
@@ -410,18 +403,55 @@ public class ResilienceExperimentEngine {
         return false;
     }
 
+    /**
+     * Clears quarantine safely: deletes the Redis quarantine key FIRST, and only clears the local
+     * quarantine flag if Redis deletion succeeds AND no concurrent quarantine activation occurred.
+     *
+     * @param operatorReason non-blank audit reason for clearing quarantine
+     * @return true if quarantine was cleared, false if a concurrent quarantine activation superseded this clear
+     */
     public boolean clearQuarantine(String operatorReason) {
-        log.warn("[RESILIENCE] Operator clearing quarantine. Reason: {}", operatorReason);
-        quarantined.set(false);
+        if (operatorReason == null || operatorReason.isBlank()) {
+            throw new IllegalArgumentException("Operator reason is required to clear quarantine");
+        }
+        long observedGeneration = quarantineGeneration.get();
+        log.warn("[RESILIENCE] Operator clearing quarantine (gen={}). Reason: {}", observedGeneration, operatorReason);
         if (redisTemplate != null) {
             try {
                 redisTemplate.delete(QUARANTINE_KEY);
             } catch (Exception re) {
-                log.error("Failed to delete quarantine in Redis: {}", re.getMessage());
+                log.error("[RESILIENCE] Failed to delete quarantine in Redis; preserving local quarantine: {}", re.getMessage());
                 throw new IllegalStateException("Failed to clear quarantine in Redis due to connectivity error: " + re.getMessage(), re);
             }
         }
+        if (quarantineGeneration.get() != observedGeneration) {
+            log.warn("[RESILIENCE] Concurrent quarantine activation detected during clearQuarantine (gen {} -> {}); preserving quarantine.",
+                    observedGeneration, quarantineGeneration.get());
+            return false;
+        }
+        quarantined.set(false);
         return true;
+    }
+
+    private void activateQuarantine(String reason) {
+        quarantineGeneration.incrementAndGet();
+        quarantined.set(true);
+        if (redisTemplate != null) {
+            try {
+                redisTemplate.opsForValue().set(QUARANTINE_KEY, reason);
+            } catch (Exception re) {
+                log.error("[RESILIENCE] Failed to persist quarantine key in Redis (local quarantine remains active): {}", re.getMessage(), re);
+            }
+        }
+    }
+
+    private ExperimentResult.Outcome reconcileStaleOwnerOutcome(ExperimentResult.Outcome currentOutcome) {
+        if (currentOutcome == ExperimentResult.Outcome.PASS) {
+            forceState(ExperimentState.FAILED);
+            return ExperimentResult.Outcome.FAIL;
+        }
+        // Preserve already meaningful terminal outcomes (TIMED_OUT, ABORTED, FAIL, CLEANUP_FAILED)
+        return currentOutcome;
     }
 
     /**
