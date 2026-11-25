@@ -15,6 +15,8 @@ import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -53,6 +55,16 @@ public class ResilienceExperimentEngine {
 
     public static final String RESILIENCE_LOCK_KEY = "resilience-experiment-leader";
     public static final String QUARANTINE_KEY = "orynx:{admission}:resilience_quarantine";
+
+    /**
+     * Atomic Redis Lua compare-and-delete script for quarantine clearing (Step 25.10 m-01).
+     * Deletes KEYS[1] only if its current value equals the exact token/payload ARGV[1] observed
+     * prior to clearing, preventing a stale clear operation from erasing a newly activated quarantine.
+     */
+    public static final RedisScript<Long> COMPARE_AND_DELETE_QUARANTINE_SCRIPT = new DefaultRedisScript<>(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+            Long.class
+    );
 
     private final ExperimentSafetyValidator safetyValidator;
     private final ResilienceMetrics resilienceMetrics;
@@ -404,11 +416,15 @@ public class ResilienceExperimentEngine {
     }
 
     /**
-     * Clears quarantine safely: deletes the Redis quarantine key FIRST, and only clears the local
-     * quarantine flag if Redis deletion succeeds AND no concurrent quarantine activation occurred.
+     * Clears quarantine safely using atomic Redis compare-and-delete (Step 25.10 m-01):
+     * 1. Reads the currently persisted Redis quarantine token/payload.
+     * 2. Executes an atomic Redis Lua compare-and-delete matching that exact observed value so a
+     *    concurrently activated newer quarantine (local or on a peer node) can never be erased.
+     * 3. Preserves local quarantine if Redis fails, if a newer Redis quarantine superseded this clear,
+     *    or if local quarantineGeneration advanced concurrently.
      *
      * @param operatorReason non-blank audit reason for clearing quarantine
-     * @return true if quarantine was cleared, false if a concurrent quarantine activation superseded this clear
+     * @return true if quarantine was cleared, false if a newer quarantine superseded this clear
      */
     public boolean clearQuarantine(String operatorReason) {
         if (operatorReason == null || operatorReason.isBlank()) {
@@ -418,9 +434,24 @@ public class ResilienceExperimentEngine {
         log.warn("[RESILIENCE] Operator clearing quarantine (gen={}). Reason: {}", observedGeneration, operatorReason);
         if (redisTemplate != null) {
             try {
-                redisTemplate.delete(QUARANTINE_KEY);
+                String observedRedisValue = redisTemplate.opsForValue().get(QUARANTINE_KEY);
+                if (observedRedisValue != null) {
+                    Long deleted = redisTemplate.execute(
+                            COMPARE_AND_DELETE_QUARANTINE_SCRIPT,
+                            List.of(QUARANTINE_KEY),
+                            observedRedisValue
+                    );
+                    if (deleted == null || deleted == 0L) {
+                        Boolean stillQuarantinedInRedis = redisTemplate.hasKey(QUARANTINE_KEY);
+                        if (Boolean.TRUE.equals(stillQuarantinedInRedis)) {
+                            log.warn("[RESILIENCE] Atomic compare-and-delete skipped: a newer quarantine state superseded clearQuarantine(). Preserving quarantine.");
+                            quarantined.set(true);
+                            return false;
+                        }
+                    }
+                }
             } catch (Exception re) {
-                log.error("[RESILIENCE] Failed to delete quarantine in Redis; preserving local quarantine: {}", re.getMessage());
+                log.error("[RESILIENCE] Failed to clear quarantine in Redis; preserving local quarantine: {}", re.getMessage());
                 throw new IllegalStateException("Failed to clear quarantine in Redis due to connectivity error: " + re.getMessage(), re);
             }
         }
@@ -434,11 +465,12 @@ public class ResilienceExperimentEngine {
     }
 
     private void activateQuarantine(String reason) {
-        quarantineGeneration.incrementAndGet();
+        long gen = quarantineGeneration.incrementAndGet();
         quarantined.set(true);
         if (redisTemplate != null) {
+            String tokenPayload = UUID.randomUUID() + "|gen=" + gen + "|" + reason;
             try {
-                redisTemplate.opsForValue().set(QUARANTINE_KEY, reason);
+                redisTemplate.opsForValue().set(QUARANTINE_KEY, tokenPayload);
             } catch (Exception re) {
                 log.error("[RESILIENCE] Failed to persist quarantine key in Redis (local quarantine remains active): {}", re.getMessage(), re);
             }

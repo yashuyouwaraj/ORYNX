@@ -124,9 +124,10 @@ To guarantee that failure injection never compromises shared environments or pro
 5. **Authoritative Quarantine Mode & Fail-Closed Safety**:
    - Adapter `cleanup()` is executed in a Java `finally` block (provided lock ownership is still intact).
    - If cleanup fails, state transitions to `CLEANUP_FAILED`, and the engine enters **QUARANTINE MODE** locally and in Redis (`orynx:{admission}:resilience_quarantine`).
-   - The quarantine state in Redis has no TTL; it persists indefinitely across restarts until an operator explicitly resets it.
+   - Each quarantine activation writes a unique token-prefixed payload (`<uuid>|gen=<n>|<reason>`) without a TTL; it persists indefinitely across restarts until an operator explicitly resets it.
+   - **Atomic Compare-and-Delete Clearing (Step 25.10)**: `clearQuarantine(operatorReason)` reads the observed Redis quarantine payload and executes an atomic Redis Lua compare-and-delete script (`COMPARE_AND_DELETE_QUARANTINE_SCRIPT`) so a stale clear operation can never erase a newly activated quarantine from a concurrent local or peer-node failure. Local quarantine is cleared only after atomic Redis deletion succeeds and local `quarantineGeneration` is unchanged.
    - **Fail-Closed on Redis Connectivity Failure**: During quarantine pre-flight checks (`verifyQuarantineSafety()` and `isQuarantined()`), if Redis is unreachable or returns a connectivity error, the engine **fails closed** by throwing `SafetyValidationException` ("Failed to verify quarantine status in Redis due to connectivity error... Failing closed to preserve cluster safety.") and `isQuarantined()` returns `true`. It never silently defaults to "unquarantined" when cluster state cannot be proven.
-   - `clearQuarantine(operatorReason)` also fails loudly with `IllegalStateException` if Redis cannot be updated.
+   - `clearQuarantine(operatorReason)` also fails loudly with `IllegalStateException` and preserves local quarantine if Redis cannot be updated.
 6. **Isolation Boundaries (Process-Level vs Multi-Tenant)**:
    - Live injection is strictly isolated to application-scoped faults via `ResilienceFaultRegistry` on non-production nodes.
    - The framework does not execute destructive OS-level commands (e.g. `docker kill`, `iptables`, `tc`, or `kill -9`).

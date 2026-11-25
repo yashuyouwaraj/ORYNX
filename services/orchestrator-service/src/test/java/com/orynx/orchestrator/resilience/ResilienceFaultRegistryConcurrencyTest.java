@@ -77,7 +77,37 @@ class ResilienceFaultRegistryConcurrencyTest {
     }
 
     @Test
-    @DisplayName("M-02: Concurrent stale deactivation (exp-A) vs newer activation (exp-B) never diverges or removes exp-B")
+    @DisplayName("O-01: Conflicting live activation is rejected with IllegalStateException while same-owner re-activation succeeds")
+    void conflictingLiveActivationRejectedAndSameOwnerReactivationAllowed() {
+        ResilienceFaultRegistry registry = new ResilienceFaultRegistry();
+
+        registry.activateFault(ScenarioType.REDIS_INTERRUPTION, "exp-A", "redis-1", Map.of("policy", "FAIL_CLOSED"));
+        assertEquals("exp-A", registry.getActiveRedisExperimentId());
+        assertEquals(AdmissionFailurePolicy.FAIL_CLOSED, registry.getActiveRedisFault().orElseThrow().getAdmissionFailurePolicy());
+
+        // Different live experiment B must NOT silently overwrite active owner A
+        IllegalStateException conflict = assertThrows(IllegalStateException.class, () ->
+                registry.activateFault(ScenarioType.REDIS_INTERRUPTION, "exp-B", "redis-2", Map.of("policy", "FAIL_OPEN")));
+        assertTrue(conflict.getMessage().contains("exp-A"));
+        assertTrue(conflict.getMessage().contains("exp-B"));
+
+        // Owner A remains intact
+        assertEquals("exp-A", registry.getActiveRedisExperimentId());
+        assertEquals(AdmissionFailurePolicy.FAIL_CLOSED, registry.getActiveRedisFault().orElseThrow().getAdmissionFailurePolicy());
+
+        // Same-owner A re-activation is explicitly allowed and updates atomically
+        registry.activateFault(ScenarioType.REDIS_INTERRUPTION, "exp-A", "redis-1", Map.of("policy", "FAIL_OPEN"));
+        assertEquals("exp-A", registry.getActiveRedisExperimentId());
+        assertEquals(AdmissionFailurePolicy.FAIL_OPEN, registry.getActiveRedisFault().orElseThrow().getAdmissionFailurePolicy());
+
+        // After owner A deactivates, owner B can activate cleanly
+        assertTrue(registry.deactivateFault(ScenarioType.REDIS_INTERRUPTION, "exp-A"));
+        registry.activateFault(ScenarioType.REDIS_INTERRUPTION, "exp-B", "redis-2", Map.of("policy", "FAIL_CLOSED"));
+        assertEquals("exp-B", registry.getActiveRedisExperimentId());
+    }
+
+    @Test
+    @DisplayName("M-02 & O-01: Concurrent stale deactivation (exp-A) vs newer activation (exp-B) never diverges or removes exp-B")
     void concurrentStaleDeactivationVsNewerActivationMaintainsConsistency() throws Exception {
         ResilienceFaultRegistry registry = new ResilienceFaultRegistry();
         ExecutorService executor = Executors.newFixedThreadPool(2);
@@ -94,16 +124,33 @@ class ResilienceFaultRegistryConcurrencyTest {
                     barrier.await(2, TimeUnit.SECONDS);
                     return registry.deactivateFault(ScenarioType.REDIS_INTERRUPTION, staleId);
                 });
-                Future<Void> newerActivate = executor.submit(() -> {
+                Future<Boolean> newerActivate = executor.submit(() -> {
                     barrier.await(2, TimeUnit.SECONDS);
-                    registry.activateFault(ScenarioType.REDIS_INTERRUPTION, newerId, "redis-2", Map.of("policy", "FAIL_OPEN"));
-                    return null;
+                    try {
+                        registry.activateFault(ScenarioType.REDIS_INTERRUPTION, newerId, "redis-2", Map.of("policy", "FAIL_OPEN"));
+                        return true;
+                    } catch (IllegalStateException conflict) {
+                        // Expected if newerActivate ran before staleDeactivate removed exp-A (O-01)
+                        return false;
+                    }
                 });
 
-                staleDeactivate.get(3, TimeUnit.SECONDS);
-                newerActivate.get(3, TimeUnit.SECONDS);
+                boolean deactivatedA = staleDeactivate.get(3, TimeUnit.SECONDS);
+                boolean activatedB = newerActivate.get(3, TimeUnit.SECONDS);
 
-                // Invariant: regardless of ordering, exp-B MUST be active and ALL views must agree atomically
+                // exp-A MUST have been deactivated cleanly
+                assertTrue(deactivatedA, "exp-A must be deactivated at iteration " + i);
+
+                if (!activatedB) {
+                    // exp-B was cleanly rejected while exp-A was still live; now that exp-A is gone, exp-B activates
+                    assertFalse(registry.isRedisFaultActive());
+                    registry.activateFault(ScenarioType.REDIS_INTERRUPTION, newerId, "redis-2", Map.of("policy", "FAIL_OPEN"));
+                }
+
+                // A late stale deactivation from exp-A must NEVER remove exp-B
+                assertFalse(registry.deactivateFault(ScenarioType.REDIS_INTERRUPTION, staleId));
+
+                // Invariant: exp-B MUST be active and ALL views must agree atomically
                 Optional<ResilienceFaultRegistry.ActiveFault> snap = registry.getActiveRedisFault();
                 assertTrue(snap.isPresent(), "Newer fault exp-B must remain active at iteration " + i);
                 assertEquals(newerId, snap.get().getExperimentId());

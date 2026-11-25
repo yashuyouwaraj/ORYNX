@@ -60,10 +60,22 @@ public class ResilienceFaultRegistry {
 
     /**
      * Atomically activates a fault owned by the specified non-blank experimentId.
+     * Rejects conflicting activation if a different live experiment already owns an active fault
+     * for the same scenario (Step 25.10 O-01). Re-activation by the same experimentId is permitted
+     * and atomically updates the registration.
+     *
+     * @throws IllegalStateException if a different experiment already holds an active fault for this scenario
      */
     public void activateFault(ScenarioType scenario, String experimentId, String targetResource, Map<String, String> parameters) {
         ActiveFault fault = new ActiveFault(experimentId, scenario, targetResource, parameters);
-        activeFaults.put(scenario, fault);
+        activeFaults.compute(scenario, (key, current) -> {
+            if (current != null && !experimentId.equals(current.getExperimentId())) {
+                throw new IllegalStateException("Scenario " + scenario
+                        + " already has an active fault owned by experiment '" + current.getExperimentId()
+                        + "'; cannot be overwritten by '" + experimentId + "'");
+            }
+            return fault;
+        });
     }
 
     /**

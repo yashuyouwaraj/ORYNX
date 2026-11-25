@@ -293,20 +293,26 @@ class ResilienceExperimentEngineTest {
     }
 
     @Test
-    @DisplayName("C-01: Newer experiment fault is protected from deactivation by abandoned stale experiment")
+    @DisplayName("C-01 & O-01: Newer experiment fault is protected from deactivation by abandoned stale experiment and cannot displace live owner")
     void newerExperimentFaultProtectedFromStaleExperimentDeactivation() {
         ResilienceFaultRegistry faultRegistry = new ResilienceFaultRegistry();
 
-        // Stale experiment A activates fault
+        // Experiment A activates fault
         faultRegistry.activateFault(ScenarioType.REDIS_INTERRUPTION, "exp-A", "redis-node-1", Map.of("policy", "FAIL_CLOSED"));
         assertTrue(faultRegistry.isRedisFaultActive());
         assertEquals("exp-A", faultRegistry.getActiveRedisExperimentId());
 
-        // Newer experiment B activates fault
+        // O-01: Experiment B cannot silently displace live owner A
+        assertThrows(IllegalStateException.class, () ->
+                faultRegistry.activateFault(ScenarioType.REDIS_INTERRUPTION, "exp-B", "redis-node-2", Map.of("policy", "FAIL_CLOSED")));
+        assertEquals("exp-A", faultRegistry.getActiveRedisExperimentId());
+
+        // Experiment A finishes and releases its slot; Experiment B activates
+        assertTrue(faultRegistry.deactivateFault(ScenarioType.REDIS_INTERRUPTION, "exp-A"));
         faultRegistry.activateFault(ScenarioType.REDIS_INTERRUPTION, "exp-B", "redis-node-2", Map.of("policy", "FAIL_CLOSED"));
         assertEquals("exp-B", faultRegistry.getActiveRedisExperimentId());
 
-        // Abandoned experiment A resumes and attempts to deactivate its fault
+        // Abandoned stale thread from experiment A resumes and attempts to deactivate its fault
         boolean deactivatedByStaleA = faultRegistry.deactivateFault(ScenarioType.REDIS_INTERRUPTION, "exp-A");
         assertFalse(deactivatedByStaleA, "Stale experiment A must NOT be allowed to deactivate newer experiment B's fault");
 
@@ -620,15 +626,16 @@ class ResilienceExperimentEngineTest {
     }
 
     @Test
-    @DisplayName("m-02 (Step 25.8): clearQuarantine preserves local quarantine when Redis deletion fails")
+    @DisplayName("m-02 (Step 25.8 & 25.10): clearQuarantine preserves local quarantine when Redis atomic delete fails")
     void clearQuarantineRedisFailurePreservesLocalQuarantine() {
         StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
         @SuppressWarnings("unchecked")
         org.springframework.data.redis.core.ValueOperations<String, String> valueOps = mock(org.springframework.data.redis.core.ValueOperations.class);
         when(redisTemplate.hasKey(eq(ResilienceExperimentEngine.QUARANTINE_KEY))).thenReturn(false);
         when(redisTemplate.opsForValue()).thenReturn(valueOps);
-        when(redisTemplate.delete(eq(ResilienceExperimentEngine.QUARANTINE_KEY)))
-                .thenThrow(new RedisConnectionFailureException("Redis unavailable during delete"));
+        when(valueOps.get(eq(ResilienceExperimentEngine.QUARANTINE_KEY))).thenReturn("tok-1|gen=1|cleanup failure");
+        when(redisTemplate.execute(eq(ResilienceExperimentEngine.COMPARE_AND_DELETE_QUARANTINE_SCRIPT), any(List.class), any(Object[].class)))
+                .thenThrow(new RedisConnectionFailureException("Redis unavailable during atomic delete"));
 
         FailureInjectionAdapter faultyAdapter = mock(FailureInjectionAdapter.class);
         when(faultyAdapter.getSupportedScenario()).thenReturn(ScenarioType.REDIS_INTERRUPTION);
@@ -646,7 +653,124 @@ class ResilienceExperimentEngineTest {
 
         // clearQuarantine must fail loudly AND preserve local quarantine!
         assertThrows(IllegalStateException.class, () -> engine.clearQuarantine("Attempt reset during outage"));
-        assertTrue(engine.isQuarantined(), "Local quarantine must remain true when Redis delete fails");
+        assertTrue(engine.isQuarantined(), "Local quarantine must remain true when Redis atomic delete fails");
+    }
+
+    @Test
+    @DisplayName("m-01 & m-02 (Step 25.10): Concurrent clearQuarantine cannot delete a newly activated Redis quarantine token")
+    void clearQuarantineConcurrentlySupersededByNewerActivationPreservesNewerQuarantine() throws Exception {
+        // Atomic in-memory Redis store backing get/set/hasKey and Lua compare-and-delete
+        java.util.concurrent.atomic.AtomicReference<String> redisQuarantineStore = new java.util.concurrent.atomic.AtomicReference<>(null);
+        CountDownLatch clearReadOldToken = new CountDownLatch(1);
+        CountDownLatch newerQuarantineWritten = new CountDownLatch(1);
+
+        StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
+        @SuppressWarnings("unchecked")
+        org.springframework.data.redis.core.ValueOperations<String, String> valueOps = mock(org.springframework.data.redis.core.ValueOperations.class);
+        when(redisTemplate.opsForValue()).thenReturn(valueOps);
+        when(redisTemplate.hasKey(eq(ResilienceExperimentEngine.QUARANTINE_KEY)))
+                .thenAnswer(inv -> redisQuarantineStore.get() != null);
+        when(valueOps.get(eq(ResilienceExperimentEngine.QUARANTINE_KEY)))
+                .thenAnswer(inv -> {
+                    String val = redisQuarantineStore.get();
+                    clearReadOldToken.countDown();
+                    // Wait for Thread B to persist newer quarantine token BEFORE Thread A executes Lua CAS delete
+                    newerQuarantineWritten.await(3, TimeUnit.SECONDS);
+                    return val;
+                });
+        doAnswer(inv -> {
+            redisQuarantineStore.set(inv.getArgument(1));
+            return null;
+        }).when(valueOps).set(eq(ResilienceExperimentEngine.QUARANTINE_KEY), any());
+
+        // Simulate exact Redis Lua compare-and-delete semantics atomically
+        when(redisTemplate.execute(eq(ResilienceExperimentEngine.COMPARE_AND_DELETE_QUARANTINE_SCRIPT), any(List.class), any(Object[].class)))
+                .thenAnswer(inv -> {
+                    String expectedVal = inv.getArgument(2, String.class);
+                    return redisQuarantineStore.compareAndSet(expectedVal, null) ? 1L : 0L;
+                });
+
+        FailureInjectionAdapter faultyAdapter = mock(FailureInjectionAdapter.class);
+        when(faultyAdapter.getSupportedScenario()).thenReturn(ScenarioType.REDIS_INTERRUPTION);
+        when(faultyAdapter.verifyInjected(any())).thenReturn(true);
+        when(faultyAdapter.verifyRecovered(any())).thenReturn(true);
+        doThrow(new RuntimeException("Cleanup failed")).when(faultyAdapter).cleanup(any());
+
+        ResilienceExperimentEngine engine = new ResilienceExperimentEngine(
+                validator, metrics, registry, List.of(faultyAdapter), null, redisTemplate
+        );
+
+        // Step 1: First experiment fails cleanup and writes token T1 to Redis
+        ExperimentResult r1 = engine.runExperiment(sampleDefinition("exp-q-initial").toBuilder().durationMs(50).build());
+        assertEquals(ExperimentResult.Outcome.CLEANUP_FAILED, r1.getOutcome());
+        String initialToken = redisQuarantineStore.get();
+        assertNotNull(initialToken);
+        assertTrue(engine.isQuarantined());
+
+        // Step 2: Thread A starts clearQuarantine() and reads T1, then pauses before Lua CAS delete
+        java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            java.util.concurrent.Future<Boolean> clearFuture = executor.submit(() ->
+                    engine.clearQuarantine("SRE clearing initial quarantine"));
+
+            assertTrue(clearReadOldToken.await(3, TimeUnit.SECONDS), "Thread A must read initial quarantine token");
+
+            // Step 3: Thread B (peer node or concurrent failure) writes newer quarantine token T2 to Redis
+            String newerToken = "peer-node-uuid-T2|gen=2|Quarantined due to newer cleanup failure";
+            redisQuarantineStore.set(newerToken);
+            newerQuarantineWritten.countDown();
+
+            // Step 4: Thread A completes clearQuarantine(); Lua CAS returns 0 because T1 != T2
+            boolean cleared = clearFuture.get(3, TimeUnit.SECONDS);
+
+            assertFalse(cleared, "Superseded clearQuarantine() must return false");
+            assertEquals(newerToken, redisQuarantineStore.get(), "Newer Redis quarantine token T2 must NOT be deleted");
+            assertTrue(engine.isQuarantined(), "Engine must remain quarantined when superseded by newer token");
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    @DisplayName("m-01 (Step 25.10): clearQuarantine succeeds and clears Redis + local state when token matches")
+    void clearQuarantineSucceedsWhenRedisTokenMatches() {
+        java.util.concurrent.atomic.AtomicReference<String> redisQuarantineStore = new java.util.concurrent.atomic.AtomicReference<>(null);
+        StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
+        @SuppressWarnings("unchecked")
+        org.springframework.data.redis.core.ValueOperations<String, String> valueOps = mock(org.springframework.data.redis.core.ValueOperations.class);
+        when(redisTemplate.opsForValue()).thenReturn(valueOps);
+        when(redisTemplate.hasKey(eq(ResilienceExperimentEngine.QUARANTINE_KEY)))
+                .thenAnswer(inv -> redisQuarantineStore.get() != null);
+        when(valueOps.get(eq(ResilienceExperimentEngine.QUARANTINE_KEY)))
+                .thenAnswer(inv -> redisQuarantineStore.get());
+        doAnswer(inv -> {
+            redisQuarantineStore.set(inv.getArgument(1));
+            return null;
+        }).when(valueOps).set(eq(ResilienceExperimentEngine.QUARANTINE_KEY), any());
+        when(redisTemplate.execute(eq(ResilienceExperimentEngine.COMPARE_AND_DELETE_QUARANTINE_SCRIPT), any(List.class), any(Object[].class)))
+                .thenAnswer(inv -> {
+                    String expectedVal = inv.getArgument(2, String.class);
+                    return redisQuarantineStore.compareAndSet(expectedVal, null) ? 1L : 0L;
+                });
+
+        FailureInjectionAdapter faultyAdapter = mock(FailureInjectionAdapter.class);
+        when(faultyAdapter.getSupportedScenario()).thenReturn(ScenarioType.REDIS_INTERRUPTION);
+        when(faultyAdapter.verifyInjected(any())).thenReturn(true);
+        when(faultyAdapter.verifyRecovered(any())).thenReturn(true);
+        doThrow(new RuntimeException("Cleanup failed")).when(faultyAdapter).cleanup(any());
+
+        ResilienceExperimentEngine engine = new ResilienceExperimentEngine(
+                validator, metrics, registry, List.of(faultyAdapter), null, redisTemplate
+        );
+
+        engine.runExperiment(sampleDefinition("exp-q-happy-clear").toBuilder().durationMs(50).build());
+        assertTrue(engine.isQuarantined());
+        assertNotNull(redisQuarantineStore.get());
+
+        boolean cleared = engine.clearQuarantine("Verified recovery by SRE");
+        assertTrue(cleared);
+        assertFalse(engine.isQuarantined());
+        assertEquals(null, redisQuarantineStore.get());
     }
 
     @Test
