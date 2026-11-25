@@ -2,18 +2,30 @@ package com.orynx.execution.execution;
 
 import com.orynx.execution.coordination.ExecutionCoordinationService;
 import com.orynx.execution.coordination.StaleWorkerExecutionException;
+import com.orynx.execution.observability.ExecutionMetrics;
+import com.orynx.execution.observability.ExecutionObservabilitySanitizer;
 import com.orynx.execution.worker.ExecutionWorkerProperties;
 import com.orynx.execution.worker.WorkerQueueFullException;
 import com.orynx.execution.workflow.event.WorkflowExecutionRequestEvent;
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Component;
 
 import java.net.InetAddress;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -34,6 +46,9 @@ public class WorkflowExecutionDispatcher {
     private final String instanceId;
 
     private final ScheduledExecutorService heartbeatScheduler;
+
+    @Autowired(required = false)
+    private ExecutionMetrics executionMetrics;
 
     public WorkflowExecutionDispatcher(
             @Qualifier("workflowExecutionExecutor") ThreadPoolTaskExecutor executor,
@@ -120,20 +135,60 @@ public class WorkflowExecutionDispatcher {
         String workflowName = event.getWorkflowName();
         Long effectiveGen = generation != null ? generation : 1L;
 
+        int activeCount = executor.getActiveCount();
+        int queueSize = executor.getThreadPoolExecutor().getQueue().size();
+        if (executionMetrics != null) {
+            executionMetrics.updatePoolStats(activeCount, queueSize);
+        }
+
         log.info(
                 "Dispatching workflow {} (id={}, gen={}) to worker pool [activeCount={}, queueSize={}]",
                 workflowName,
                 workflowId,
                 effectiveGen,
-                executor.getActiveCount(),
-                executor.getThreadPoolExecutor().getQueue().size()
+                activeCount,
+                queueSize
         );
+
+        // Capture caller OTel Context and MDC snapshot before crossing async worker pool boundary
+        final Context parentContext = Context.current();
+        final Map<String, String> callerMdc = MDC.getCopyOfContextMap();
+        final String executionId = "wf-" + workflowId + "-gen-" + effectiveGen;
 
         try {
             executor.submit(() -> {
                 Thread currentThread = Thread.currentThread();
+                if (callerMdc != null) {
+                    MDC.setContextMap(callerMdc);
+                } else {
+                    MDC.clear();
+                }
+                if (workflowId != null) {
+                    MDC.put("workflowId", String.valueOf(workflowId));
+                }
+                MDC.put("executionId", executionId);
+                MDC.put("workerId", instanceId);
+
+                Tracer tracer = GlobalOpenTelemetry.getTracer("com.orynx.execution.worker");
+                Span workerSpan = tracer.spanBuilder("orynx.worker.execute")
+                        .setParent(parentContext)
+                        .setSpanKind(SpanKind.INTERNAL)
+                        .setAttribute("orynx.workflow.id", workflowId != null ? String.valueOf(workflowId) : "unknown")
+                        .setAttribute("orynx.execution.id", executionId)
+                        .setAttribute("orynx.execution.generation", effectiveGen)
+                        .setAttribute("orynx.worker.id", instanceId)
+                        .startSpan();
+                String corrId = MDC.get("correlationId");
+                if (corrId != null) {
+                    workerSpan.setAttribute("orynx.correlation.id", corrId);
+                }
+                if (workerSpan.getSpanContext().isValid()) {
+                    MDC.put("trace_id", workerSpan.getSpanContext().getTraceId());
+                    MDC.put("span_id", workerSpan.getSpanContext().getSpanId());
+                }
+
                 activeExecutionTracker.register(workflowId, currentThread, effectiveGen, null);
-                try {
+                try (Scope ignored = workerSpan.makeCurrent()) {
                     coordinationService.markRunning(
                             workflowId,
                             effectiveGen,
@@ -142,18 +197,36 @@ public class WorkflowExecutionDispatcher {
                     );
                     engine.execute(event, effectiveGen, instanceId);
                 } catch (StaleWorkerExecutionException e) {
+                    workerSpan.setAttribute("orynx.worker.fenced", true);
+                    if (executionMetrics != null) {
+                        executionMetrics.recordWorkerFenced();
+                    }
                     log.warn("Worker execution aborted because worker was fenced for workflow {} (gen={}): {}",
-                            workflowId, effectiveGen, e.getMessage());
+                            workflowId, effectiveGen, ExecutionObservabilitySanitizer.safeErrorMessage(e));
                 } catch (Throwable t) {
+                    workerSpan.setStatus(StatusCode.ERROR, ExecutionObservabilitySanitizer.safeErrorMessage(t));
+                    workerSpan.setAttribute("error.type", t.getClass().getSimpleName());
                     log.error("Unhandled error in worker thread executing workflow {}", workflowId, t);
                     try {
                         coordinationService.markCompleted(workflowId, effectiveGen, instanceId, false);
-                    } catch (Exception ignored) {}
+                    } catch (Exception ignoredEx) {}
                 } finally {
                     activeExecutionTracker.unregister(workflowId);
+                    workerSpan.end();
+                    if (executionMetrics != null) {
+                        executionMetrics.updatePoolStats(
+                                executor.getActiveCount(),
+                                executor.getThreadPoolExecutor().getQueue().size()
+                        );
+                    }
+                    // Unconditionally clear worker thread MDC to prevent cross-workflow contamination
+                    MDC.clear();
                 }
             });
         } catch (RejectedExecutionException e) {
+            if (executionMetrics != null) {
+                executionMetrics.recordWorkerRejected();
+            }
             log.error(
                     "Worker pool capacity exhausted [active={}, queue={}] for workflow {} (id={})",
                     executor.getActiveCount(),

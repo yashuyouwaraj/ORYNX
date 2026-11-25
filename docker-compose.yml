@@ -16,6 +16,7 @@ volumes:
   orynx_prometheus_data:
   orynx_alertmanager_data:
   orynx_tempo_data:
+  orynx_loki_data:
   orynx_grafana_data:
 
 services:
@@ -118,7 +119,14 @@ services:
       OTEL_TRACES_SAMPLER: parentbased_traceidratio
       OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1.0}
       OTEL_METRICS_EXPORTER: none
-      OTEL_LOGS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: ${OTEL_LOGS_EXPORTER:-otlp}
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment=${ORYNX_ENVIRONMENT:-docker}
+      OTEL_BSP_SCHEDULE_DELAY: ${OTEL_BSP_SCHEDULE_DELAY:-2000}
+      OTEL_BSP_MAX_QUEUE_SIZE: ${OTEL_BSP_MAX_QUEUE_SIZE:-2048}
+      OTEL_BSP_EXPORT_TIMEOUT: ${OTEL_BSP_EXPORT_TIMEOUT:-5000}
+      OTEL_BLRP_SCHEDULE_DELAY: ${OTEL_BLRP_SCHEDULE_DELAY:-2000}
+      OTEL_BLRP_MAX_QUEUE_SIZE: ${OTEL_BLRP_MAX_QUEUE_SIZE:-2048}
+      OTEL_BLRP_EXPORT_TIMEOUT: ${OTEL_BLRP_EXPORT_TIMEOUT:-5000}
       OTEL_INSTRUMENTATION_KAFKA_EXPERIMENTAL_SPAN_ATTRIBUTES: "true"
       OTEL_INSTRUMENTATION_SPRING_SCHEDULING_ENABLED: "false"
       OTEL_INSTRUMENTATION_HIBERNATE_ENABLED: "false"
@@ -155,7 +163,14 @@ services:
       OTEL_TRACES_SAMPLER: parentbased_traceidratio
       OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1.0}
       OTEL_METRICS_EXPORTER: none
-      OTEL_LOGS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: ${OTEL_LOGS_EXPORTER:-otlp}
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment=${ORYNX_ENVIRONMENT:-docker}
+      OTEL_BSP_SCHEDULE_DELAY: ${OTEL_BSP_SCHEDULE_DELAY:-2000}
+      OTEL_BSP_MAX_QUEUE_SIZE: ${OTEL_BSP_MAX_QUEUE_SIZE:-2048}
+      OTEL_BSP_EXPORT_TIMEOUT: ${OTEL_BSP_EXPORT_TIMEOUT:-5000}
+      OTEL_BLRP_SCHEDULE_DELAY: ${OTEL_BLRP_SCHEDULE_DELAY:-2000}
+      OTEL_BLRP_MAX_QUEUE_SIZE: ${OTEL_BLRP_MAX_QUEUE_SIZE:-2048}
+      OTEL_BLRP_EXPORT_TIMEOUT: ${OTEL_BLRP_EXPORT_TIMEOUT:-5000}
       OTEL_INSTRUMENTATION_SPRING_SCHEDULING_ENABLED: "false"
       JAVA_OPTS: ${JAVA_OPTS:--XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0}
     expose:
@@ -209,7 +224,14 @@ services:
       OTEL_TRACES_SAMPLER: parentbased_traceidratio
       OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1.0}
       OTEL_METRICS_EXPORTER: none
-      OTEL_LOGS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: ${OTEL_LOGS_EXPORTER:-otlp}
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment=${ORYNX_ENVIRONMENT:-docker}
+      OTEL_BSP_SCHEDULE_DELAY: ${OTEL_BSP_SCHEDULE_DELAY:-2000}
+      OTEL_BSP_MAX_QUEUE_SIZE: ${OTEL_BSP_MAX_QUEUE_SIZE:-2048}
+      OTEL_BSP_EXPORT_TIMEOUT: ${OTEL_BSP_EXPORT_TIMEOUT:-5000}
+      OTEL_BLRP_SCHEDULE_DELAY: ${OTEL_BLRP_SCHEDULE_DELAY:-2000}
+      OTEL_BLRP_MAX_QUEUE_SIZE: ${OTEL_BLRP_MAX_QUEUE_SIZE:-2048}
+      OTEL_BLRP_EXPORT_TIMEOUT: ${OTEL_BLRP_EXPORT_TIMEOUT:-5000}
       OTEL_INSTRUMENTATION_KAFKA_EXPERIMENTAL_SPAN_ATTRIBUTES: "true"
       OTEL_INSTRUMENTATION_SPRING_SCHEDULING_ENABLED: "false"
       OTEL_INSTRUMENTATION_HIBERNATE_ENABLED: "false"
@@ -257,7 +279,14 @@ services:
       OTEL_TRACES_SAMPLER: parentbased_traceidratio
       OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1.0}
       OTEL_METRICS_EXPORTER: none
-      OTEL_LOGS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: ${OTEL_LOGS_EXPORTER:-otlp}
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment=${ORYNX_ENVIRONMENT:-docker}
+      OTEL_BSP_SCHEDULE_DELAY: ${OTEL_BSP_SCHEDULE_DELAY:-2000}
+      OTEL_BSP_MAX_QUEUE_SIZE: ${OTEL_BSP_MAX_QUEUE_SIZE:-2048}
+      OTEL_BSP_EXPORT_TIMEOUT: ${OTEL_BSP_EXPORT_TIMEOUT:-5000}
+      OTEL_BLRP_SCHEDULE_DELAY: ${OTEL_BLRP_SCHEDULE_DELAY:-2000}
+      OTEL_BLRP_MAX_QUEUE_SIZE: ${OTEL_BLRP_MAX_QUEUE_SIZE:-2048}
+      OTEL_BLRP_EXPORT_TIMEOUT: ${OTEL_BLRP_EXPORT_TIMEOUT:-5000}
       OTEL_INSTRUMENTATION_KAFKA_EXPERIMENTAL_SPAN_ATTRIBUTES: "true"
       OTEL_INSTRUMENTATION_SPRING_SCHEDULING_ENABLED: "false"
       OTEL_INSTRUMENTATION_HIBERNATE_ENABLED: "false"
@@ -304,7 +333,14 @@ services:
       OTEL_TRACES_SAMPLER: parentbased_traceidratio
       OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1.0}
       OTEL_METRICS_EXPORTER: none
-      OTEL_LOGS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: ${OTEL_LOGS_EXPORTER:-otlp}
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment=${ORYNX_ENVIRONMENT:-docker}
+      OTEL_BSP_SCHEDULE_DELAY: ${OTEL_BSP_SCHEDULE_DELAY:-2000}
+      OTEL_BSP_MAX_QUEUE_SIZE: ${OTEL_BSP_MAX_QUEUE_SIZE:-2048}
+      OTEL_BSP_EXPORT_TIMEOUT: ${OTEL_BSP_EXPORT_TIMEOUT:-5000}
+      OTEL_BLRP_SCHEDULE_DELAY: ${OTEL_BLRP_SCHEDULE_DELAY:-2000}
+      OTEL_BLRP_MAX_QUEUE_SIZE: ${OTEL_BLRP_MAX_QUEUE_SIZE:-2048}
+      OTEL_BLRP_EXPORT_TIMEOUT: ${OTEL_BLRP_EXPORT_TIMEOUT:-5000}
       OTEL_INSTRUMENTATION_SPRING_SCHEDULING_ENABLED: "false"
       JAVA_OPTS: ${JAVA_OPTS:--XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0}
     ports:
@@ -369,6 +405,29 @@ services:
       retries: 5
       start_period: 15s
 
+  loki:
+    image: grafana/loki:3.2.1
+    profiles: ["observability"]
+    restart: unless-stopped
+    mem_limit: ${LOKI_MEM_LIMIT:-384m}
+    cpus: ${LOKI_CPU_LIMIT:-0.5}
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes:
+      - ./monitoring/loki/loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - orynx_loki_data:/loki
+    expose:
+      - "3100"
+    ports:
+      - "127.0.0.1:3100:3100"
+    networks:
+      - orynx-monitoring
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3100/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
   otel-collector:
     build:
       context: ./monitoring/otel
@@ -381,6 +440,8 @@ services:
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     depends_on:
       tempo:
+        condition: service_healthy
+      loki:
         condition: service_healthy
     volumes:
       - ./monitoring/otel/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
@@ -548,6 +609,8 @@ services:
       alertmanager:
         condition: service_healthy
       tempo:
+        condition: service_healthy
+      loki:
         condition: service_healthy
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}

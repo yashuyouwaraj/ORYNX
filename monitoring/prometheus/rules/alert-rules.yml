@@ -41,8 +41,47 @@ groups:
         annotations:
           summary: "OpenTelemetry Collector is unreachable"
           description: "Prometheus cannot scrape otel-collector:8888 for more than 1 minute."
-          impact: "Distributed trace ingestion from OrynX microservices to Tempo is interrupted."
-          runbook_url: "docs/runbooks/ServiceUnavailable.md"
+          impact: "Distributed trace and log ingestion from OrynX microservices to Tempo and Loki is interrupted."
+          runbook_url: "docs/runbooks/ObservabilityTelemetryPipelineFailure.md"
+
+      - alert: TempoBackendDown
+        expr: up{job="tempo"} == 0
+        for: 2m
+        labels:
+          severity: warning
+          category: platform
+          service: "tempo"
+        annotations:
+          summary: "Grafana Tempo trace backend is unreachable"
+          description: "Prometheus cannot scrape tempo:3200 for more than 2 minutes."
+          impact: "Distributed traces cannot be stored or queried in Grafana; application workflows remain unaffected."
+          runbook_url: "docs/runbooks/ObservabilityTelemetryPipelineFailure.md"
+
+      - alert: LokiBackendDown
+        expr: up{job="loki"} == 0
+        for: 2m
+        labels:
+          severity: warning
+          category: platform
+          service: "loki"
+        annotations:
+          summary: "Grafana Loki log backend is unreachable"
+          description: "Prometheus cannot scrape loki:3100 for more than 2 minutes."
+          impact: "Centralized structured log ingestion and trace-to-log correlation are degraded; container stdout logs remain intact."
+          runbook_url: "docs/runbooks/ObservabilityTelemetryPipelineFailure.md"
+
+      - alert: OtelCollectorExportFailures
+        expr: increase(otelcol_exporter_send_failed_spans_total[5m]) > 0 or increase(otelcol_exporter_send_failed_log_records_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+          category: platform
+          service: "otel-collector"
+        annotations:
+          summary: "OpenTelemetry Collector is experiencing telemetry export failures"
+          description: "The collector failed to export spans or log records to Tempo or Loki over the last 5 minutes."
+          impact: "Partial trace or log telemetry loss is occurring while bounded queues protect collector memory."
+          runbook_url: "docs/runbooks/ObservabilityTelemetryPipelineFailure.md"
 
       - alert: PostgresExporterDown
         expr: up{job="postgres-exporter"} == 0

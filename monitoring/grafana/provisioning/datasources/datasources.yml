@@ -12,6 +12,10 @@ datasources:
       timeInterval: 15s
       manageAlerts: true
       alertmanagerUid: alertmanager
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+          urlDisplayLabel: View Trace in Tempo
 
   - name: Tempo
     uid: tempo
@@ -26,6 +30,49 @@ datasources:
         datasourceUid: prometheus
       nodeGraph:
         enabled: true
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: '-5m'
+        spanEndTimeShift: '5m'
+        filterByTraceID: true
+        filterBySpanID: false
+        customQuery: false
+        tags:
+          - key: service.name
+            value: service_name
+      tracesToMetrics:
+        datasourceUid: prometheus
+        spanStartTimeShift: '-5m'
+        spanEndTimeShift: '5m'
+        tags:
+          - key: service.name
+            value: application
+        queries:
+          - name: Service Request Rate
+            query: 'sum(rate(http_server_requests_seconds_count{$$__tags}[5m]))'
+          - name: Service Error Rate
+            query: 'sum(rate(http_server_requests_seconds_count{$$__tags,status=~"5.."}[5m]))'
+
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    isDefault: false
+    editable: false
+    jsonData:
+      maxLines: 1000
+      derivedFields:
+        - datasourceUid: tempo
+          matcherRegex: '"trace_id"\s*:\s*"([0-9a-fA-F]{32})"'
+          name: TraceID
+          url: '$${__value.raw}'
+          urlDisplayLabel: View Trace in Tempo
+        - datasourceUid: tempo
+          matcherRegex: 'trace_id=([0-9a-fA-F]{32})'
+          name: TraceIDText
+          url: '$${__value.raw}'
+          urlDisplayLabel: View Trace in Tempo
 
   - name: Alertmanager
     uid: alertmanager

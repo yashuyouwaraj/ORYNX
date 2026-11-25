@@ -1,20 +1,27 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration>
     <springProperty name="SERVICE_NAME" source="spring.application.name" defaultValue="orchestrator-service"/>
+    <springProperty name="ENVIRONMENT" source="orynx.observability.environment" defaultValue="${SPRING_PROFILES_ACTIVE:-local}"/>
 
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
-            <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [${SERVICE_NAME},%X{trace_id:-},%X{span_id:-},%X{requestId:-}] %logger{36} - %msg%n</pattern>
+            <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [${SERVICE_NAME},%X{trace_id:-},%X{span_id:-},%X{correlationId:-},%X{requestId:-},wf=%X{workflowId:-}] %logger{36} - %msg%n</pattern>
         </encoder>
     </appender>
 
     <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
         <encoder class="net.logstash.logback.encoder.LogstashEncoder">
-            <customFields>{"service":"${SERVICE_NAME}"}</customFields>
+            <customFields>{"service":"${SERVICE_NAME}","environment":"${ENVIRONMENT}"}</customFields>
             <includeMdcKeyName>trace_id</includeMdcKeyName>
             <includeMdcKeyName>span_id</includeMdcKeyName>
             <includeMdcKeyName>requestId</includeMdcKeyName>
+            <includeMdcKeyName>correlationId</includeMdcKeyName>
             <includeMdcKeyName>workflowId</includeMdcKeyName>
+            <includeMdcKeyName>executionId</includeMdcKeyName>
+            <includeMdcKeyName>attemptNumber</includeMdcKeyName>
+            <includeMdcKeyName>workerId</includeMdcKeyName>
+            <includeMdcKeyName>eventId</includeMdcKeyName>
+            <includeMdcKeyName>errorCategory</includeMdcKeyName>
         </encoder>
     </appender>
 

@@ -1,5 +1,6 @@
 package com.orynx.orchestrator.common.config;
 
+import com.orynx.orchestrator.common.observability.ObservabilitySanitizer;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.springframework.beans.factory.ObjectProvider;
@@ -118,7 +119,7 @@ public class KafkaReliabilityConfig {
             dltRecord.put("key", dltKey);
             dltRecord.put("timestamp", record.timestamp());
             dltRecord.put("exceptionType", exceptionType);
-            dltRecord.put("exceptionMessage", cause);
+            dltRecord.put("exceptionMessage", ObservabilitySanitizer.redactSensitiveText(cause));
             dltRecord.put("payload", record.value());
             String rawPayload = extractRawDeserializationPayload(exception);
             if (rawPayload != null) {

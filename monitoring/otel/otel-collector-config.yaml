@@ -23,15 +23,68 @@ processors:
         - 'IsMatch(attributes["url.path"], "^/actuator/health.*")'
         - 'IsMatch(attributes["http.target"], "^/actuator/health.*")'
         - 'IsMatch(attributes["http.route"], "^/actuator/health.*")'
+  attributes/redact_traces:
+    actions:
+      - key: http.request.header.authorization
+        action: delete
+      - key: http.request.header.cookie
+        action: delete
+      - key: http.request.header.x_api_key
+        action: delete
+      - key: db.user
+        action: delete
+      - key: password
+        action: delete
+      - key: secret
+        action: delete
+      - key: token
+        action: delete
+  transform/redact_logs:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - replace_pattern(body, "(?i)Bearer\\s+[A-Za-z0-9\\-._~+/]+=*", "Bearer [REDACTED]")
+          - replace_pattern(body, "eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}", "[REDACTED_JWT]")
+          - replace_pattern(body, "(?i)(password|passwd|secret|token|api[_-]?key|authorization)\\s*[:=]\\s*[^\\s,;\"'&]+", "$1=[REDACTED]")
+          - delete_key(attributes, "authorization")
+          - delete_key(attributes, "password")
+          - delete_key(attributes, "secret")
+          - delete_key(attributes, "token")
   batch:
     timeout: 2s
     send_batch_size: 512
+    send_batch_max_size: 1024
 
 exporters:
   otlp/tempo:
     endpoint: tempo:4317
     tls:
       insecure: true
+    timeout: 5s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 2s
+      max_interval: 15s
+      max_elapsed_time: 60s
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 512
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+    tls:
+      insecure: true
+    timeout: 5s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 2s
+      max_interval: 15s
+      max_elapsed_time: 60s
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 512
 
 service:
   extensions: [health_check]
@@ -41,5 +94,9 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, filter/healthchecks, batch]
+      processors: [memory_limiter, filter/healthchecks, attributes/redact_traces, batch]
       exporters: [otlp/tempo]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/redact_logs, batch]
+      exporters: [otlphttp/loki]

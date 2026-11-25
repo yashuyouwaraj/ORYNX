@@ -1,0 +1,63 @@
+# Local/development single-tenant Loki configuration for OrynX observability profile.
+# Bound strictly to 127.0.0.1:3100 on the host and isolated to orynx-monitoring network.
+# For production deployments, enable multi-tenant auth, object storage (S3/GCS), and HA ring storage.
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  allow_structured_metadata: true
+  reject_old_samples: true
+  reject_old_samples_max_age: 24h
+  retention_period: 24h
+  ingestion_rate_mb: 8
+  ingestion_burst_size_mb: 16
+  max_streams_per_user: 10000
+  max_line_size: 65536
+  otlp_config:
+    resource_attributes:
+      attributes_config:
+        - action: index_label
+          attributes:
+            - service.name
+            - deployment.environment
+    scope_attributes:
+      - action: structured_metadata
+    log_attributes:
+      - action: structured_metadata
+
+compactor:
+  working_directory: /loki/compactor
+  compaction_interval: 10m
+  retention_enabled: true
+  retention_delete_delay: 2h
+  retention_delete_worker_count: 10
+  delete_request_store: filesystem
+
+analytics:
+  reporting_enabled: false

@@ -8,8 +8,14 @@ import com.orynx.execution.event.dto.WorkflowCompletedEvent;
 import com.orynx.execution.event.dto.WorkflowExecutionPausedEvent;
 import com.orynx.execution.execution.dto.TaskExecutionResult;
 import com.orynx.execution.kafka.ExecutionEventProducer;
+import com.orynx.execution.observability.ExecutionMetrics;
 import com.orynx.execution.workflow.event.WorkflowExecutionRequestEvent;
 import com.orynx.execution.workflow.event.dto.TaskExecutionRequest;
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,6 +30,9 @@ public class WorkflowExecutionEngine {
     private final WorkflowPauseRegistry pauseRegistry;
     private final ExecutionCoordinationService coordinationService;
     private final ActiveExecutionTracker activeExecutionTracker;
+
+    @Autowired(required = false)
+    private ExecutionMetrics executionMetrics;
 
     @Autowired
     public WorkflowExecutionEngine(
@@ -60,9 +69,17 @@ public class WorkflowExecutionEngine {
         Long workflowId = event.getWorkflowId();
         String workflowName = event.getWorkflowName();
 
+        long startMs = System.currentTimeMillis();
         if (workflowId != null) {
             MDC.put("workflowId", String.valueOf(workflowId));
         }
+        if (generation != null && workflowId != null) {
+            MDC.put("executionId", "wf-" + workflowId + "-gen-" + generation);
+        }
+        if (instanceId != null) {
+            MDC.put("workerId", instanceId);
+        }
+        Tracer tracer = GlobalOpenTelemetry.getTracer("com.orynx.execution.engine");
         try {
         log.info("========================================");
         log.info("WorkflowExecutionEngine Started (gen={}, instance={})", generation, instanceId);
@@ -108,7 +125,27 @@ public class WorkflowExecutionEngine {
                     return;
                 }
 
-                TaskExecutionResult result = taskExecutor.execute(task);
+                Span taskSpan = tracer.spanBuilder("orynx.task.execute")
+                        .setAttribute("orynx.workflow.id", workflowId != null ? String.valueOf(workflowId) : "unknown")
+                        .setAttribute("orynx.task.name", task.getName() != null ? task.getName() : "unknown")
+                        .setAttribute("orynx.task.order", task.getExecutionOrder() != null ? task.getExecutionOrder() : 0)
+                        .startSpan();
+                TaskExecutionResult result;
+                try (Scope ignored = taskSpan.makeCurrent()) {
+                    result = taskExecutor.execute(task);
+                    taskSpan.setAttribute("orynx.task.attempts", result.getAttempts());
+                    taskSpan.setAttribute("orynx.task.success", result.isSuccess());
+                    if (!result.isSuccess()) {
+                        taskSpan.setStatus(StatusCode.ERROR, "Task execution failed after " + result.getAttempts() + " attempt(s)");
+                    }
+                    MDC.put("attemptNumber", String.valueOf(result.getAttempts()));
+                    if (executionMetrics != null) {
+                        executionMetrics.recordTaskResult(result.isSuccess(), result.getAttempts());
+                    }
+                } finally {
+                    taskSpan.end();
+                    MDC.remove("attemptNumber");
+                }
 
                 // Check fencing right after task completes
                 if (checkFenced(workflowId, generation, instanceId)) {
@@ -176,6 +213,9 @@ public class WorkflowExecutionEngine {
                                         .eventId("wf:" + workflowId + ":gen:" + generation + ":workflow-completed")
                                         .build()
                         );
+                        if (executionMetrics != null) {
+                            executionMetrics.recordExecutionDuration(false, System.currentTimeMillis() - startMs);
+                        }
                     }
 
                     return;
@@ -223,6 +263,9 @@ public class WorkflowExecutionEngine {
                         .build()
         );
 
+        if (executionMetrics != null) {
+            executionMetrics.recordExecutionDuration(true, System.currentTimeMillis() - startMs);
+        }
         log.info(
                 "Workflow {} completed successfully (gen={})",
                 workflowName,
@@ -230,6 +273,9 @@ public class WorkflowExecutionEngine {
         );
         } finally {
             MDC.remove("workflowId");
+            MDC.remove("executionId");
+            MDC.remove("workerId");
+            MDC.remove("attemptNumber");
         }
     }
 

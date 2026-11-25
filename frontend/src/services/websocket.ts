@@ -147,11 +147,18 @@ export const connectWebSocket = (
 
   onConnectionStateChange?.("connecting");
 
+  const wsCorrelationId =
+    typeof globalThis !== "undefined" && globalThis.crypto?.randomUUID
+      ? globalThis.crypto.randomUUID()
+      : `ws-${Date.now()}`;
+
   const clientConfig: ConstructorParameters<typeof Client>[0] = {
     webSocketFactory: () =>
       new SockJS(`${WS_BASE_URL}/ws`) as unknown as IStompSocket,
     connectHeaders: {
       Authorization: `Bearer ${token}`,
+      "X-Request-ID": wsCorrelationId,
+      "X-Correlation-ID": wsCorrelationId,
     },
     reconnectDelay: 5000,
     debug: () => undefined,

@@ -2,6 +2,7 @@ package com.orynx.orchestrator.workflow;
 
 import com.orynx.orchestrator.common.exception.WorkflowNotFoundException;
 import com.orynx.orchestrator.common.metrics.WorkflowMetrics;
+import com.orynx.orchestrator.common.observability.WorkflowTracingHelper;
 import com.orynx.orchestrator.common.security.UserContext;
 import com.orynx.orchestrator.common.util.PaginationUtils;
 import com.orynx.orchestrator.event.dto.WorkflowCancelledEvent;
@@ -88,6 +89,7 @@ public class WorkflowService {
                 .build();
 
         Workflow savedWorkflow = workflowRepository.save(workflow);
+        WorkflowTracingHelper.tagSpanLifecycle(savedWorkflow.getId(), null, null, "CREATED");
 
         createWorkflowTasks(savedWorkflow);
 
@@ -171,6 +173,7 @@ public class WorkflowService {
                     .build();
 
             workflowExecutionRepository.save(execution);
+            WorkflowTracingHelper.tagSpanLifecycle(updatedWorkflow.getId(), execution.getId(), 1L, "CREATED->RUNNING");
 
             log.info(
                     "Created execution history record for workflow {}",
@@ -594,6 +597,7 @@ public class WorkflowService {
             }
 
             workflowExecutionRepository.save(execution);
+            WorkflowTracingHelper.tagSpanLifecycle(updatedWorkflow.getId(), execution.getId(), execution.getExecutionGeneration(), "CANCELLED");
         }
 
         WorkflowExecutionEvent event = WorkflowExecutionEvent.builder()
@@ -748,6 +752,7 @@ public class WorkflowService {
             execution.setExecutionGeneration(nextExecutionGeneration);
 
             workflowExecutionRepository.save(execution);
+            WorkflowTracingHelper.tagSpanLifecycle(updatedWorkflow.getId(), execution.getId(), nextExecutionGeneration, "PAUSED->RUNNING");
 
             workflowResumeProducer.publishWorkflowResumed(
                     WorkflowResumedEvent.builder()
@@ -866,6 +871,7 @@ public class WorkflowService {
                             .build();
 
             workflowExecutionRepository.save(execution);
+            WorkflowTracingHelper.tagSpanLifecycle(updatedWorkflow.getId(), execution.getId(), nextExecutionGeneration, "FAILED->RUNNING");
 
             List<TaskExecutionRequest> taskRequests =
                     workflowTasks.stream()

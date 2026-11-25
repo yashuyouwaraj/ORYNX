@@ -1,4 +1,6 @@
-# OrynX Production Observability, SLOs & Alerting (Step 22 / 22.1 / 23)
+# OrynX Production Observability, SLOs & Alerting (Step 22 / 22.1 / 23 / 26)
+
+> **Step 26 Extension**: For distributed tracing across Kafka & async workers, centralized Loki log aggregation, trace-to-log-to-metric correlation, correlation sanitization, and Step 26 dashboards/runbooks, see [docs/DISTRIBUTED_OBSERVABILITY.md](./DISTRIBUTED_OBSERVABILITY.md).
 
 ## 1. Architecture Overview
 

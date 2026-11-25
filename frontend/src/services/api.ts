@@ -1,4 +1,9 @@
 import type { Workflow } from "@/types/workflow";
+import {
+  createSafeApiErrorContext,
+  generateTraceContext,
+  type FrontendTraceContext,
+} from "@/services/observability";
 
 export type PageEnvelope<T> = {
   content: T[];
@@ -46,9 +51,16 @@ const unwrapPageEnvelope = <T>(
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8080";
 
-const createHeaders = (token?: string): HeadersInit => {
+const createHeaders = (
+  token?: string,
+  traceCtx?: FrontendTraceContext,
+): HeadersInit => {
+  const ctx = traceCtx ?? generateTraceContext();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    traceparent: ctx.traceparent,
+    "X-Request-ID": ctx.correlationId,
+    "X-Correlation-ID": ctx.correlationId,
   };
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
@@ -56,21 +68,34 @@ const createHeaders = (token?: string): HeadersInit => {
   return headers;
 };
 
+const fetchWithCorrelation = async (
+  url: string,
+  token?: string,
+  errorLabel = "Request failed",
+): Promise<Response> => {
+  const traceCtx = generateTraceContext();
+  const response = await fetch(url, {
+    headers: createHeaders(token, traceCtx),
+  });
+  if (!response.ok) {
+    const safeCtx = createSafeApiErrorContext(url, response.status, traceCtx);
+    throw new Error(
+      `${errorLabel} (status=${safeCtx.status}, correlationId=${safeCtx.correlationId}, traceId=${safeCtx.traceId})`,
+    );
+  }
+  return response;
+};
+
 export const getWorkflowsPage = async (
   token?: string,
   page = 0,
   size = DEFAULT_PAGE_SIZE
 ): Promise<PageEnvelope<Workflow>> => {
-  const response = await fetch(
+  const response = await fetchWithCorrelation(
     `${API_BASE_URL}/api/v1/workflows?page=${page}&size=${size}`,
-    {
-      headers: createHeaders(token),
-    }
+    token,
+    "Failed to fetch workflows",
   );
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch workflows");
-  }
 
   const data = (await response.json()) as Workflow[] | PageEnvelope<Workflow>;
   return unwrapPageEnvelope(data, page, size);
@@ -86,13 +111,11 @@ export const getWorkflows = async (
 };
 
 export const getAnalytics = async (token?: string) => {
-  const response = await fetch(`${API_BASE_URL}/api/v1/analytics`, {
-    headers: createHeaders(token),
-  });
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch analytics");
-  }
+  const response = await fetchWithCorrelation(
+    `${API_BASE_URL}/api/v1/analytics`,
+    token,
+    "Failed to fetch analytics",
+  );
 
   return response.json();
 };
@@ -104,16 +127,11 @@ export const getTimelinePage = async <T = any>(
   page = 0,
   size = DEFAULT_PAGE_SIZE
 ): Promise<PageEnvelope<T>> => {
-  const response = await fetch(
+  const response = await fetchWithCorrelation(
     `${API_BASE_URL}/api/v1/timeline/${workflowId}?page=${page}&size=${size}`,
-    {
-      headers: createHeaders(token),
-    }
+    token,
+    "Failed to fetch timeline",
   );
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch timeline");
-  }
 
   const data = (await response.json()) as T[] | PageEnvelope<T>;
   return unwrapPageEnvelope(data, page, size);
