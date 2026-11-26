@@ -40,12 +40,15 @@ Inspect `workflowId`, `executionId`, `workerId`, `attemptNumber`, and `trace_id`
 ## 3. Mitigation & Manual Intervention
 1. **Worker Pool Saturation (`CAPACITY`)**:
    - Check `ORYNX_EXECUTION_WORKER_CORE_POOL_SIZE`, `MAX_POOL_SIZE`, and `QUEUE_CAPACITY`, or tighten `ORYNX_ADMISSION_MAX_GLOBAL` in `orchestrator-service` to shed load cleanly at admission.
-2. **Repeated Fencing (`FENCING`)**:
-   - Inspect GC pauses (`OrynX Backend Service Health` dashboard) and container CPU/memory limits (`EXECUTION_SERVICE_MEM_LIMIT`).
+2. **Repeated Fencing (`FENCING`) or Memory Pressure**:
+   - Inspect GC pauses and heap usage (`OrynX Backend Service Health` dashboard) and container RSS (`docker stats`).
+   - `execution-service` defaults to `EXECUTION_SERVICE_MEM_LIMIT=768m` with `EXECUTION_SERVICE_JAVA_OPTS=-XX:+UseContainerSupport -XX:MaxRAMPercentage=60.0` (leaving ~40% for Metaspace, OTel Java agent, and native buffers). Increase `EXECUTION_SERVICE_MEM_LIMIT` if sustained concurrency pushes container RSS above 80%.
 3. **Graceful Restart of `execution-service`**:
    ```bash
    docker compose restart execution-service
    ```
-   Graceful shutdown (`20s` timeout) drains in-flight tasks before exiting; any uncompleted leases are recovered automatically after lease expiry.
+   - Docker sends `SIGTERM` and allows `stop_grace_period: 45s` before `SIGKILL`.
+   - Spring initiates graceful shutdown (`spring.lifecycle.timeout-per-shutdown-phase=20s`) and `ThreadPoolTaskExecutor` drains in-flight worker tasks up to `orynx.execution.worker.await-termination-seconds=30`.
+   - **Limitation**: Graceful restart does not guarantee completion of tasks that exceed the `30s` drain timeout (or `45s` container grace period). Any execution interrupted before completion is recovered automatically after its PostgreSQL lease expires (`300s`), with generation fencing rejecting stale writes.
 4. **Manual Retry / Cancel (when `max-recovery-attempts` exhausted)**:
    - Use `PATCH /api/v1/workflows/{id}/retry` or `PATCH /api/v1/workflows/{id}/cancel` via the API Gateway. Never manually edit `workflow_executions` rows in PostgreSQL unless all workers for that workflow are stopped and verified idle.

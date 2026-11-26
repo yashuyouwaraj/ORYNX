@@ -273,10 +273,40 @@ class DistributedObservabilityTest {
                 "OTEL_INSTRUMENTATION_LOGBACK_APPENDER_EXPERIMENTAL_CAPTURE_MDC_ATTRIBUTES: correlationId,requestId");
         assertThat(composeRaw).doesNotContain("CAPTURE_MDC_ATTRIBUTES: *").doesNotContain("apache/kafka:latest");
 
-        // 6. Graceful shutdown enabled across all 5 backend services
+        // 6. Structural Docker Compose verification for S27-M-01 (stop_grace_period) and S27-M-02 (memory & JVM headroom)
+        Map<String, Object> compose = yaml.load(composeRaw);
+        Map<String, Object> services = (Map<String, Object>) compose.get("services");
+        assertThat(services).isNotNull();
+        for (String svc : List.of("gateway-service", "auth-service", "planning-service", "orchestrator-service")) {
+            Map<String, Object> svcCfg = (Map<String, Object>) services.get(svc);
+            assertThat(svcCfg.get("stop_grace_period"))
+                    .as(svc + " stop_grace_period must exceed Spring 20s graceful shutdown phase")
+                    .isEqualTo("30s");
+        }
+        Map<String, Object> execSvc = (Map<String, Object>) services.get("execution-service");
+        assertThat(execSvc.get("stop_grace_period"))
+                .as("execution-service stop_grace_period must exceed 30s worker pool drain + Spring shutdown")
+                .isEqualTo("45s");
+        assertThat(String.valueOf(execSvc.get("mem_limit"))).contains("EXECUTION_SERVICE_MEM_LIMIT:-768m");
+        Map<String, Object> execEnv = (Map<String, Object>) execSvc.get("environment");
+        assertThat(String.valueOf(execEnv.get("JAVA_OPTS")))
+                .contains("EXECUTION_SERVICE_JAVA_OPTS")
+                .contains("-XX:+UseContainerSupport")
+                .contains("-XX:MaxRAMPercentage=60.0");
+
+        Map<String, Object> authSvc = (Map<String, Object>) services.get("auth-service");
+        assertThat(String.valueOf(authSvc.get("mem_limit"))).contains("AUTH_SERVICE_MEM_LIMIT:-768m");
+        Map<String, Object> authEnv = (Map<String, Object>) authSvc.get("environment");
+        assertThat(String.valueOf(authEnv.get("JAVA_OPTS")))
+                .contains("AUTH_SERVICE_JAVA_OPTS")
+                .contains("-XX:+UseContainerSupport")
+                .contains("-XX:MaxRAMPercentage=60.0");
+
+        // 7. Graceful shutdown enabled across all 5 backend services
         for (String svc : List.of("gateway-service", "auth-service", "planning-service", "execution-service", "orchestrator-service")) {
             String props = Files.readString(repoRoot.resolve("services/" + svc + "/src/main/resources/application.properties"));
             assertThat(props).as(svc + " graceful shutdown").contains("server.shutdown=graceful");
+            assertThat(props).as(svc + " shutdown phase timeout").contains("spring.lifecycle.timeout-per-shutdown-phase=20s");
         }
     }
 

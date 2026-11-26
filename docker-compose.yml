@@ -102,7 +102,8 @@ services:
       context: ./services/auth-service
       dockerfile: Dockerfile
     restart: unless-stopped
-    mem_limit: ${AUTH_SERVICE_MEM_LIMIT:-512m}
+    stop_grace_period: 30s
+    mem_limit: ${AUTH_SERVICE_MEM_LIMIT:-768m}
     cpus: ${AUTH_SERVICE_CPU_LIMIT:-1.0}
     depends_on:
       postgres:
@@ -140,7 +141,7 @@ services:
       OTEL_INSTRUMENTATION_SPRING_SCHEDULING_ENABLED: "false"
       OTEL_INSTRUMENTATION_HIBERNATE_ENABLED: "false"
       OTEL_INSTRUMENTATION_SPRING_DATA_ENABLED: "false"
-      JAVA_OPTS: ${JAVA_OPTS:--XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0}
+      JAVA_OPTS: ${AUTH_SERVICE_JAVA_OPTS:--XX:+UseContainerSupport -XX:MaxRAMPercentage=60.0}
     expose:
       - "8081"
       - "9100"
@@ -159,6 +160,7 @@ services:
       context: ./services/planning-service
       dockerfile: Dockerfile
     restart: unless-stopped
+    stop_grace_period: 30s
     mem_limit: ${PLANNING_SERVICE_MEM_LIMIT:-512m}
     cpus: ${PLANNING_SERVICE_CPU_LIMIT:-1.0}
     environment:
@@ -203,6 +205,7 @@ services:
       context: ./services/orchestrator-service
       dockerfile: Dockerfile
     restart: unless-stopped
+    stop_grace_period: 30s
     mem_limit: ${ORCHESTRATOR_SERVICE_MEM_LIMIT:-768m}
     cpus: ${ORCHESTRATOR_SERVICE_CPU_LIMIT:-1.0}
     depends_on:
@@ -272,7 +275,8 @@ services:
       context: ./services/execution-service
       dockerfile: Dockerfile
     restart: unless-stopped
-    mem_limit: ${EXECUTION_SERVICE_MEM_LIMIT:-512m}
+    stop_grace_period: 45s
+    mem_limit: ${EXECUTION_SERVICE_MEM_LIMIT:-768m}
     cpus: ${EXECUTION_SERVICE_CPU_LIMIT:-1.0}
     depends_on:
       postgres:
@@ -311,7 +315,7 @@ services:
       OTEL_INSTRUMENTATION_SPRING_SCHEDULING_ENABLED: "false"
       OTEL_INSTRUMENTATION_HIBERNATE_ENABLED: "false"
       OTEL_INSTRUMENTATION_SPRING_DATA_ENABLED: "false"
-      JAVA_OPTS: ${JAVA_OPTS:--XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0}
+      JAVA_OPTS: ${EXECUTION_SERVICE_JAVA_OPTS:--XX:+UseContainerSupport -XX:MaxRAMPercentage=60.0}
     expose:
       - "8084"
       - "9100"
@@ -330,6 +334,7 @@ services:
       context: ./services/gateway-service
       dockerfile: Dockerfile
     restart: unless-stopped
+    stop_grace_period: 30s
     mem_limit: ${GATEWAY_SERVICE_MEM_LIMIT:-512m}
     cpus: ${GATEWAY_SERVICE_CPU_LIMIT:-1.0}
     depends_on:
