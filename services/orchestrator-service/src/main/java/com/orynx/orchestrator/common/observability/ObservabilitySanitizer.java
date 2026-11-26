@@ -12,13 +12,21 @@ public final class ObservabilitySanitizer {
     public static final int MAX_ERROR_MESSAGE_LENGTH = 512;
 
     private static final Pattern SAFE_ID_PATTERN = Pattern.compile("^[A-Za-z0-9._:/-]{1,128}$");
-    private static final Pattern BEARER_PATTERN = Pattern.compile("(?i)Bearer\\s+[A-Za-z0-9\\-._~+/]+=*");
+    private static final Pattern AUTH_HEADER_PATTERN = Pattern.compile(
+            "(?i)([A-Za-z0-9_.-]*authorization\\s*[:=]\\s*)(?:(?:Bearer|Basic|Digest|Token|ApiKey)\\s+)?[^\\s,;\"'&\\]})]+"
+    );
+    private static final Pattern STANDALONE_AUTH_PATTERN = Pattern.compile(
+            "(?i)\\b(Bearer|Basic)\\s+[A-Za-z0-9\\-._~+/]{6,}={0,2}(\\s|$|[,;\"'&\\]})])"
+    );
     private static final Pattern JWT_PATTERN = Pattern.compile("eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}");
-    private static final Pattern SECRET_QUOTED_KV_PATTERN = Pattern.compile(
-            "(?i)([\"']?\\b(?:password|passwd|pwd|secret|token|api[_-]?key|authorization|jwt|client[_-]?secret|private[_-]?key|access[_-]?key)\\b[\"']?\\s*[:=]\\s*[\"'])[^\"'\\r\\n]+([\"'])"
+    private static final Pattern SECRET_DOUBLE_QUOTED_KV_PATTERN = Pattern.compile(
+            "(?i)(\"?[A-Za-z0-9_.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|jwt|credentials?)(?:[_-]?value)?\"?\\s*[:=]\\s*\")((?:\\\\.|[^\"\\\\\\r\\n])+)(\")"
+    );
+    private static final Pattern SECRET_SINGLE_QUOTED_KV_PATTERN = Pattern.compile(
+            "(?i)('?[A-Za-z0-9_.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|jwt|credentials?)(?:[_-]?value)?'?\\s*[:=]\\s*')((?:\\\\.|[^'\\\\\\r\\n])+)(')"
     );
     private static final Pattern SECRET_KV_PATTERN = Pattern.compile(
-            "(?i)([\"']?\\b(?:password|passwd|pwd|secret|token|api[_-]?key|authorization|jwt|client[_-]?secret|private[_-]?key|access[_-]?key)\\b[\"']?\\s*[:=]\\s*)[^\\s,;\"'&\\]})]+"
+            "(?i)([A-Za-z0-9_.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|jwt|credentials?)(?:[_-]?value)?\\s*[:=]\\s*)[^\\s,;\"'&\\]})]+"
     );
     private static final Pattern URL_CREDENTIAL_PATTERN = Pattern.compile("(://[^\\s:/@]+:)([^\\s@]+)(@)");
     private static final Pattern PEM_KEY_PATTERN = Pattern.compile("-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]*?-----END [A-Z ]*PRIVATE KEY-----");
@@ -49,11 +57,13 @@ public final class ObservabilitySanitizer {
             return input;
         }
         String sanitized = PEM_KEY_PATTERN.matcher(input).replaceAll("[REDACTED_PRIVATE_KEY]");
-        sanitized = BEARER_PATTERN.matcher(sanitized).replaceAll("Bearer [REDACTED]");
-        sanitized = JWT_PATTERN.matcher(sanitized).replaceAll("[REDACTED_JWT]");
-        sanitized = SECRET_QUOTED_KV_PATTERN.matcher(sanitized).replaceAll("$1[REDACTED]$2");
-        sanitized = SECRET_KV_PATTERN.matcher(sanitized).replaceAll("$1[REDACTED]");
         sanitized = URL_CREDENTIAL_PATTERN.matcher(sanitized).replaceAll("$1[REDACTED]$3");
+        sanitized = SECRET_DOUBLE_QUOTED_KV_PATTERN.matcher(sanitized).replaceAll("$1[REDACTED]$3");
+        sanitized = SECRET_SINGLE_QUOTED_KV_PATTERN.matcher(sanitized).replaceAll("$1[REDACTED]$3");
+        sanitized = AUTH_HEADER_PATTERN.matcher(sanitized).replaceAll("$1[REDACTED]");
+        sanitized = STANDALONE_AUTH_PATTERN.matcher(sanitized).replaceAll("$1 [REDACTED]$2");
+        sanitized = SECRET_KV_PATTERN.matcher(sanitized).replaceAll("$1[REDACTED]");
+        sanitized = JWT_PATTERN.matcher(sanitized).replaceAll("[REDACTED_JWT]");
         return sanitized.replace('\r', ' ').replace('\n', ' ');
     }
 

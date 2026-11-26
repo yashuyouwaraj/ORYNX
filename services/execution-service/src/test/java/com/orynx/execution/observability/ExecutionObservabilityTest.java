@@ -1,5 +1,7 @@
 package com.orynx.execution.observability;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.orynx.execution.coordination.ExecutionCoordinationService;
 import com.orynx.execution.coordination.StaleWorkerExecutionException;
 import com.orynx.execution.event.dto.TaskCompletedEvent;
@@ -41,9 +43,17 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -287,6 +297,74 @@ class ExecutionObservabilityTest {
                 "execBearer555", "execSinglePass", "eqExecPass", "colonExecPass", "spaceExecKey", "\n");
         assertThat(redacted).contains("\"workflowId\":\"101\"");
         assertThat(redacted).contains("\"password\":\"[REDACTED]\"");
+
+        String compound = "access_token=eAcc1 JWT_SECRET=eJwt2 SPRING_DATASOURCE_PASSWORD=eDb3 "
+                + "Authorization: Basic dXNlcjpwYXNz "
+                + "{\"password\":\"it's-apos777\",\"secret\":\"esc\\\"aped888\"} "
+                + "tokenType=Bearer passwordPolicy=strong";
+        String redactedCompound = ExecutionObservabilitySanitizer.redactSensitiveText(compound);
+        assertThat(redactedCompound).doesNotContain("eAcc1", "eJwt2", "eDb3", "dXNlcjpwYXNz", "apos777", "aped888");
+        assertThat(redactedCompound).contains("tokenType=Bearer passwordPolicy=strong");
+    }
+
+    @Test
+    void grafanaDashboards_allExecutionMetricsAndLabelsExistInRealExecutionPrometheusRegistry() throws Exception {
+        PrometheusMeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
+        ExecutionMetrics metrics = new ExecutionMetrics(registry);
+        metrics.recordTaskResult(true, 2);
+        metrics.recordTaskResult(false, 1);
+        metrics.recordWorkerFenced();
+        metrics.recordWorkerRejected();
+        metrics.recordExecutionDuration(true, 250L);
+        metrics.recordExecutionDuration(false, 500L);
+        metrics.updatePoolStats(2, 4);
+
+        Map<String, Set<String>> exported = new HashMap<>();
+        Pattern linePattern = Pattern.compile("^([a-zA-Z_:][a-zA-Z0-9_:]*)(\\{([^}]*)})?\\s+");
+        Pattern labelPattern = Pattern.compile("([a-zA-Z_][a-zA-Z0-9_]*)=\"");
+        for (String line : registry.scrape().split("\\R")) {
+            if (line.isBlank() || line.startsWith("#")) {
+                continue;
+            }
+            Matcher m = linePattern.matcher(line);
+            if (m.find()) {
+                Set<String> labels = exported.computeIfAbsent(m.group(1), k -> new HashSet<>());
+                if (m.group(3) != null) {
+                    Matcher lm = labelPattern.matcher(m.group(3));
+                    while (lm.find()) {
+                        labels.add(lm.group(1));
+                    }
+                }
+            }
+        }
+
+        Path current = Path.of("").toAbsolutePath();
+        while (current != null && !Files.exists(current.resolve("docker-compose.yml"))) {
+            current = current.getParent();
+        }
+        assertThat(current).isNotNull();
+
+        JsonNode resDash = new ObjectMapper().readTree(
+                Files.readString(current.resolve("monitoring/grafana/dashboards/orynx-resilience-recovery.json"))
+        );
+        Pattern execMetricPattern = Pattern.compile("\\b(orynx_(?:execution|worker)_[a-z0-9_]+)\\b");
+        int verifiedMetricRefs = 0;
+        for (JsonNode panel : resDash.path("panels")) {
+            for (JsonNode target : panel.path("targets")) {
+                String expr = target.path("expr").asText("");
+                Matcher m = execMetricPattern.matcher(expr);
+                while (m.find()) {
+                    String metricName = m.group(1);
+                    assertThat(exported)
+                            .as("Execution metric '%s' referenced in dashboard panel '%s' must exist in real ExecutionMetrics scrape",
+                                    metricName, panel.path("title").asText())
+                            .containsKey(metricName);
+                    verifiedMetricRefs++;
+                }
+            }
+        }
+        assertThat(verifiedMetricRefs).isGreaterThanOrEqualTo(6);
+        assertThat(exported.get("orynx_execution_duration_seconds_bucket")).contains("outcome", "le");
     }
 
     @Test

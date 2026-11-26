@@ -660,9 +660,13 @@ public class WorkflowService {
             workflowAdmissionController.release(workflow.getId(), workflow.getUserId());
         }
 
+        Optional<WorkflowExecution> executionOptional =
+                workflowExecutionRepository.findFirstByWorkflowIdOrderByStartedAtDesc(workflowId);
+        Long activeExecutionId = executionOptional.map(WorkflowExecution::getId).orElse(null);
+        Long activeGeneration = executionOptional.map(WorkflowExecution::getExecutionGeneration).orElse(null);
         String pauseEventId = UUID.randomUUID().toString();
         try (WorkflowTracingHelper.MdcScope ignored = WorkflowTracingHelper.scopedWorkflowLifecycle(
-                updatedWorkflow.getId(), null, null, "RUNNING->PAUSED", pauseEventId)) {
+                updatedWorkflow.getId(), activeExecutionId, activeGeneration, "RUNNING->PAUSED", pauseEventId)) {
             workflowPauseProducer.publishWorkflowPaused(
                     WorkflowPausedEvent.builder()
                             .workflowId(updatedWorkflow.getId())

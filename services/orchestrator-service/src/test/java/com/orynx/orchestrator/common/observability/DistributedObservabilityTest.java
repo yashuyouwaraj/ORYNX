@@ -244,13 +244,13 @@ class DistributedObservabilityTest {
         String otelRaw = Files.readString(repoRoot.resolve("monitoring/otel/otel-collector-config.yaml"));
         assertThat(otelRaw).contains("memory_limiter", "filter/healthchecks", "attributes/redact_traces",
                 "transform/redact_logs", "otlp/tempo", "otlphttp/loki", "sending_queue", "queue_size: 512",
-                "\"$$1[REDACTED]$$2\"", "\"$$1[REDACTED]\"", "\"$$1[REDACTED]@\"", "[REDACTED_PRIVATE_KEY]");
+                "\"$$1[REDACTED]$$3\"", "\"$$1[REDACTED]\"", "\"$$1[REDACTED]@\"", "[REDACTED_PRIVATE_KEY]");
         assertThat(otelRaw).doesNotContain("\"$1=[REDACTED]\"");
 
-        // 3. Grafana datasources: Tempo -> Loki, Tempo -> Prometheus, Loki -> Tempo, Prometheus -> Tempo
+        // 3. Grafana datasources: Tempo -> Loki, Tempo -> Prometheus, Loki -> Tempo (label + regex), Prometheus -> Tempo
         String dsRaw = Files.readString(repoRoot.resolve("monitoring/grafana/provisioning/datasources/datasources.yml"));
         assertThat(dsRaw).contains("uid: loki", "tracesToLogsV2", "tracesToMetrics",
-                "derivedFields", "exemplarTraceIdDestinations");
+                "derivedFields", "matcherType: label", "exemplarTraceIdDestinations");
 
         // 4. Grafana dashboard provisioning exists and points to /var/lib/grafana/dashboards
         Path dashProvisioningDir = repoRoot.resolve("monitoring/grafana/provisioning/dashboards");
@@ -262,10 +262,13 @@ class DistributedObservabilityTest {
             assertThat(provContent).contains("/var/lib/grafana/dashboards");
         }
 
-        // 5. Docker Compose: pinned Loki image, loopback binding, bounded OTLP queues
+        // 5. Docker Compose: pinned Loki image, loopback binding, bounded OTLP queues, explicit Java-agent MDC capture
         String composeRaw = Files.readString(repoRoot.resolve("docker-compose.yml"));
         assertThat(composeRaw).contains("grafana/loki:3.2.1", "127.0.0.1:3100:3100",
-                "OTEL_BSP_MAX_QUEUE_SIZE", "OTEL_BLRP_MAX_QUEUE_SIZE");
+                "OTEL_BSP_MAX_QUEUE_SIZE", "OTEL_BLRP_MAX_QUEUE_SIZE",
+                "OTEL_INSTRUMENTATION_LOGBACK_APPENDER_EXPERIMENTAL_CAPTURE_MDC_ATTRIBUTES: correlationId,requestId,workflowId,executionId,eventId,workerId,attemptNumber,errorCategory",
+                "OTEL_INSTRUMENTATION_LOGBACK_APPENDER_EXPERIMENTAL_CAPTURE_MDC_ATTRIBUTES: correlationId,requestId");
+        assertThat(composeRaw).doesNotContain("CAPTURE_MDC_ATTRIBUTES: *");
     }
 
     @Test
@@ -305,7 +308,9 @@ class DistributedObservabilityTest {
         Path dashboardsDir = resolveRepoRoot().resolve("monitoring/grafana/dashboards");
         Pattern orynxMetricPattern = Pattern.compile("\\b(orynx_[a-z0-9_]+)\\b");
 
-        // Validate every dashboard JSON in monitoring/grafana/dashboards
+        // Validate every dashboard JSON in monitoring/grafana/dashboards (metrics AND labels for orchestrator metrics)
+        Pattern selectorLabelPattern = Pattern.compile("\\b(orynx_[a-z0-9_]+)\\s*\\{([^}]*)\\}");
+        Pattern labelKeyPattern = Pattern.compile("([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?:=|!=|=~|!~)");
         try (var stream = Files.list(dashboardsDir)) {
             List<Path> dashboards = stream.filter(p -> p.toString().endsWith(".json")).toList();
             assertThat(dashboards).isNotEmpty();
@@ -328,6 +333,21 @@ class DistributedObservabilityTest {
                                     .as("Dashboard %s panel '%s' references nonexistent metric '%s' in expr: %s",
                                             dashFile.getFileName(), panel.path("title").asText(), metricName, expr)
                                     .isTrue();
+                        }
+                        Matcher sm = selectorLabelPattern.matcher(expr);
+                        while (sm.find()) {
+                            String metricName = sm.group(1);
+                            if (exportedMetrics.containsKey(metricName)) {
+                                Set<String> actualLabels = exportedMetrics.get(metricName);
+                                Matcher lm = labelKeyPattern.matcher(sm.group(2));
+                                while (lm.find()) {
+                                    String labelName = lm.group(1);
+                                    assertThat(actualLabels)
+                                            .as("Dashboard %s panel '%s' filters metric '%s' by nonexistent label '%s'",
+                                                    dashFile.getFileName(), panel.path("title").asText(), metricName, labelName)
+                                            .contains(labelName);
+                                }
+                            }
                         }
                     }
                 }
@@ -606,6 +626,68 @@ class DistributedObservabilityTest {
         assertThat(redacted).contains("\"password\":\"[REDACTED]\"");
         assertThat(redacted).contains("\"api_key\": \"[REDACTED]\"");
         assertThat(redacted).contains("[REDACTED_PRIVATE_KEY]");
+    }
+
+    @Test
+    void sanitizer_redactsCompoundKeysBasicAuthApostrophesEscapedQuotesAndPreservesSafeText() {
+        String raw = "access_token=acc111 refresh_token=ref222 JWT_SECRET=jwtSec333 "
+                + "SPRING_DATASOURCE_PASSWORD=dbPass444 NVIDIA_API_KEY=nvKey555 AWS_ACCESS_KEY=aws666 "
+                + "OAUTH_REFRESH_TOKEN=oaRef777 DATABASE_PASSWORD=dbp888 CLIENT_SECRET_VALUE=csv999 "
+                + "Authorization: Basic dXNlcjpiYXNpY1Bhc3M= "
+                + "{\"access_token\":\"jsonAcc1\",\"refresh_token\":\"jsonRef2\",\"password\":\"it's-apos777\","
+                + "\"secret\":\"esc\\\"aped888\",\"clientSecret\":\"camel10\",\"apiKey\":\"camel11\","
+                + "\"credentials\":\"cred12\",\"workflowId\":\"42\",\"correlationId\":\"corr-safe-2\"} "
+                + "tokenType=Bearer passwordPolicy=strong";
+
+        String redacted = ObservabilitySanitizer.redactSensitiveText(raw);
+
+        assertThat(redacted).doesNotContain(
+                "acc111", "ref222", "jwtSec333", "dbPass444", "nvKey555", "aws666",
+                "oaRef777", "dbp888", "csv999", "dXNlcjpiYXNpY1Bhc3M=",
+                "jsonAcc1", "jsonRef2", "it's-apos777", "apos777", "aped888",
+                "camel10", "camel11", "cred12"
+        );
+        assertThat(redacted).contains("\"workflowId\":\"42\"");
+        assertThat(redacted).contains("\"correlationId\":\"corr-safe-2\"");
+        assertThat(redacted).contains("tokenType=Bearer passwordPolicy=strong");
+    }
+
+    @Test
+    void workflowService_pauseWorkflowPropagatesCanonicalExecutionIdAndRestoresMdc() {
+        WorkflowRepository wfRepo = mock(WorkflowRepository.class);
+        WorkflowExecutionRepository execRepo = mock(WorkflowExecutionRepository.class);
+        WorkflowPauseProducer pauseProducer = mock(WorkflowPauseProducer.class);
+        WorkflowEventPublisher eventPublisher = mock(WorkflowEventPublisher.class);
+
+        WorkflowService service = new WorkflowService(
+                wfRepo, mock(KafkaProducer.class), eventPublisher, mock(WorkflowTaskRepository.class),
+                mock(WorkflowExecutionEngine.class), mock(ExecutionRequestProducer.class), execRepo,
+                mock(WorkflowCancellationProducer.class), pauseProducer, mock(WorkflowResumeProducer.class)
+        );
+
+        Workflow wf = Workflow.builder().id(77L).name("WF-Pause").status(WorkflowStatus.RUNNING).userId(3L).build();
+        WorkflowExecution activeExec = WorkflowExecution.builder().id(999L).workflow(wf).status(WorkflowStatus.RUNNING).executionGeneration(2L).build();
+        when(wfRepo.findByIdAndUserIdForUpdate(77L, 3L)).thenReturn(Optional.of(wf));
+        when(wfRepo.save(any(Workflow.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(execRepo.findFirstByWorkflowIdOrderByStartedAtDesc(77L)).thenReturn(Optional.of(activeExec));
+
+        ObservabilityKafkaConfig.TraceContextProducerInterceptor<String, Object> interceptor =
+                new ObservabilityKafkaConfig.TraceContextProducerInterceptor<>();
+        AtomicReference<ProducerRecord<String, Object>> captured = new AtomicReference<>();
+        doAnswer(inv -> {
+            ProducerRecord<String, Object> rec = new ProducerRecord<>("workflow-paused", "77", inv.getArgument(0));
+            interceptor.onSend(rec);
+            captured.set(rec);
+            return null;
+        }).when(pauseProducer).publishWorkflowPaused(any());
+
+        service.pauseWorkflow(77L, 3L);
+
+        assertThat(KafkaTraceContextPropagator.getHeader(captured.get().headers(), "X-Workflow-ID")).isEqualTo("77");
+        assertThat(KafkaTraceContextPropagator.getHeader(captured.get().headers(), "X-Execution-ID")).isEqualTo("999");
+        assertThat(KafkaTraceContextPropagator.getHeader(captured.get().headers(), "X-Event-ID")).isNotBlank();
+        assertThat(MDC.get(KafkaTraceContextPropagator.MDC_EXECUTION_ID)).isNull();
+        assertThat(MDC.get(KafkaTraceContextPropagator.MDC_WORKFLOW_ID)).isNull();
     }
 
     @Test
