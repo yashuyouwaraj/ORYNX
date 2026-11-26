@@ -23,6 +23,8 @@ services:
   postgres:
     image: postgres:17
     restart: unless-stopped
+    mem_limit: ${POSTGRES_MEM_LIMIT:-512m}
+    cpus: ${POSTGRES_CPU_LIMIT:-1.0}
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-orynx}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
@@ -46,6 +48,8 @@ services:
   redis:
     image: redis:7
     restart: unless-stopped
+    mem_limit: ${REDIS_MEM_LIMIT:-256m}
+    cpus: ${REDIS_CPU_LIMIT:-0.5}
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - orynx_redis_data:/data
@@ -61,8 +65,10 @@ services:
       start_period: 10s
 
   kafka:
-    image: apache/kafka:latest
+    image: apache/kafka:3.7.0
     restart: unless-stopped
+    mem_limit: ${KAFKA_MEM_LIMIT:-1024m}
+    cpus: ${KAFKA_CPU_LIMIT:-1.0}
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -96,6 +102,8 @@ services:
       context: ./services/auth-service
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: ${AUTH_SERVICE_MEM_LIMIT:-512m}
+    cpus: ${AUTH_SERVICE_CPU_LIMIT:-1.0}
     depends_on:
       postgres:
         condition: service_healthy
@@ -151,6 +159,8 @@ services:
       context: ./services/planning-service
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: ${PLANNING_SERVICE_MEM_LIMIT:-512m}
+    cpus: ${PLANNING_SERVICE_CPU_LIMIT:-1.0}
     environment:
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:?NVIDIA_API_KEY is required}
       SPRING_PROFILES_ACTIVE: docker
@@ -193,12 +203,16 @@ services:
       context: ./services/orchestrator-service
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: ${ORCHESTRATOR_SERVICE_MEM_LIMIT:-768m}
+    cpus: ${ORCHESTRATOR_SERVICE_CPU_LIMIT:-1.0}
     depends_on:
       postgres:
         condition: service_healthy
       kafka:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      planning-service:
         condition: service_healthy
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-orynx}
@@ -258,6 +272,8 @@ services:
       context: ./services/execution-service
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: ${EXECUTION_SERVICE_MEM_LIMIT:-512m}
+    cpus: ${EXECUTION_SERVICE_CPU_LIMIT:-1.0}
     depends_on:
       postgres:
         condition: service_healthy
@@ -314,6 +330,8 @@ services:
       context: ./services/gateway-service
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: ${GATEWAY_SERVICE_MEM_LIMIT:-512m}
+    cpus: ${GATEWAY_SERVICE_CPU_LIMIT:-1.0}
     depends_on:
       auth-service:
         condition: service_healthy
@@ -370,7 +388,10 @@ services:
       args:
         NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8080}
         NEXT_PUBLIC_WS_BASE_URL: ${NEXT_PUBLIC_WS_BASE_URL:-http://localhost:8080}
+        NEXT_PUBLIC_GRAFANA_URL: ${NEXT_PUBLIC_GRAFANA_URL:-http://localhost:3001}
     restart: unless-stopped
+    mem_limit: ${FRONTEND_MEM_LIMIT:-384m}
+    cpus: ${FRONTEND_CPU_LIMIT:-0.5}
     depends_on:
       gateway-service:
         condition: service_healthy

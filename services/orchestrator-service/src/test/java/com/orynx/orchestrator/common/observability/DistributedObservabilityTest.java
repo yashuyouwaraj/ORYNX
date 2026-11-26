@@ -262,13 +262,22 @@ class DistributedObservabilityTest {
             assertThat(provContent).contains("/var/lib/grafana/dashboards");
         }
 
-        // 5. Docker Compose: pinned Loki image, loopback binding, bounded OTLP queues, explicit Java-agent MDC capture
+        // 5. Docker Compose: pinned images (including Kafka), resource limits, loopback binding, bounded OTLP queues, explicit Java-agent MDC capture
         String composeRaw = Files.readString(repoRoot.resolve("docker-compose.yml"));
-        assertThat(composeRaw).contains("grafana/loki:3.2.1", "127.0.0.1:3100:3100",
+        assertThat(composeRaw).contains("grafana/loki:3.2.1", "apache/kafka:3.7.0", "127.0.0.1:3100:3100",
                 "OTEL_BSP_MAX_QUEUE_SIZE", "OTEL_BLRP_MAX_QUEUE_SIZE",
+                "POSTGRES_MEM_LIMIT", "REDIS_MEM_LIMIT", "KAFKA_MEM_LIMIT",
+                "ORCHESTRATOR_SERVICE_MEM_LIMIT", "EXECUTION_SERVICE_MEM_LIMIT", "GATEWAY_SERVICE_MEM_LIMIT",
+                "NEXT_PUBLIC_GRAFANA_URL",
                 "OTEL_INSTRUMENTATION_LOGBACK_APPENDER_EXPERIMENTAL_CAPTURE_MDC_ATTRIBUTES: correlationId,requestId,workflowId,executionId,eventId,workerId,attemptNumber,errorCategory",
                 "OTEL_INSTRUMENTATION_LOGBACK_APPENDER_EXPERIMENTAL_CAPTURE_MDC_ATTRIBUTES: correlationId,requestId");
-        assertThat(composeRaw).doesNotContain("CAPTURE_MDC_ATTRIBUTES: *");
+        assertThat(composeRaw).doesNotContain("CAPTURE_MDC_ATTRIBUTES: *").doesNotContain("apache/kafka:latest");
+
+        // 6. Graceful shutdown enabled across all 5 backend services
+        for (String svc : List.of("gateway-service", "auth-service", "planning-service", "execution-service", "orchestrator-service")) {
+            String props = Files.readString(repoRoot.resolve("services/" + svc + "/src/main/resources/application.properties"));
+            assertThat(props).as(svc + " graceful shutdown").contains("server.shutdown=graceful");
+        }
     }
 
     @Test
@@ -631,6 +640,7 @@ class DistributedObservabilityTest {
     @Test
     void sanitizer_redactsCompoundKeysBasicAuthApostrophesEscapedQuotesAndPreservesSafeText() {
         String raw = "access_token=acc111 refresh_token=ref222 JWT_SECRET=jwtSec333 "
+                + "JWT_SECRET_KEY=jwtSk334 AWS_SECRET_KEY=awsSk335 secretKey=camSk336 "
                 + "SPRING_DATASOURCE_PASSWORD=dbPass444 NVIDIA_API_KEY=nvKey555 AWS_ACCESS_KEY=aws666 "
                 + "OAUTH_REFRESH_TOKEN=oaRef777 DATABASE_PASSWORD=dbp888 CLIENT_SECRET_VALUE=csv999 "
                 + "Authorization: Basic dXNlcjpiYXNpY1Bhc3M= "
@@ -642,7 +652,7 @@ class DistributedObservabilityTest {
         String redacted = ObservabilitySanitizer.redactSensitiveText(raw);
 
         assertThat(redacted).doesNotContain(
-                "acc111", "ref222", "jwtSec333", "dbPass444", "nvKey555", "aws666",
+                "acc111", "ref222", "jwtSec333", "jwtSk334", "awsSk335", "camSk336", "dbPass444", "nvKey555", "aws666",
                 "oaRef777", "dbp888", "csv999", "dXNlcjpiYXNpY1Bhc3M=",
                 "jsonAcc1", "jsonRef2", "it's-apos777", "apos777", "aped888",
                 "camel10", "camel11", "cred12"

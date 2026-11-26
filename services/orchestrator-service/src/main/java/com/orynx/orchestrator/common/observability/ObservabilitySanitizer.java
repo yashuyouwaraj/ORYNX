@@ -20,13 +20,13 @@ public final class ObservabilitySanitizer {
     );
     private static final Pattern JWT_PATTERN = Pattern.compile("eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}");
     private static final Pattern SECRET_DOUBLE_QUOTED_KV_PATTERN = Pattern.compile(
-            "(?i)(\"?[A-Za-z0-9_.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|jwt|credentials?)(?:[_-]?value)?\"?\\s*[:=]\\s*\")((?:\\\\.|[^\"\\\\\\r\\n])+)(\")"
+            "(?i)(\"?[A-Za-z0-9_.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|jwt|credentials?)(?:[_-]?(?:value|key))?\"?\\s*[:=]\\s*\")((?:\\\\.|[^\"\\\\\\r\\n])+)(\")"
     );
     private static final Pattern SECRET_SINGLE_QUOTED_KV_PATTERN = Pattern.compile(
-            "(?i)('?[A-Za-z0-9_.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|jwt|credentials?)(?:[_-]?value)?'?\\s*[:=]\\s*')((?:\\\\.|[^'\\\\\\r\\n])+)(')"
+            "(?i)('?[A-Za-z0-9_.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|jwt|credentials?)(?:[_-]?(?:value|key))?'?\\s*[:=]\\s*')((?:\\\\.|[^'\\\\\\r\\n])+)(')"
     );
     private static final Pattern SECRET_KV_PATTERN = Pattern.compile(
-            "(?i)([A-Za-z0-9_.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|jwt|credentials?)(?:[_-]?value)?\\s*[:=]\\s*)[^\\s,;\"'&\\]})]+"
+            "(?i)([A-Za-z0-9_.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|jwt|credentials?)(?:[_-]?(?:value|key))?\\s*[:=]\\s*)[^\\s,;\"'&\\]})]+"
     );
     private static final Pattern URL_CREDENTIAL_PATTERN = Pattern.compile("(://[^\\s:/@]+:)([^\\s@]+)(@)");
     private static final Pattern PEM_KEY_PATTERN = Pattern.compile("-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]*?-----END [A-Z ]*PRIVATE KEY-----");
