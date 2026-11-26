@@ -115,11 +115,20 @@ public class ExecutionObservabilityKafkaConfig {
             if (enriched == null) {
                 return null;
             }
-            ConsumerRecord<K, V> result = delegate.intercept(enriched, consumer);
-            if (result == null) {
-                primary.afterRecord(enriched, consumer);
+            try {
+                ConsumerRecord<K, V> result = delegate.intercept(enriched, consumer);
+                if (result == null) {
+                    primary.afterRecord(enriched, consumer);
+                }
+                return result;
+            } catch (RuntimeException | Error ex) {
+                try {
+                    primary.afterRecord(enriched, consumer);
+                } catch (Throwable cleanupEx) {
+                    ex.addSuppressed(cleanupEx);
+                }
+                throw ex;
             }
-            return result;
         }
 
         @Override

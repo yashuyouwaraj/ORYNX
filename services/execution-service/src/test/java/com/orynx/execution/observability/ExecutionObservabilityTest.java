@@ -2,9 +2,14 @@ package com.orynx.execution.observability;
 
 import com.orynx.execution.coordination.ExecutionCoordinationService;
 import com.orynx.execution.coordination.StaleWorkerExecutionException;
+import com.orynx.execution.event.dto.TaskCompletedEvent;
+import com.orynx.execution.event.dto.TaskStartedEvent;
+import com.orynx.execution.event.dto.WorkflowCompletedEvent;
+import com.orynx.execution.event.dto.WorkflowExecutionPausedEvent;
 import com.orynx.execution.execution.ActiveExecutionTracker;
 import com.orynx.execution.execution.WorkflowExecutionDispatcher;
 import com.orynx.execution.execution.WorkflowExecutionEngine;
+import com.orynx.execution.kafka.ExecutionEventProducer;
 import com.orynx.execution.worker.ExecutionWorkerProperties;
 import com.orynx.execution.worker.WorkerQueueFullException;
 import com.orynx.execution.workflow.event.WorkflowExecutionRequestEvent;
@@ -22,30 +27,39 @@ import io.opentelemetry.sdk.trace.data.SpanData;
 import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.RecordInterceptor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class ExecutionObservabilityTest {
 
@@ -260,5 +274,181 @@ class ExecutionObservabilityTest {
                 new IllegalArgumentException("bad arg"))).isEqualTo("VALIDATION");
         assertThat(ExecutionObservabilitySanitizer.classifyErrorCategory(
                 new RuntimeException("other"))).isEqualTo("INTERNAL");
+    }
+
+    @Test
+    void executionSanitizer_redactsJsonQuotedSingleQuotedAndNestedSecretsWhilePreservingSafeFields() {
+        String raw = "{\"workflowId\":\"101\",\"auth\":{\"password\":\"execJsonPass\",\"api_key\":\"sk-exec-999\","
+                + "\"token\":\"tok-exec-777\",\"authorization\":\"Bearer execBearer555\"},'password':'execSinglePass'} "
+                + "password=eqExecPass password: colonExecPass api_key = spaceExecKey\nFORGED";
+        String redacted = ExecutionObservabilitySanitizer.redactSensitiveText(raw);
+
+        assertThat(redacted).doesNotContain("execJsonPass", "sk-exec-999", "tok-exec-777",
+                "execBearer555", "execSinglePass", "eqExecPass", "colonExecPass", "spaceExecKey", "\n");
+        assertThat(redacted).contains("\"workflowId\":\"101\"");
+        assertThat(redacted).contains("\"password\":\"[REDACTED]\"");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void executionEventProducer_propagatesOutgoingCanonicalEventIdAndRestoresPriorMdcOnSuccessFailureAndConcurrency() throws Exception {
+        KafkaTemplate<String, Object> template = mock(KafkaTemplate.class);
+        ExecutionObservabilityKafkaConfig.TraceContextProducerInterceptor<String, Object> interceptor =
+                new ExecutionObservabilityKafkaConfig.TraceContextProducerInterceptor<>();
+
+        List<String> headerEventIds = new ArrayList<>();
+        List<String> mdcEventIdsDuringSend = new ArrayList<>();
+        List<String> headerExecutionIds = new ArrayList<>();
+        List<String> headerCorrelationIds = new ArrayList<>();
+
+        when(template.send(anyString(), anyString(), any())).thenAnswer(inv -> {
+            String topic = inv.getArgument(0);
+            String key = inv.getArgument(1);
+            Object payload = inv.getArgument(2);
+            ProducerRecord<String, Object> rec = new ProducerRecord<>(topic, key, payload);
+            interceptor.onSend(rec);
+            synchronized (headerEventIds) {
+                headerEventIds.add(ExecutionKafkaTracePropagator.getHeader(rec.headers(), ExecutionKafkaTracePropagator.HEADER_EVENT_ID));
+                mdcEventIdsDuringSend.add(MDC.get(ExecutionKafkaTracePropagator.MDC_EVENT_ID));
+                headerExecutionIds.add(ExecutionKafkaTracePropagator.getHeader(rec.headers(), ExecutionKafkaTracePropagator.HEADER_EXECUTION_ID));
+                headerCorrelationIds.add(ExecutionKafkaTracePropagator.getHeader(rec.headers(), ExecutionKafkaTracePropagator.HEADER_CORRELATION_ID));
+            }
+            return CompletableFuture.completedFuture(null);
+        });
+
+        ExecutionEventProducer producer = new ExecutionEventProducer(template);
+
+        // Simulate worker thread carrying incoming execution-request eventId, canonical executionId, correlationId
+        MDC.put(ExecutionKafkaTracePropagator.MDC_EVENT_ID, "incoming-request-uuid-999");
+        MDC.put(ExecutionKafkaTracePropagator.MDC_EXECUTION_ID, "777");
+        MDC.put(ExecutionKafkaTracePropagator.MDC_WORKFLOW_ID, "42");
+        MDC.put(ExecutionKafkaTracePropagator.MDC_CORRELATION_ID, "corr-exec-777");
+
+        producer.publishTaskStarted(TaskStartedEvent.builder()
+                .workflowId(42L).workflowName("WF").taskName("T1").executionOrder(1).generation(1L)
+                .eventId("wf:42:gen:1:task-started:1").build());
+        assertThat(MDC.get(ExecutionKafkaTracePropagator.MDC_EVENT_ID)).isEqualTo("incoming-request-uuid-999");
+
+        producer.publishTaskCompleted(TaskCompletedEvent.builder()
+                .workflowId(42L).workflowName("WF").taskName("T1").executionOrder(1).success(true).attempts(1).generation(1L)
+                .eventId("wf:42:gen:1:task-completed:1").build());
+        assertThat(MDC.get(ExecutionKafkaTracePropagator.MDC_EVENT_ID)).isEqualTo("incoming-request-uuid-999");
+
+        producer.publishWorkflowCompleted(WorkflowCompletedEvent.builder()
+                .workflowId(42L).workflowName("WF").success(true).generation(1L)
+                .eventId("wf:42:gen:1:workflow-completed").build());
+        assertThat(MDC.get(ExecutionKafkaTracePropagator.MDC_EVENT_ID)).isEqualTo("incoming-request-uuid-999");
+
+        producer.publishWorkflowExecutionPaused(WorkflowExecutionPausedEvent.builder()
+                .workflowId(42L).workflowName("WF").lastCompletedExecutionOrder(1).generation(1L)
+                .eventId("wf:42:gen:1:workflow-paused:1").build());
+        assertThat(MDC.get(ExecutionKafkaTracePropagator.MDC_EVENT_ID)).isEqualTo("incoming-request-uuid-999");
+
+        assertThat(headerEventIds).containsExactly(
+                "wf:42:gen:1:task-started:1",
+                "wf:42:gen:1:task-completed:1",
+                "wf:42:gen:1:workflow-completed",
+                "wf:42:gen:1:workflow-paused:1"
+        );
+        assertThat(mdcEventIdsDuringSend).containsExactlyElementsOf(headerEventIds);
+        assertThat(headerExecutionIds).containsOnly("777");
+        assertThat(headerCorrelationIds).containsOnly("corr-exec-777");
+
+        // Exception during kafkaTemplate.send must still restore previous MDC eventId
+        when(template.send(anyString(), anyString(), any())).thenThrow(new RuntimeException("broker down"));
+        assertThatThrownBy(() -> producer.publishWorkflowCompleted(WorkflowCompletedEvent.builder()
+                .workflowId(42L).workflowName("WF").success(false).generation(1L)
+                .eventId("wf:42:gen:1:workflow-completed-fail").build()))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessage("broker down");
+        assertThat(MDC.get(ExecutionKafkaTracePropagator.MDC_EVENT_ID)).isEqualTo("incoming-request-uuid-999");
+
+        // Concurrent threads must not contaminate each other's outgoing X-Event-ID
+        KafkaTemplate<String, Object> concurrentTemplate = mock(KafkaTemplate.class);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch proceed = new CountDownLatch(1);
+        when(concurrentTemplate.send(anyString(), anyString(), any())).thenAnswer(inv -> {
+            ready.countDown();
+            proceed.await(5, TimeUnit.SECONDS);
+            return CompletableFuture.completedFuture(null);
+        });
+        ExecutionEventProducer concurrentProducer = new ExecutionEventProducer(concurrentTemplate);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<String> f1 = pool.submit(() -> {
+                MDC.put(ExecutionKafkaTracePropagator.MDC_EVENT_ID, "in-1");
+                try {
+                    concurrentProducer.publishWorkflowCompleted(WorkflowCompletedEvent.builder()
+                            .workflowId(1L).workflowName("W1").success(true).generation(1L).eventId("out-1").build());
+                    return MDC.get(ExecutionKafkaTracePropagator.MDC_EVENT_ID);
+                } finally {
+                    MDC.clear();
+                }
+            });
+            Future<String> f2 = pool.submit(() -> {
+                MDC.put(ExecutionKafkaTracePropagator.MDC_EVENT_ID, "in-2");
+                try {
+                    concurrentProducer.publishWorkflowCompleted(WorkflowCompletedEvent.builder()
+                            .workflowId(2L).workflowName("W2").success(true).generation(1L).eventId("out-2").build());
+                    return MDC.get(ExecutionKafkaTracePropagator.MDC_EVENT_ID);
+                } finally {
+                    MDC.clear();
+                }
+            });
+            assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+            proceed.countDown();
+            assertThat(f1.get(5, TimeUnit.SECONDS)).isEqualTo("in-1");
+            assertThat(f2.get(5, TimeUnit.SECONDS)).isEqualTo("in-2");
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void executionComposingRecordInterceptor_cleansUpPrimaryWhenDelegateThrowsAndHandlesSubsequentRecords() {
+        ExecutionObservabilityKafkaConfig.TraceContextRecordInterceptor<String, String> primary =
+                new ExecutionObservabilityKafkaConfig.TraceContextRecordInterceptor<>();
+        AtomicBoolean shouldThrow = new AtomicBoolean(true);
+        AtomicReference<String> mdcSeenOnSecond = new AtomicReference<>();
+
+        RecordInterceptor<String, String> delegate = new RecordInterceptor<>() {
+            @Override
+            public ConsumerRecord<String, String> intercept(ConsumerRecord<String, String> record, Consumer<String, String> consumer) {
+                if (shouldThrow.get()) {
+                    throw new IllegalStateException("exec delegate boom");
+                }
+                mdcSeenOnSecond.set(MDC.get(ExecutionKafkaTracePropagator.MDC_EXECUTION_ID));
+                return record;
+            }
+        };
+
+        ExecutionObservabilityKafkaConfig.ComposingRecordInterceptor<String, String> composed =
+                new ExecutionObservabilityKafkaConfig.ComposingRecordInterceptor<>(primary, delegate);
+
+        ConsumerRecord<String, String> rec1 = new ConsumerRecord<>("workflow-execution", 0, 1L, "10", "v1");
+        rec1.headers().add("X-Correlation-ID", "corr-exec-fail".getBytes());
+        rec1.headers().add("X-Execution-ID", "555".getBytes());
+
+        assertThatThrownBy(() -> composed.intercept(rec1, null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("exec delegate boom");
+
+        assertThat(MDC.get(ExecutionKafkaTracePropagator.MDC_CORRELATION_ID)).isNull();
+        assertThat(MDC.get(ExecutionKafkaTracePropagator.MDC_EXECUTION_ID)).isNull();
+
+        // Idempotent repeat cleanup
+        composed.afterRecord(rec1, null);
+        composed.clearThreadState(null);
+
+        // Subsequent record succeeds cleanly
+        shouldThrow.set(false);
+        ConsumerRecord<String, String> rec2 = new ConsumerRecord<>("workflow-execution", 0, 2L, "20", "v2");
+        rec2.headers().add("X-Execution-ID", "666".getBytes());
+        composed.intercept(rec2, null);
+        assertThat(mdcSeenOnSecond.get()).isEqualTo("666");
+        assertThat(MDC.get(ExecutionKafkaTracePropagator.MDC_CORRELATION_ID)).isNull();
+
+        composed.afterRecord(rec2, null);
+        assertThat(MDC.get(ExecutionKafkaTracePropagator.MDC_EXECUTION_ID)).isNull();
     }
 }

@@ -240,11 +240,11 @@ class DistributedObservabilityTest {
         }
         assertThat(otlpConfig.containsKey("scope_attributes")).isFalse();
 
-        // 2. OTel collector: traces + logs pipelines, memory_limiter, OTTL $$1 capture-group redaction, bounded queues
+        // 2. OTel collector: traces + logs pipelines, memory_limiter, OTTL $$1 capture-group redaction (quoted & unquoted), bounded queues
         String otelRaw = Files.readString(repoRoot.resolve("monitoring/otel/otel-collector-config.yaml"));
         assertThat(otelRaw).contains("memory_limiter", "filter/healthchecks", "attributes/redact_traces",
                 "transform/redact_logs", "otlp/tempo", "otlphttp/loki", "sending_queue", "queue_size: 512",
-                "\"$$1=[REDACTED]\"", "\"$$1[REDACTED]@\"", "[REDACTED_PRIVATE_KEY]");
+                "\"$$1[REDACTED]$$2\"", "\"$$1[REDACTED]\"", "\"$$1[REDACTED]@\"", "[REDACTED_PRIVATE_KEY]");
         assertThat(otelRaw).doesNotContain("\"$1=[REDACTED]\"");
 
         // 3. Grafana datasources: Tempo -> Loki, Tempo -> Prometheus, Loki -> Tempo, Prometheus -> Tempo
@@ -568,6 +568,95 @@ class DistributedObservabilityTest {
         assertThat(ObservabilitySanitizer.classifyErrorCategory(new java.util.concurrent.TimeoutException("timed out"))).isEqualTo("TIMEOUT");
         assertThat(ObservabilitySanitizer.classifyErrorCategory(new SecurityException("denied"))).isEqualTo("SECURITY");
         assertThat(ObservabilitySanitizer.classifyErrorCategory(new RuntimeException("unclassified"))).isEqualTo("INTERNAL");
+    }
+
+    @Test
+    void sanitizer_redactsJsonQuotedSingleQuotedNestedAndConventionalSecretsWithoutCorruptingSafeFields() {
+        String raw = "{\"workflowId\":\"42\",\"correlationId\":\"corr-safe-1\",\"auth\":{"
+                + "\"password\":\"jsonPass123\",\"api_key\": \"sk-json-999\",\"token\":\"tok-json-777\","
+                + "\"secret\":\"sec-json-888\",\"authorization\":\"Bearer jsonBearerTok555\"},"
+                + "'password':'singleQuotedPass','api_key': 'sk-single-444'} "
+                + "password=eqPass123 password: colonPass456 api_key = spaceKey789 "
+                + "db=postgresql://admin:urlSecret99@postgres:5432/orynx "
+                + "jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3OCJ9.sigABCDEF12345\n"
+                + "FORGED_LINE\r\n"
+                + "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\n-----END RSA PRIVATE KEY-----";
+
+        String redacted = ObservabilitySanitizer.redactSensitiveText(raw);
+
+        // All sensitive values must be completely absent
+        assertThat(redacted).doesNotContain("jsonPass123");
+        assertThat(redacted).doesNotContain("sk-json-999");
+        assertThat(redacted).doesNotContain("tok-json-777");
+        assertThat(redacted).doesNotContain("sec-json-888");
+        assertThat(redacted).doesNotContain("jsonBearerTok555");
+        assertThat(redacted).doesNotContain("singleQuotedPass");
+        assertThat(redacted).doesNotContain("sk-single-444");
+        assertThat(redacted).doesNotContain("eqPass123");
+        assertThat(redacted).doesNotContain("colonPass456");
+        assertThat(redacted).doesNotContain("spaceKey789");
+        assertThat(redacted).doesNotContain("urlSecret99");
+        assertThat(redacted).doesNotContain("eyJhbGciOiJIUzI1NiJ9");
+        assertThat(redacted).doesNotContain("MIIEpAIBAAKCAQEA");
+        assertThat(redacted).doesNotContain("\n").doesNotContain("\r");
+
+        // Safe correlation and domain fields must remain intact
+        assertThat(redacted).contains("\"workflowId\":\"42\"");
+        assertThat(redacted).contains("\"correlationId\":\"corr-safe-1\"");
+        assertThat(redacted).contains("\"password\":\"[REDACTED]\"");
+        assertThat(redacted).contains("\"api_key\": \"[REDACTED]\"");
+        assertThat(redacted).contains("[REDACTED_PRIVATE_KEY]");
+    }
+
+    @Test
+    void composingRecordInterceptor_cleansUpPrimaryWhenDelegateThrowsAndHandlesSubsequentRecords() {
+        ObservabilityKafkaConfig.TraceContextRecordInterceptor<String, String> primary =
+                new ObservabilityKafkaConfig.TraceContextRecordInterceptor<>();
+        AtomicBoolean shouldThrow = new AtomicBoolean(true);
+        AtomicReference<String> mdcSeenOnSecondRecord = new AtomicReference<>();
+
+        RecordInterceptor<String, String> delegate = new RecordInterceptor<>() {
+            @Override
+            public ConsumerRecord<String, String> intercept(ConsumerRecord<String, String> record, Consumer<String, String> consumer) {
+                if (shouldThrow.get()) {
+                    throw new IllegalStateException("delegate interceptor boom");
+                }
+                mdcSeenOnSecondRecord.set(MDC.get(KafkaTraceContextPropagator.MDC_CORRELATION_ID));
+                return record;
+            }
+        };
+
+        ObservabilityKafkaConfig.ComposingRecordInterceptor<String, String> composed =
+                new ObservabilityKafkaConfig.ComposingRecordInterceptor<>(primary, delegate);
+
+        ConsumerRecord<String, String> rec1 = new ConsumerRecord<>("workflow-execution", 0, 1L, "10", "v1");
+        rec1.headers().add("X-Correlation-ID", "corr-failing-1".getBytes());
+        rec1.headers().add("X-Workflow-ID", "10".getBytes());
+        rec1.headers().add("X-Execution-ID", "100".getBytes());
+
+        assertThatThrownBy(() -> composed.intercept(rec1, null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("delegate interceptor boom");
+
+        // Primary cleanup must have cleared MDC and ThreadLocal scope immediately
+        assertThat(MDC.get(KafkaTraceContextPropagator.MDC_CORRELATION_ID)).isNull();
+        assertThat(MDC.get(KafkaTraceContextPropagator.MDC_WORKFLOW_ID)).isNull();
+        assertThat(MDC.get(KafkaTraceContextPropagator.MDC_EXECUTION_ID)).isNull();
+
+        // Repeated cleanup callbacks must be safe/idempotent
+        composed.afterRecord(rec1, null);
+        composed.clearThreadState(null);
+
+        // Subsequent record on the same thread must work cleanly with no leaked context
+        shouldThrow.set(false);
+        ConsumerRecord<String, String> rec2 = new ConsumerRecord<>("workflow-execution", 0, 2L, "20", "v2");
+        rec2.headers().add("X-Correlation-ID", "corr-ok-2".getBytes());
+        composed.intercept(rec2, null);
+        assertThat(mdcSeenOnSecondRecord.get()).isEqualTo("corr-ok-2");
+        assertThat(MDC.get(KafkaTraceContextPropagator.MDC_WORKFLOW_ID)).isNull();
+
+        composed.afterRecord(rec2, null);
+        assertThat(MDC.get(KafkaTraceContextPropagator.MDC_CORRELATION_ID)).isNull();
     }
 
     private static JsonNode findPanelById(JsonNode dashboard, int id) {
