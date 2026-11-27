@@ -36,6 +36,9 @@ public class WorkflowExecutionEngine {
     @Autowired(required = false)
     private ExecutionMetrics executionMetrics;
 
+    @Autowired(required = false)
+    private com.orynx.execution.dag.DagExecutionCoordinator dagExecutionCoordinator;
+
     @Autowired
     public WorkflowExecutionEngine(
             TaskExecutor taskExecutor,
@@ -96,6 +99,11 @@ public class WorkflowExecutionEngine {
         log.info("========================================");
         log.info("WorkflowExecutionEngine Started (gen={}, instance={})", generation, instanceId);
         log.info("Workflow : {}", workflowName);
+
+        if (dagExecutionCoordinator != null) {
+            dagExecutionCoordinator.executeDag(event, generation, instanceId);
+            return;
+        }
 
         Integer lastCompletedExecutionOrder = null;
 

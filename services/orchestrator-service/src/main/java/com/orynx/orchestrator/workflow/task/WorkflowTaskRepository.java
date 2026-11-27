@@ -21,6 +21,11 @@ public interface WorkflowTaskRepository extends JpaRepository<WorkflowTask, Long
             Integer executionOrder
     );
 
+    Optional<WorkflowTask> findByWorkflowIdAndTaskKey(
+            Long workflowId,
+            String taskKey
+    );
+
     long countByStatus(TaskStatus status);
 
     @Query("SELECT AVG(t.completedAt - t.startedAt) FROM WorkflowTask t WHERE t.startedAt IS NOT NULL AND t.completedAt IS NOT NULL")

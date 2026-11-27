@@ -1,5 +1,7 @@
 package com.orynx.orchestrator.workflow;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.orynx.orchestrator.common.exception.WorkflowNotFoundException;
 import com.orynx.orchestrator.common.metrics.WorkflowMetrics;
 import com.orynx.orchestrator.common.observability.WorkflowTracingHelper;
@@ -11,6 +13,7 @@ import com.orynx.orchestrator.event.dto.WorkflowResumedEvent;
 import com.orynx.orchestrator.execution.WorkflowExecution;
 import com.orynx.orchestrator.execution.WorkflowExecutionRepository;
 import com.orynx.orchestrator.kafka.*;
+import com.orynx.orchestrator.workflow.dag.DagValidator;
 import com.orynx.orchestrator.workflow.dto.CreateWorkflowRequest;
 import com.orynx.orchestrator.workflow.dto.DashboardSummaryResponse;
 import com.orynx.orchestrator.workflow.event.WorkflowCreatedEvent;
@@ -22,6 +25,8 @@ import com.orynx.orchestrator.workflow.execution.dto.WorkflowExecutionResponse;
 import com.orynx.orchestrator.workflow.task.TaskStatus;
 import com.orynx.orchestrator.workflow.task.WorkflowExecutionEngine;
 import com.orynx.orchestrator.workflow.task.WorkflowTask;
+import com.orynx.orchestrator.workflow.task.WorkflowTaskDependency;
+import com.orynx.orchestrator.workflow.task.WorkflowTaskDependencyRepository;
 import com.orynx.orchestrator.workflow.task.WorkflowTaskRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -59,6 +64,12 @@ public class WorkflowService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.orynx.orchestrator.coordination.admission.WorkflowAdmissionController workflowAdmissionController;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private WorkflowTaskDependencyRepository workflowTaskDependencyRepository;
+
+    private final DagValidator dagValidator = new DagValidator();
+    private final ObjectMapper dagObjectMapper = new ObjectMapper();
+
     public void setWorkflowAdmissionController(com.orynx.orchestrator.coordination.admission.WorkflowAdmissionController workflowAdmissionController) {
         this.workflowAdmissionController = workflowAdmissionController;
     }
@@ -69,6 +80,11 @@ public class WorkflowService {
 
     public Workflow createWorkflow(CreateWorkflowRequest request, Long userId) {
         log.info("Creating workflow: {} for userId: {}", request.getName(), userId);
+
+        DagValidator.ValidatedDag validatedDag = null;
+        if (request.getTasks() != null && !request.getTasks().isEmpty()) {
+            validatedDag = dagValidator.validateAndNormalize(request.getTasks());
+        }
 
         Workflow dependsOn = null;
         if (request.getDependsOnWorkflowId() != null) {
@@ -90,7 +106,11 @@ public class WorkflowService {
 
         Workflow savedWorkflow = workflowRepository.save(workflow);
 
-        createWorkflowTasks(savedWorkflow);
+        if (validatedDag != null) {
+            persistValidatedDagTasks(savedWorkflow, validatedDag);
+        } else {
+            createWorkflowTasks(savedWorkflow);
+        }
 
         try (WorkflowTracingHelper.MdcScope ignored =
                      WorkflowTracingHelper.scopedWorkflowLifecycle(savedWorkflow.getId(), null, null, "CREATED")) {
@@ -192,12 +212,7 @@ public class WorkflowService {
                                 workflow.getId()
                         );
                 List<TaskExecutionRequest> taskRequests = workflowTasks.stream()
-                        .map((task -> TaskExecutionRequest.builder()
-                                .name(task.getName())
-                                .executionOrder(task.getExecutionOrder())
-                                .maxRetries(task.getMaxRetries())
-                                .build()
-                        ))
+                        .map(this::toTaskExecutionRequest)
                         .toList();
 
                 executionRequestProducer.publishExecutionRequest(
@@ -393,6 +408,73 @@ public class WorkflowService {
         );
 
         workflowTaskRepository.saveAll(tasks);
+    }
+
+    private void persistValidatedDagTasks(Workflow workflow, DagValidator.ValidatedDag validatedDag) {
+        List<WorkflowTask> entities = validatedDag.topologicalTasks().stream()
+                .map(spec -> WorkflowTask.builder()
+                        .taskKey(spec.taskKey())
+                        .name(spec.name())
+                        .taskType(spec.taskType())
+                        .executionOrder(spec.executionOrder())
+                        .dependsOnJson(toJsonSafe(spec.dependsOn()))
+                        .configJson(spec.config().isEmpty() ? null : toJsonSafe(spec.config()))
+                        .timeoutMs(spec.timeoutMs())
+                        .maxRetries(spec.maxRetries())
+                        .status(TaskStatus.PENDING)
+                        .workflow(workflow)
+                        .build())
+                .toList();
+        workflowTaskRepository.saveAll(entities);
+
+        if (workflowTaskDependencyRepository != null && workflow.getId() != null) {
+            List<WorkflowTaskDependency> edges = validatedDag.topologicalTasks().stream()
+                    .flatMap(spec -> spec.dependsOn().stream()
+                            .map(dep -> WorkflowTaskDependency.builder()
+                                    .workflowId(workflow.getId())
+                                    .taskKey(spec.taskKey())
+                                    .dependsOnTaskKey(dep)
+                                    .build()))
+                    .toList();
+            if (!edges.isEmpty()) {
+                workflowTaskDependencyRepository.saveAll(edges);
+            }
+        }
+    }
+
+    private TaskExecutionRequest toTaskExecutionRequest(WorkflowTask task) {
+        String key = (task.getTaskKey() != null && !task.getTaskKey().isBlank())
+                ? task.getTaskKey()
+                : (task.getExecutionOrder() != null ? "task-" + task.getExecutionOrder() : null);
+        return TaskExecutionRequest.builder()
+                .taskKey(key)
+                .name(task.getName())
+                .taskType(task.getTaskType() != null ? task.getTaskType() : "NOOP")
+                .dependsOn(task.getDependsOnJson() != null ? task.getDependsOn() : null)
+                .config(fromConfigJson(task.getConfigJson()))
+                .timeoutMs(task.getTimeoutMs() != null ? task.getTimeoutMs() : DagValidator.DEFAULT_TIMEOUT_MS)
+                .executionOrder(task.getExecutionOrder())
+                .maxRetries(task.getMaxRetries())
+                .build();
+    }
+
+    private String toJsonSafe(Object value) {
+        try {
+            return dagObjectMapper.writeValueAsString(value);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private Map<String, Object> fromConfigJson(String configJson) {
+        if (configJson == null || configJson.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return dagObjectMapper.readValue(configJson, new TypeReference<>() {});
+        } catch (Exception e) {
+            return Map.of();
+        }
     }
 
     private void ensureWorkflowTasksExist(Workflow workflow) {
@@ -740,13 +822,7 @@ public class WorkflowService {
                         .filter(task ->
                                 task.getExecutionOrder() > resumeFromOrder
                         )
-                        .map(task ->
-                                TaskExecutionRequest.builder()
-                                        .name(task.getName())
-                                        .executionOrder(task.getExecutionOrder())
-                                        .maxRetries(task.getMaxRetries())
-                                        .build()
-                        )
+                        .map(this::toTaskExecutionRequest)
                         .toList();
 
         if (remainingTasks.isEmpty()) {
@@ -878,6 +954,8 @@ public class WorkflowService {
                 task.setStartedAt(null);
                 task.setCompletedAt(null);
                 task.setRetryCount(0);
+                task.setOutputJson(null);
+                task.setErrorMessage(null);
             });
 
             workflowTaskRepository.saveAll(workflowTasks);
@@ -908,13 +986,7 @@ public class WorkflowService {
                     updatedWorkflow.getId(), savedExecution.getId(), nextExecutionGeneration, "FAILED->RUNNING", retryEventId)) {
                 List<TaskExecutionRequest> taskRequests =
                         workflowTasks.stream()
-                                .map(task ->
-                                        TaskExecutionRequest.builder()
-                                                .name(task.getName())
-                                                .executionOrder(task.getExecutionOrder())
-                                                .maxRetries(task.getMaxRetries())
-                                                .build()
-                                )
+                                .map(this::toTaskExecutionRequest)
                                 .toList();
 
                 executionRequestProducer.publishExecutionRequest(

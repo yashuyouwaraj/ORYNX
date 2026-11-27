@@ -23,12 +23,18 @@ public class ExecutionMetrics {
     private final Counter taskRetries;
     private final Counter workerFenced;
     private final Counter workerRejected;
+    private final Counter dagRecoveries;
+    private final Counter dagTimeouts;
     private final Timer executionSuccessDuration;
     private final Timer executionFailureDuration;
+    private final Timer checkpointDuration;
+    private final MeterRegistry registry;
     private final AtomicInteger activeWorkers = new AtomicInteger(0);
     private final AtomicInteger queuedExecutions = new AtomicInteger(0);
+    private final AtomicInteger activeDagTasks = new AtomicInteger(0);
 
     public ExecutionMetrics(MeterRegistry registry) {
+        this.registry = registry;
         this.attemptsSucceeded = Counter.builder("orynx.execution.attempts")
                 .tag("outcome", "SUCCESS")
                 .description("Total task execution attempts completed successfully")
@@ -45,6 +51,15 @@ public class ExecutionMetrics {
                 .register(registry);
         this.workerRejected = Counter.builder("orynx.worker.pool.rejected")
                 .description("Total workflow dispatches rejected due to worker pool saturation")
+                .register(registry);
+        this.dagRecoveries = Counter.builder("orynx.dag.recoveries")
+                .description("Total DAG workflow executions resumed from durable task checkpoints")
+                .register(registry);
+        this.dagTimeouts = Counter.builder("orynx.dag.task.timeouts")
+                .description("Total DAG task attempts terminated due to timeout")
+                .register(registry);
+        this.checkpointDuration = Timer.builder("orynx.dag.checkpoint.duration")
+                .description("Duration of durable task checkpoint persistence operations")
                 .register(registry);
 
         this.executionSuccessDuration = Timer.builder("orynx.execution.duration")
@@ -85,6 +100,46 @@ public class ExecutionMetrics {
         Gauge.builder("orynx.worker.pool.queue.size", queuedExecutions, AtomicInteger::get)
                 .description("Current worker pool queue depth")
                 .register(registry);
+        Gauge.builder("orynx.dag.active.tasks", activeDagTasks, AtomicInteger::get)
+                .description("Currently active parallel DAG task executions")
+                .register(registry);
+    }
+
+    public void recordDagTaskOutcome(String taskType, String outcome, long durationMs) {
+        String safeType = (taskType == null || taskType.isBlank()) ? "NOOP" : taskType.toUpperCase();
+        String safeOutcome = (outcome == null || outcome.isBlank()) ? "UNKNOWN" : outcome.toUpperCase();
+        Counter.builder("orynx.dag.tasks")
+                .tag("task_type", safeType)
+                .tag("outcome", safeOutcome)
+                .description("Total DAG task completions by handler type and bounded outcome")
+                .register(registry)
+                .increment();
+        Timer.builder("orynx.dag.task.duration")
+                .tag("task_type", safeType)
+                .tag("outcome", safeOutcome)
+                .description("Duration of DAG task executions by handler type and bounded outcome")
+                .register(registry)
+                .record(Math.max(0L, durationMs), TimeUnit.MILLISECONDS);
+    }
+
+    public void recordDagTaskTimeout() {
+        dagTimeouts.increment();
+    }
+
+    public void recordDagRecovery() {
+        dagRecoveries.increment();
+    }
+
+    public void recordCheckpointDurationNanos(long durationNanos) {
+        checkpointDuration.record(Math.max(0L, durationNanos), TimeUnit.NANOSECONDS);
+    }
+
+    public void incrementActiveDagTasks() {
+        activeDagTasks.incrementAndGet();
+    }
+
+    public void decrementActiveDagTasks() {
+        activeDagTasks.updateAndGet(v -> Math.max(0, v - 1));
     }
 
     public void recordTaskResult(boolean success, int attempts) {

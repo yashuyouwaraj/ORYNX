@@ -23,6 +23,15 @@ const getStatusColor = (status?: string) => {
     case "FAILED":
       return "#ef4444";
 
+    case "RETRYING":
+      return "#f97316";
+
+    case "SKIPPED":
+      return "#71717a";
+
+    case "CANCELLED":
+      return "#a855f7";
+
     default:
       return "#eab308";
   }
@@ -39,6 +48,15 @@ const getStatusClasses = (status?: string) => {
     case "FAILED":
       return "border-rose-400/60 bg-rose-400/10 shadow-[0_0_24px_rgba(251,113,133,0.14)]";
 
+    case "RETRYING":
+      return "border-orange-400/60 bg-orange-400/10 shadow-[0_0_24px_rgba(251,146,60,0.14)]";
+
+    case "SKIPPED":
+      return "border-zinc-600/60 bg-zinc-800/40 opacity-75";
+
+    case "CANCELLED":
+      return "border-purple-400/60 bg-purple-400/10";
+
     default:
       return "border-amber-300/50 bg-amber-300/10 shadow-[0_0_20px_rgba(252,211,77,0.1)]";
   }
@@ -50,10 +68,15 @@ const getProgress = (status?: string) => {
       return "100%";
 
     case "RUNNING":
+    case "RETRYING":
       return "58%";
 
     case "FAILED":
+    case "CANCELLED":
       return "100%";
+
+    case "SKIPPED":
+      return "0%";
 
     default:
       return "28%";
@@ -61,9 +84,11 @@ const getProgress = (status?: string) => {
 };
 
 export default function WorkflowGraph({ nodes, connections }: Props) {
-  const getNodeById = (id: number) => {
-    return nodes.find((node) => node.id === id);
-  };
+  const nodeMap = new Map<number, GraphNode>();
+  for (const n of nodes) {
+    nodeMap.set(n.id, n);
+  }
+  const getNodeById = (id: number) => nodeMap.get(id);
 
   const maxNodeX = Math.max(...nodes.map((node) => node.x));
   const maxNodeY = Math.max(...nodes.map((node) => node.y));
@@ -186,14 +211,23 @@ export default function WorkflowGraph({ nodes, connections }: Props) {
               </span>
             </div>
 
-            <div className="mt-4 flex items-center gap-2 text-xs text-zinc-500">
-              <span
-                className="h-2 w-2 rounded-full"
-                style={{
-                  backgroundColor: getStatusColor(node.status),
-                }}
-              />
-              <span>Workflow #{node.id}</span>
+            <div className="mt-4 flex items-center justify-between gap-2 text-xs text-zinc-400">
+              <div className="flex items-center gap-2 truncate">
+                <span
+                  className="h-2 w-2 shrink-0 rounded-full"
+                  style={{
+                    backgroundColor: getStatusColor(node.status),
+                  }}
+                />
+                <span className="truncate">
+                  {node.taskKey ? `${node.taskKey}${node.taskType ? ` · ${node.taskType}` : ""}` : `Workflow #${node.id}`}
+                </span>
+              </div>
+              {node.retryCount && node.retryCount > 0 ? (
+                <span className="shrink-0 rounded bg-orange-500/20 px-1.5 py-0.5 text-[10px] font-medium text-orange-300">
+                  retries: {node.retryCount}
+                </span>
+              ) : null}
             </div>
 
             <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-zinc-800">

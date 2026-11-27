@@ -2,6 +2,9 @@ package com.orynx.orchestrator.workflow.event.dto;
 
 import lombok.*;
 
+import java.util.List;
+import java.util.Map;
+
 @Getter
 @Setter
 @NoArgsConstructor
@@ -9,7 +12,17 @@ import lombok.*;
 @Builder
 public class TaskExecutionRequest {
 
+    private String taskKey;
+
     private String name;
+
+    private String taskType;
+
+    private List<String> dependsOn;
+
+    private Map<String, Object> config;
+
+    private Long timeoutMs;
 
     private Integer executionOrder;
 

@@ -83,10 +83,7 @@ public class ExecutionEventConsumer {
             log.info("Task Started -> Workflow: {}, Task: {}, gen={}",
                     event.getWorkflowName(), event.getTaskName(), event.getGeneration());
 
-        Optional<WorkflowTask> taskOptional = workflowTaskRepository.findByWorkflowIdAndExecutionOrder(
-                event.getWorkflowId(),
-                event.getExecutionOrder()
-        );
+        Optional<WorkflowTask> taskOptional = findTask(event.getWorkflowId(), event.getTaskKey(), event.getExecutionOrder());
 
         if (taskOptional.isEmpty()) {
             log.warn(
@@ -170,11 +167,7 @@ public class ExecutionEventConsumer {
                 event.getGeneration()
         );
 
-        Optional<WorkflowTask> taskOptional =
-                workflowTaskRepository.findByWorkflowIdAndExecutionOrder(
-                        event.getWorkflowId(),
-                        event.getExecutionOrder()
-                );
+        Optional<WorkflowTask> taskOptional = findTask(event.getWorkflowId(), event.getTaskKey(), event.getExecutionOrder());
 
         if (taskOptional.isEmpty()) {
             log.warn(
@@ -214,11 +207,18 @@ public class ExecutionEventConsumer {
         }
 
         WorkflowTask task = taskOptional.get();
-        TaskStatus targetStatus = event.isSuccess() ? TaskStatus.COMPLETED : TaskStatus.FAILED;
+        TaskStatus targetStatus;
+        if (event.isSkipped()) {
+            targetStatus = TaskStatus.SKIPPED;
+        } else if (event.isCancelled()) {
+            targetStatus = TaskStatus.CANCELLED;
+        } else {
+            targetStatus = event.isSuccess() ? TaskStatus.COMPLETED : TaskStatus.FAILED;
+        }
 
         if (task.getStatus() == TaskStatus.COMPLETED && !event.isSuccess()) {
-            log.warn("Task {} for workflow {} is already COMPLETED. Suppressing regression to FAILED.",
-                    task.getName(), event.getWorkflowId());
+            log.warn("Task {} for workflow {} is already COMPLETED. Suppressing regression to {}.",
+                    task.getName(), event.getWorkflowId(), targetStatus);
             return;
         }
 
@@ -230,6 +230,14 @@ public class ExecutionEventConsumer {
             task.setCompletedAt(System.currentTimeMillis());
             if (event.getAttempts() > 0) {
                 task.setRetryCount(Math.max(0, event.getAttempts() - 1));
+            }
+            if (event.getOutputJson() != null) {
+                task.setOutputJson(event.getOutputJson());
+            }
+            if (event.getErrorMessage() != null && !event.getErrorMessage().isBlank()) {
+                String sanitizedErr = com.orynx.orchestrator.common.observability.ObservabilitySanitizer
+                        .redactSensitiveText(event.getErrorMessage());
+                task.setErrorMessage(sanitizedErr.length() > 512 ? sanitizedErr.substring(0, 512) : sanitizedErr);
             }
             workflowTaskRepository.save(task);
             if (workflowMetrics != null) {
@@ -517,6 +525,19 @@ public class ExecutionEventConsumer {
                 execution.getId()
         );
         }
+    }
+
+    private Optional<WorkflowTask> findTask(Long workflowId, String taskKey, Integer executionOrder) {
+        if (taskKey != null && !taskKey.isBlank()) {
+            Optional<WorkflowTask> byKey = workflowTaskRepository.findByWorkflowIdAndTaskKey(workflowId, taskKey);
+            if (byKey.isPresent()) {
+                return byKey;
+            }
+        }
+        if (executionOrder != null) {
+            return workflowTaskRepository.findByWorkflowIdAndExecutionOrder(workflowId, executionOrder);
+        }
+        return Optional.empty();
     }
 
     private boolean isStaleGeneration(

@@ -14,7 +14,7 @@ public class WorkflowTaskStatusConstraintMigration implements ApplicationRunner 
 
     private static final String CONSTRAINT_NAME = "workflow_tasks_status_check";
     private static final String VALID_STATUSES =
-            "('PENDING', 'RUNNING', 'RETRYING', 'COMPLETED', 'FAILED')";
+            "('PENDING', 'RUNNING', 'RETRYING', 'COMPLETED', 'FAILED', 'SKIPPED', 'CANCELLED')";
 
     private final JdbcTemplate jdbcTemplate;
 
@@ -66,6 +66,8 @@ public class WorkflowTaskStatusConstraintMigration implements ApplicationRunner 
                 WHERE t.relname = 'workflow_tasks'
                   AND c.conname = ?
                   AND pg_get_constraintdef(c.oid) LIKE '%RETRYING%'
+                  AND pg_get_constraintdef(c.oid) LIKE '%SKIPPED%'
+                  AND pg_get_constraintdef(c.oid) LIKE '%CANCELLED%'
                 """,
                 Integer.class,
                 CONSTRAINT_NAME

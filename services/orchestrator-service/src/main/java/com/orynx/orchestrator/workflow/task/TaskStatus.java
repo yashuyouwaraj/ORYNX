@@ -10,5 +10,9 @@ public enum TaskStatus {
 
     COMPLETED,
 
-    FAILED
+    FAILED,
+
+    SKIPPED,
+
+    CANCELLED
 }
