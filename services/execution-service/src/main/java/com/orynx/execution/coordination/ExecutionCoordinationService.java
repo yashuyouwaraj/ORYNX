@@ -176,6 +176,7 @@ public class ExecutionCoordinationService {
             );
         }
 
+        boolean reclaimedExpiredLease = false;
         if (currentStatus == ExecutionCoordinationStatus.DISPATCHED ||
                 currentStatus == ExecutionCoordinationStatus.RUNNING) {
             if (coordination.getLeaseExpiresAt() != null && now.isBefore(coordination.getLeaseExpiresAt())) {
@@ -190,6 +191,7 @@ public class ExecutionCoordinationService {
                 return ExecutionLeaseAcquisitionResult.duplicateActive(coordination);
             }
 
+            reclaimedExpiredLease = true;
             log.warn(
                     "Workflow {} execution lease expired on instance {} (status={}, gen={}, leaseExpiresAt={}). Reclaiming lease on instance {} (newGen={}).",
                     workflowId,
@@ -223,7 +225,9 @@ public class ExecutionCoordinationService {
         }
 
         WorkflowExecutionCoordination updated = repository.save(coordination);
-        return ExecutionLeaseAcquisitionResult.acquired(updated);
+        return reclaimedExpiredLease
+                ? ExecutionLeaseAcquisitionResult.reclaimed(updated)
+                : ExecutionLeaseAcquisitionResult.acquired(updated);
     }
 
     @Transactional

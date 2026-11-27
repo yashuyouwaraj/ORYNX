@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import WorkflowGraph from "@/components/WorkflowGraph";
 import {
@@ -22,6 +22,7 @@ import {
   resolveWorkflowGraphView,
   type GraphViewMode,
 } from "@/utils/graphMapper";
+import { createWorkflowSelectionGuard } from "@/utils/workflowSelectionGuard";
 import { WorkflowPerformance } from "@/types/performance";
 import type { PerformanceSummary } from "@/types/performance-summary";
 import type { WorkflowHealth } from "@/types/workflow-health";
@@ -105,6 +106,7 @@ export default function Home() {
   );
   const [workflowTasks, setWorkflowTasks] = useState<WorkflowTaskNode[]>([]);
   const [graphViewMode, setGraphViewMode] = useState<GraphViewMode>("overview");
+  const selectionGuardRef = useRef(createWorkflowSelectionGuard());
 
   const updateTaskStatus = useTaskStore((state) => state.updateTaskStatus);
   const taskStatuses = useTaskStore((state) => state.taskStatuses);
@@ -132,21 +134,32 @@ export default function Home() {
         setPerformanceSummary(summary);
 
         if (workflowData.length > 0) {
-          const latestWorkflow = workflowData[0];
-          const [timelineData, tasksData] = await Promise.all([
-            getTimeline(latestWorkflow.id, token),
-            getWorkflowTasks(latestWorkflow.id, token).catch(() => []),
-          ]);
+          const activeId =
+            selectionGuardRef.current.getSelectedWorkflowId() ??
+            workflowData[0].id;
+          const fetchToken =
+            selectionGuardRef.current.getSelectedWorkflowId() === null
+              ? selectionGuardRef.current.selectWorkflow(activeId)
+              : selectionGuardRef.current.beginFetchForCurrentSelection(activeId);
 
-          setTimeline(timelineData);
-          setSelectedWorkflowId((prev) => prev ?? latestWorkflow.id);
-          setWorkflowTasks(tasksData);
-          if (
-            tasksData.some(
-              (t) => Array.isArray(t.dependsOn) && t.dependsOn.length > 0,
-            )
-          ) {
-            setGraphViewMode("dag");
+          if (fetchToken) {
+            setSelectedWorkflowId(activeId);
+            const [timelineData, tasksData] = await Promise.all([
+              getTimeline(activeId, token),
+              getWorkflowTasks(activeId, token).catch(() => []),
+            ]);
+
+            if (selectionGuardRef.current.shouldApplyFetchResult(fetchToken)) {
+              setTimeline(timelineData);
+              setWorkflowTasks(tasksData);
+              if (
+                tasksData.some(
+                  (t) => Array.isArray(t.dependsOn) && t.dependsOn.length > 0,
+                )
+              ) {
+                setGraphViewMode("dag");
+              }
+            }
           }
         }
       } catch (error) {
@@ -196,21 +209,35 @@ export default function Home() {
         });
 
         try {
-          const analyticsData = await getAnalytics(token);
-          const timelineData = await getTimeline(event.workflowId, token);
-          const performanceData = await getPerformance(token);
-          const healthData = await getWorkflowHealth(token);
-          const tasksData = await getWorkflowTasks(
-            event.workflowId,
-            token,
-          ).catch(() => null);
+          const [analyticsData, performanceData, healthData] =
+            await Promise.all([
+              getAnalytics(token),
+              getPerformance(token),
+              getWorkflowHealth(token),
+            ]);
 
           setWorkflowHealth(healthData);
           setAnalytics(analyticsData);
-          setTimeline(timelineData);
           setPerformance(performanceData);
-          if (tasksData) {
-            setWorkflowTasks(tasksData);
+
+          // Only refresh workflow-specific Task DAG and Timeline when the event
+          // matches the currently selected workflow and no newer selection superseded it.
+          const fetchToken =
+            selectionGuardRef.current.beginFetchForCurrentSelection(
+              event.workflowId,
+            );
+          if (fetchToken) {
+            const [timelineData, tasksData] = await Promise.all([
+              getTimeline(event.workflowId, token),
+              getWorkflowTasks(event.workflowId, token).catch(() => null),
+            ]);
+
+            if (selectionGuardRef.current.shouldApplyFetchResult(fetchToken)) {
+              setTimeline(timelineData);
+              if (tasksData) {
+                setWorkflowTasks(tasksData);
+              }
+            }
           }
         } catch (error) {
           console.error(error);
@@ -231,6 +258,7 @@ export default function Home() {
   }, [updateTaskStatus]);
 
   const handleSelectWorkflow = async (workflowId: number) => {
+    const fetchToken = selectionGuardRef.current.selectWorkflow(workflowId);
     setSelectedWorkflowId(workflowId);
     const token =
       typeof window !== "undefined"
@@ -243,9 +271,11 @@ export default function Home() {
         getWorkflowTasks(workflowId, token),
         getTimeline(workflowId, token),
       ]);
-      setWorkflowTasks(tasksData);
-      setTimeline(timelineData);
-      setGraphViewMode("dag");
+      if (selectionGuardRef.current.shouldApplyFetchResult(fetchToken)) {
+        setWorkflowTasks(tasksData);
+        setTimeline(timelineData);
+        setGraphViewMode("dag");
+      }
     } catch (error) {
       console.error(error);
     }

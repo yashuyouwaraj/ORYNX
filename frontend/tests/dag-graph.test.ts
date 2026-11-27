@@ -36,6 +36,7 @@ import {
   mapWorkflowsToGraph,
   resolveWorkflowGraphView,
 } from "../src/utils/graphMapper.ts";
+import { createWorkflowSelectionGuard } from "../src/utils/workflowSelectionGuard.ts";
 
 const { getWorkflowTasks } = await import("../src/services/api.ts");
 
@@ -146,4 +147,34 @@ test("getWorkflowTasks unwraps PageEnvelope response from orchestrator tasks API
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("createWorkflowSelectionGuard isolates selected workflow from unrelated WebSocket events and stale async fetches", () => {
+  const guard = createWorkflowSelectionGuard();
+
+  // 1. Select workflow 10
+  const token10 = guard.selectWorkflow(10);
+  assert.equal(guard.getSelectedWorkflowId(), 10);
+  assert.equal(guard.isCurrentSelection(10), true);
+  assert.equal(guard.isCurrentSelection(20), false);
+
+  // 2. Unrelated WebSocket event for workflow 20 is ignored (returns null fetch token)
+  const unrelatedWsToken = guard.beginFetchForCurrentSelection(20);
+  assert.equal(unrelatedWsToken, null);
+
+  // 3. Matching WebSocket event for workflow 10 produces a newer token, superseding token10
+  const matchingWsToken = guard.beginFetchForCurrentSelection(10);
+  assert.ok(matchingWsToken);
+  assert.equal(guard.shouldApplyFetchResult(token10), false);
+  assert.equal(guard.shouldApplyFetchResult(matchingWsToken), true);
+
+  // 4. Rapid workflow selection change to workflow 20 invalidates in-flight workflow 10 fetch
+  const token20 = guard.selectWorkflow(20);
+  assert.equal(guard.shouldApplyFetchResult(matchingWsToken), false);
+  assert.equal(guard.shouldApplyFetchResult(token20), true);
+
+  // 5. Even if workflow 10 is selected again later, old token10 remains invalid due to sequence number
+  const token10Again = guard.selectWorkflow(10);
+  assert.equal(guard.shouldApplyFetchResult(token10), false);
+  assert.equal(guard.shouldApplyFetchResult(token10Again), true);
 });

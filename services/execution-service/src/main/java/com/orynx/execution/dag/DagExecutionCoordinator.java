@@ -85,6 +85,7 @@ public class DagExecutionCoordinator {
     private final ActiveExecutionTracker activeExecutionTracker;
     private final ObjectMapper objectMapper;
     private final ScheduledExecutorService timeoutScheduler;
+    private ExecutorService timeoutSettlementExecutor;
 
     @Autowired(required = false)
     private ExecutionMetrics executionMetrics;
@@ -117,11 +118,36 @@ public class DagExecutionCoordinator {
             t.setDaemon(true);
             return t;
         });
+        AtomicInteger settlementSeq = new AtomicInteger(0);
+        this.timeoutSettlementExecutor = new ThreadPoolExecutor(
+                2,
+                4,
+                60L,
+                TimeUnit.SECONDS,
+                new ArrayBlockingQueue<>(64),
+                r -> {
+                    Thread t = new Thread(r, "dag-timeout-settlement-" + settlementSeq.incrementAndGet());
+                    t.setDaemon(true);
+                    return t;
+                },
+                new ThreadPoolExecutor.AbortPolicy()
+        );
+    }
+
+    void setTimeoutSettlementExecutorForTest(ExecutorService customExecutor) {
+        ExecutorService old = this.timeoutSettlementExecutor;
+        this.timeoutSettlementExecutor = customExecutor;
+        if (old != null && old != customExecutor) {
+            old.shutdownNow();
+        }
     }
 
     @PreDestroy
     public void shutdownTimeoutScheduler() {
         timeoutScheduler.shutdownNow();
+        if (timeoutSettlementExecutor != null) {
+            timeoutSettlementExecutor.shutdownNow();
+        }
     }
 
     public void executeDag(WorkflowExecutionRequestEvent event, Long generation, String instanceId) {
@@ -555,14 +581,27 @@ public class DagExecutionCoordinator {
                 if (executionMetrics != null) {
                     executionMetrics.recordDagTaskTimeout();
                 }
-                if (isFinalAttempt && !isFenced(state.workflowId, state.generation, state.instanceId)) {
-                    // Fail and settle DAG state promptly even if a non-interruptible handler
-                    // ignores Thread.interrupt(), preventing coordinator hang and late-commit races.
-                    long elapsedMs = System.currentTimeMillis() - taskStartMs;
-                    handleTaskFailure(state, node, attempt, "Task timed out after " + timeoutMs + "ms", elapsedMs);
-                    if (slotReleased.compareAndSet(false, true)) {
-                        state.inFlight.decrementAndGet();
-                        drainReadyQueue(state);
+                if (isFinalAttempt) {
+                    // Offload blocking checkpoint/Kafka settlement off the lightweight timer thread
+                    // onto a bounded settlement executor; if saturated/shut down, settle in-memory
+                    // immediately so completionFuture can never hang.
+                    try {
+                        timeoutSettlementExecutor.execute(() ->
+                                settleFinalAttemptTimeout(state, node, attempt, timeoutMs, taskStartMs, slotReleased));
+                    } catch (RejectedExecutionException rex) {
+                        log.error("Timeout settlement executor saturated/shut down for workflow {} task {}: {}",
+                                state.workflowId, node.taskKey, rex.getMessage());
+                        if (executionMetrics != null) {
+                            executionMetrics.recordWorkerRejected();
+                        }
+                        state.failed.set(true);
+                        if (node.terminal.compareAndSet(false, true)) {
+                            state.remainingNodes.decrementAndGet();
+                        }
+                        if (slotReleased.compareAndSet(false, true)) {
+                            state.inFlight.decrementAndGet();
+                            drainReadyQueue(state);
+                        }
                     }
                 }
             }
@@ -597,6 +636,47 @@ public class DagExecutionCoordinator {
         }
     }
 
+    private void settleFinalAttemptTimeout(
+            DagRunState state,
+            DagNode node,
+            int attempt,
+            long timeoutMs,
+            long taskStartMs,
+            AtomicBoolean slotReleased
+    ) {
+        try {
+            if (state.fenced.get() || isFenced(state.workflowId, state.generation, state.instanceId)) {
+                state.fenced.set(true);
+                state.interruptActiveTasks();
+                log.warn("Suppressing timeout durable settlement for fenced workflow {} (gen={}) task {}",
+                        state.workflowId, state.generation, node.taskKey);
+                return;
+            }
+            long elapsedMs = System.currentTimeMillis() - taskStartMs;
+            handleTaskFailure(state, node, attempt, "Task timed out after " + timeoutMs + "ms", elapsedMs);
+        } catch (StaleWorkerExecutionException stale) {
+            state.fenced.set(true);
+            state.interruptActiveTasks();
+            if (executionMetrics != null) {
+                executionMetrics.recordWorkerFenced();
+            }
+            log.warn("Fenced during timeout settlement for workflow {} (gen={}) task {}: {}",
+                    state.workflowId, state.generation, node.taskKey, stale.getMessage());
+        } catch (Throwable t) {
+            state.failed.set(true);
+            if (node.terminal.compareAndSet(false, true)) {
+                state.remainingNodes.decrementAndGet();
+            }
+            log.error("Timeout durable settlement error for workflow {} task {}: {}",
+                    state.workflowId, node.taskKey, ExecutionObservabilitySanitizer.safeErrorMessage(t));
+        } finally {
+            if (slotReleased.compareAndSet(false, true)) {
+                state.inFlight.decrementAndGet();
+                drainReadyQueue(state);
+            }
+        }
+    }
+
     private void handleTaskSuccess(
             DagRunState state,
             DagNode node,
@@ -621,52 +701,54 @@ public class DagExecutionCoordinator {
         if (!node.terminal.compareAndSet(false, true)) {
             return;
         }
-        node.completedSuccess.set(true);
-        if (output != null) {
-            state.outputsByTaskKey.put(node.taskKey, output);
-        }
-        state.maxCompletedOrder.accumulateAndGet(node.executionOrder, Math::max);
+        try {
+            node.completedSuccess.set(true);
+            if (output != null) {
+                state.outputsByTaskKey.put(node.taskKey, output);
+            }
+            state.maxCompletedOrder.accumulateAndGet(node.executionOrder, Math::max);
 
-        if (checkpointService != null) {
-            checkpointService.markTaskTerminal(
-                    state.workflowId, node.taskKey, node.name, node.taskType, node.executionOrder,
-                    node.dependsOnJson, TaskCheckpointStatus.COMPLETED, state.generation, state.instanceId,
-                    attempts, outputJson, null
+            if (checkpointService != null) {
+                checkpointService.markTaskTerminal(
+                        state.workflowId, node.taskKey, node.name, node.taskType, node.executionOrder,
+                        node.dependsOnJson, TaskCheckpointStatus.COMPLETED, state.generation, state.instanceId,
+                        attempts, outputJson, null
+                );
+            }
+
+            executionEventProducer.publishTaskCompleted(
+                    TaskCompletedEvent.builder()
+                            .workflowId(state.workflowId)
+                            .workflowName(state.workflowName)
+                            .taskKey(node.taskKey)
+                            .taskName(node.name)
+                            .taskType(node.taskType)
+                            .executionOrder(node.executionOrder)
+                            .success(true)
+                            .attempts(attempts)
+                            .generation(state.generation)
+                            .eventId("wf:" + state.workflowId + ":gen:" + state.generation + ":task-completed:" + node.taskKey)
+                            .outputJson(outputJson)
+                            .build()
             );
-        }
 
-        executionEventProducer.publishTaskCompleted(
-                TaskCompletedEvent.builder()
-                        .workflowId(state.workflowId)
-                        .workflowName(state.workflowName)
-                        .taskKey(node.taskKey)
-                        .taskName(node.name)
-                        .taskType(node.taskType)
-                        .executionOrder(node.executionOrder)
-                        .success(true)
-                        .attempts(attempts)
-                        .generation(state.generation)
-                        .eventId("wf:" + state.workflowId + ":gen:" + state.generation + ":task-completed:" + node.taskKey)
-                        .outputJson(outputJson)
-                        .build()
-        );
+            if (executionMetrics != null) {
+                executionMetrics.recordDagTaskOutcome(node.taskType, "COMPLETED", durationMs);
+            }
 
-        if (executionMetrics != null) {
-            executionMetrics.recordDagTaskOutcome(node.taskType, "COMPLETED", durationMs);
-        }
-
-        // Atomically unlock eligible downstream fan-in dependents (exact-once dispatch)
-        if (!shouldStopScheduling(state)) {
-            for (DagNode dep : node.dependents) {
-                if (!dep.terminal.get() && dep.remainingDeps.decrementAndGet() == 0) {
-                    if (dep.dispatched.compareAndSet(false, true)) {
-                        state.readyQueue.add(dep);
+            // Atomically unlock eligible downstream fan-in dependents (exact-once dispatch)
+            if (!shouldStopScheduling(state)) {
+                for (DagNode dep : node.dependents) {
+                    if (!dep.terminal.get() && dep.remainingDeps.decrementAndGet() == 0) {
+                        if (dep.dispatched.compareAndSet(false, true)) {
+                            state.readyQueue.add(dep);
+                        }
                     }
                 }
             }
+        } finally {
+            state.remainingNodes.decrementAndGet();
         }
-
-        state.remainingNodes.decrementAndGet();
     }
 
     private void handleTaskFailure(
@@ -680,36 +762,37 @@ public class DagExecutionCoordinator {
             return;
         }
         state.failed.set(true);
+        try {
+            if (checkpointService != null) {
+                checkpointService.markTaskTerminal(
+                        state.workflowId, node.taskKey, node.name, node.taskType, node.executionOrder,
+                        node.dependsOnJson, TaskCheckpointStatus.FAILED, state.generation, state.instanceId,
+                        attempts, null, errorMessage
+                );
+            }
 
-        if (checkpointService != null) {
-            checkpointService.markTaskTerminal(
-                    state.workflowId, node.taskKey, node.name, node.taskType, node.executionOrder,
-                    node.dependsOnJson, TaskCheckpointStatus.FAILED, state.generation, state.instanceId,
-                    attempts, null, errorMessage
+            executionEventProducer.publishTaskCompleted(
+                    TaskCompletedEvent.builder()
+                            .workflowId(state.workflowId)
+                            .workflowName(state.workflowName)
+                            .taskKey(node.taskKey)
+                            .taskName(node.name)
+                            .taskType(node.taskType)
+                            .executionOrder(node.executionOrder)
+                            .success(false)
+                            .attempts(attempts)
+                            .generation(state.generation)
+                            .eventId("wf:" + state.workflowId + ":gen:" + state.generation + ":task-completed:" + node.taskKey)
+                            .errorMessage(errorMessage)
+                            .build()
             );
+
+            if (executionMetrics != null) {
+                executionMetrics.recordDagTaskOutcome(node.taskType, "FAILED", durationMs);
+            }
+        } finally {
+            state.remainingNodes.decrementAndGet();
         }
-
-        executionEventProducer.publishTaskCompleted(
-                TaskCompletedEvent.builder()
-                        .workflowId(state.workflowId)
-                        .workflowName(state.workflowName)
-                        .taskKey(node.taskKey)
-                        .taskName(node.name)
-                        .taskType(node.taskType)
-                        .executionOrder(node.executionOrder)
-                        .success(false)
-                        .attempts(attempts)
-                        .generation(state.generation)
-                        .eventId("wf:" + state.workflowId + ":gen:" + state.generation + ":task-completed:" + node.taskKey)
-                        .errorMessage(errorMessage)
-                        .build()
-        );
-
-        if (executionMetrics != null) {
-            executionMetrics.recordDagTaskOutcome(node.taskType, "FAILED", durationMs);
-        }
-
-        state.remainingNodes.decrementAndGet();
 
         // BFS propagate SKIPPED to all transitive downstream dependents
         ArrayDeque<DagNode> toSkip = new ArrayDeque<>(node.dependents);
@@ -718,34 +801,37 @@ public class DagExecutionCoordinator {
             if (downstream.terminal.compareAndSet(false, true)) {
                 downstream.dispatched.set(true);
                 String skipReason = "Skipped due to failed upstream dependency: " + node.taskKey;
-                if (checkpointService != null) {
-                    checkpointService.markTaskTerminal(
-                            state.workflowId, downstream.taskKey, downstream.name, downstream.taskType,
-                            downstream.executionOrder, downstream.dependsOnJson,
-                            TaskCheckpointStatus.SKIPPED, state.generation, state.instanceId,
-                            0, null, skipReason
+                try {
+                    if (checkpointService != null) {
+                        checkpointService.markTaskTerminal(
+                                state.workflowId, downstream.taskKey, downstream.name, downstream.taskType,
+                                downstream.executionOrder, downstream.dependsOnJson,
+                                TaskCheckpointStatus.SKIPPED, state.generation, state.instanceId,
+                                0, null, skipReason
+                        );
+                    }
+                    executionEventProducer.publishTaskCompleted(
+                            TaskCompletedEvent.builder()
+                                    .workflowId(state.workflowId)
+                                    .workflowName(state.workflowName)
+                                    .taskKey(downstream.taskKey)
+                                    .taskName(downstream.name)
+                                    .taskType(downstream.taskType)
+                                    .executionOrder(downstream.executionOrder)
+                                    .success(false)
+                                    .skipped(true)
+                                    .attempts(0)
+                                    .generation(state.generation)
+                                    .eventId("wf:" + state.workflowId + ":gen:" + state.generation + ":task-skipped:" + downstream.taskKey)
+                                    .errorMessage(skipReason)
+                                    .build()
                     );
+                    if (executionMetrics != null) {
+                        executionMetrics.recordDagTaskOutcome(downstream.taskType, "SKIPPED", 0L);
+                    }
+                } finally {
+                    state.remainingNodes.decrementAndGet();
                 }
-                executionEventProducer.publishTaskCompleted(
-                        TaskCompletedEvent.builder()
-                                .workflowId(state.workflowId)
-                                .workflowName(state.workflowName)
-                                .taskKey(downstream.taskKey)
-                                .taskName(downstream.name)
-                                .taskType(downstream.taskType)
-                                .executionOrder(downstream.executionOrder)
-                                .success(false)
-                                .skipped(true)
-                                .attempts(0)
-                                .generation(state.generation)
-                                .eventId("wf:" + state.workflowId + ":gen:" + state.generation + ":task-skipped:" + downstream.taskKey)
-                                .errorMessage(skipReason)
-                                .build()
-                );
-                if (executionMetrics != null) {
-                    executionMetrics.recordDagTaskOutcome(downstream.taskType, "SKIPPED", 0L);
-                }
-                state.remainingNodes.decrementAndGet();
                 toSkip.addAll(downstream.dependents);
             }
         }
@@ -755,33 +841,36 @@ public class DagExecutionCoordinator {
         if (!node.terminal.compareAndSet(false, true)) {
             return;
         }
-        if (checkpointService != null) {
-            checkpointService.markTaskTerminal(
-                    state.workflowId, node.taskKey, node.name, node.taskType, node.executionOrder,
-                    node.dependsOnJson, TaskCheckpointStatus.CANCELLED, state.generation, state.instanceId,
-                    0, null, "Workflow cancelled"
+        try {
+            if (checkpointService != null) {
+                checkpointService.markTaskTerminal(
+                        state.workflowId, node.taskKey, node.name, node.taskType, node.executionOrder,
+                        node.dependsOnJson, TaskCheckpointStatus.CANCELLED, state.generation, state.instanceId,
+                        0, null, "Workflow cancelled"
+                );
+            }
+            executionEventProducer.publishTaskCompleted(
+                    TaskCompletedEvent.builder()
+                            .workflowId(state.workflowId)
+                            .workflowName(state.workflowName)
+                            .taskKey(node.taskKey)
+                            .taskName(node.name)
+                            .taskType(node.taskType)
+                            .executionOrder(node.executionOrder)
+                            .success(false)
+                            .cancelled(true)
+                            .attempts(0)
+                            .generation(state.generation)
+                            .eventId("wf:" + state.workflowId + ":gen:" + state.generation + ":task-cancelled:" + node.taskKey)
+                            .errorMessage("Workflow cancelled")
+                            .build()
             );
+            if (executionMetrics != null) {
+                executionMetrics.recordDagTaskOutcome(node.taskType, "CANCELLED", 0L);
+            }
+        } finally {
+            state.remainingNodes.decrementAndGet();
         }
-        executionEventProducer.publishTaskCompleted(
-                TaskCompletedEvent.builder()
-                        .workflowId(state.workflowId)
-                        .workflowName(state.workflowName)
-                        .taskKey(node.taskKey)
-                        .taskName(node.name)
-                        .taskType(node.taskType)
-                        .executionOrder(node.executionOrder)
-                        .success(false)
-                        .cancelled(true)
-                        .attempts(0)
-                        .generation(state.generation)
-                        .eventId("wf:" + state.workflowId + ":gen:" + state.generation + ":task-cancelled:" + node.taskKey)
-                        .errorMessage("Workflow cancelled")
-                        .build()
-        );
-        if (executionMetrics != null) {
-            executionMetrics.recordDagTaskOutcome(node.taskType, "CANCELLED", 0L);
-        }
-        state.remainingNodes.decrementAndGet();
     }
 
     private boolean shouldStopScheduling(DagRunState state) {

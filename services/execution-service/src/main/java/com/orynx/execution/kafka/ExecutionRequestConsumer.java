@@ -156,6 +156,18 @@ public class ExecutionRequestConsumer {
             return;
         }
 
+        if (leaseResult.isReclaimedExpiredLease()) {
+            String previousMode = event.getExecutionMode();
+            event.setExecutionMode("RECOVERY");
+            log.warn(
+                    "Workflow {} (id={}, gen={}) reclaimed an expired execution lease via Kafka delivery; switching executionMode {} -> RECOVERY to preserve durable checkpoints.",
+                    workflowName,
+                    workflowId,
+                    leaseResult.getGeneration(),
+                    previousMode
+            );
+        }
+
         if (isResume) {
             if (pauseRegistry != null) {
                 pauseRegistry.clear(workflowId);

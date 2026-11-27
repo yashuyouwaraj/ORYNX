@@ -17,6 +17,7 @@ public class ExecutionLeaseAcquisitionResult {
     private final WorkflowExecutionCoordination coordination;
     private final Long generation;
     private final String instanceId;
+    private final boolean reclaimedExpiredLease;
 
     public ExecutionLeaseAcquisitionResult(
             Status status,
@@ -25,15 +26,27 @@ public class ExecutionLeaseAcquisitionResult {
             Long generation,
             String instanceId
     ) {
+        this(status, message, coordination, generation, instanceId, false);
+    }
+
+    public ExecutionLeaseAcquisitionResult(
+            Status status,
+            String message,
+            WorkflowExecutionCoordination coordination,
+            Long generation,
+            String instanceId,
+            boolean reclaimedExpiredLease
+    ) {
         this.status = status;
         this.message = message;
         this.coordination = coordination;
         this.generation = generation != null ? generation : (coordination != null ? coordination.getGeneration() : null);
         this.instanceId = instanceId != null ? instanceId : (coordination != null ? coordination.getInstanceId() : null);
+        this.reclaimedExpiredLease = reclaimedExpiredLease;
     }
 
     public ExecutionLeaseAcquisitionResult(Status status, String message, WorkflowExecutionCoordination coordination) {
-        this(status, message, coordination, coordination != null ? coordination.getGeneration() : null, coordination != null ? coordination.getInstanceId() : null);
+        this(status, message, coordination, coordination != null ? coordination.getGeneration() : null, coordination != null ? coordination.getInstanceId() : null, false);
     }
 
     public static ExecutionLeaseAcquisitionResult acquired(WorkflowExecutionCoordination coordination) {
@@ -42,7 +55,19 @@ public class ExecutionLeaseAcquisitionResult {
                 "Lease acquired successfully",
                 coordination,
                 coordination.getGeneration(),
-                coordination.getInstanceId()
+                coordination.getInstanceId(),
+                false
+        );
+    }
+
+    public static ExecutionLeaseAcquisitionResult reclaimed(WorkflowExecutionCoordination coordination) {
+        return new ExecutionLeaseAcquisitionResult(
+                Status.ACQUIRED,
+                "Expired lease reclaimed for crash recovery",
+                coordination,
+                coordination.getGeneration(),
+                coordination.getInstanceId(),
+                true
         );
     }
 
