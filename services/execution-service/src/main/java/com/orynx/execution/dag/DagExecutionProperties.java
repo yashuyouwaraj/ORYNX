@@ -18,4 +18,12 @@ public class DagExecutionProperties {
     private int maxPerWorkflowConcurrency = 4;
 
     private int awaitTerminationSeconds = 30;
+
+    private int maxTaskConfigBytes = 16_384;
+
+    private int maxTaskOutputBytes = 32_768;
+
+    private int maxPayloadNestingDepth = 8;
+
+    private int maxTransformParts = 256;
 }

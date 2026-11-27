@@ -1,6 +1,43 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mapWorkflowTasksToDagGraph, mapWorkflowsToGraph } from "../src/utils/graphMapper.ts";
+import * as nodeModule from "node:module";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const registerHooks = (
+  nodeModule as unknown as {
+    registerHooks?: (hooks: {
+      resolve: (
+        specifier: string,
+        context: unknown,
+        nextResolve: (specifier: string, context: unknown) => unknown,
+      ) => unknown;
+    }) => void;
+  }
+).registerHooks;
+
+registerHooks?.({
+  resolve(specifier, context, nextResolve) {
+    if (specifier.startsWith("@/")) {
+      const target = path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        `${specifier.slice(2)}.ts`,
+      );
+      return { shortCircuit: true, url: pathToFileURL(target).href };
+    }
+    return nextResolve(specifier, context);
+  },
+});
+
+import {
+  mapWorkflowTasksToDagGraph,
+  mapWorkflowsToGraph,
+  resolveWorkflowGraphView,
+} from "../src/utils/graphMapper.ts";
+
+const { getWorkflowTasks } = await import("../src/services/api.ts");
 
 test("mapWorkflowTasksToDagGraph lays out diamond DAG A -> {B, C} -> D with fan-out and fan-in edges", () => {
   const result = mapWorkflowTasksToDagGraph([
@@ -57,4 +94,56 @@ test("mapWorkflowsToGraph remains backward compatible for workflow list view", (
   );
   assert.equal(result.nodes.length, 2);
   assert.equal(result.connections.length, 1);
+});
+
+test("resolveWorkflowGraphView switches between DAG and overview modes, merges statuses, and handles malformed deps", () => {
+  const workflows = [
+    { id: 1, name: "Diamond-WF", goal: "test", status: "RUNNING" },
+  ];
+  const tasks = [
+    { id: 101, taskKey: "A", name: "Root", taskType: "NOOP", status: "COMPLETED", executionOrder: 1, dependsOn: [] },
+    { id: 102, taskKey: "B", name: "Left", taskType: "ECHO", status: "PENDING", executionOrder: 2, dependsOn: ["A", "NONEXISTENT", ""] },
+    { id: 103, taskKey: "C", name: "Right", taskType: "TRANSFORM", status: "FAILED", executionOrder: 3, dependsOn: ["A"] },
+    { id: 104, taskKey: "D", name: "Join", taskType: "NOOP", status: "SKIPPED", executionOrder: 4, dependsOn: ["B", "C"] },
+  ];
+
+  // Live task status override for B -> RETRYING
+  const dagView = resolveWorkflowGraphView("dag", workflows, tasks, { 102: "RETRYING" });
+  assert.equal(dagView.mode, "dag");
+  assert.equal(dagView.isDagStructure, true);
+  assert.equal(dagView.nodes.length, 4);
+  assert.equal(dagView.connections.length, 4); // NONEXISTENT & empty string gracefully ignored
+  const nodeB = dagView.nodes.find((n) => n.taskKey === "B");
+  const nodeD = dagView.nodes.find((n) => n.taskKey === "D");
+  assert.equal(nodeB?.status, "RETRYING");
+  assert.equal(nodeD?.status, "SKIPPED");
+
+  // Overview mode falls back to workflow-level graph
+  const overview = resolveWorkflowGraphView("overview", workflows, tasks, {});
+  assert.equal(overview.mode, "overview");
+  assert.equal(overview.nodes.length, 1);
+});
+
+test("getWorkflowTasks unwraps PageEnvelope response from orchestrator tasks API", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          content: [
+            { id: 1, taskKey: "A", name: "Root", status: "COMPLETED", executionOrder: 1, dependsOn: [] },
+            { id: 2, taskKey: "B", name: "Child", status: "CANCELLED", executionOrder: 2, dependsOn: ["A"] },
+          ],
+          totalElements: 2,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )) as typeof fetch;
+
+    const tasks = await getWorkflowTasks(42, "test-jwt");
+    assert.equal(tasks.length, 2);
+    assert.equal(tasks[0].taskKey, "A");
+    assert.equal(tasks[1].status, "CANCELLED");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

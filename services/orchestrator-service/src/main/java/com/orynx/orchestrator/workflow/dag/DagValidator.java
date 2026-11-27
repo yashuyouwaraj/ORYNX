@@ -1,8 +1,10 @@
 package com.orynx.orchestrator.workflow.dag;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.orynx.orchestrator.workflow.dto.CreateWorkflowTaskRequest;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.regex.Pattern;
 
@@ -22,9 +24,14 @@ public class DagValidator {
     public static final long DEFAULT_TIMEOUT_MS = 30_000L;
     public static final int MAX_RETRIES_LIMIT = 10;
     public static final int DEFAULT_MAX_RETRIES = 2;
+    public static final int MAX_CONFIG_BYTES = 16_384;
+    public static final int MAX_TOTAL_WORKFLOW_CONFIG_BYTES = 262_144;
+    public static final int MAX_CONFIG_NESTING_DEPTH = 8;
+    public static final int MAX_CONFIG_KEYS = 64;
 
     public static final Set<String> ALLOWED_TASK_TYPES = Set.of("NOOP", "ECHO", "TRANSFORM", "SIMULATED");
     private static final Pattern VALID_KEY_PATTERN = Pattern.compile("^[A-Za-z0-9._-]{1,64}$");
+    private static final ObjectMapper CONFIG_SIZE_MAPPER = new ObjectMapper();
 
     public record ValidatedTaskSpec(
             String taskKey,
@@ -69,6 +76,7 @@ public class DagValidator {
 
         Map<String, CreateWorkflowTaskRequest> byKey = new LinkedHashMap<>();
         List<String> normalizedKeys = new ArrayList<>(orderedInput.size());
+        int totalConfigBytes = 0;
 
         for (int i = 0; i < orderedInput.size(); i++) {
             CreateWorkflowTaskRequest req = orderedInput.get(i);
@@ -92,6 +100,12 @@ public class DagValidator {
 
             String taskType = normalizeTaskType(req.getTaskType());
             validateBounds(key, req);
+            totalConfigBytes += validateConfigPayload(key, req.getConfig());
+            if (totalConfigBytes > MAX_TOTAL_WORKFLOW_CONFIG_BYTES) {
+                throw new IllegalArgumentException(
+                        "Workflow DAG total config payload exceeds maximum limit of " + MAX_TOTAL_WORKFLOW_CONFIG_BYTES + " bytes"
+                );
+            }
 
             byKey.put(key, req);
             normalizedKeys.add(key);
@@ -236,6 +250,48 @@ public class DagValidator {
                 throw new IllegalArgumentException(
                         "Task '" + key + "' maxRetries must be between 0 and " + MAX_RETRIES_LIMIT
                 );
+            }
+        }
+    }
+
+    private int validateConfigPayload(String key, Map<String, Object> config) {
+        if (config == null || config.isEmpty()) {
+            return 0;
+        }
+        if (config.size() > MAX_CONFIG_KEYS) {
+            throw new IllegalArgumentException(
+                    "Task '" + key + "' config exceeds maximum top-level key limit of " + MAX_CONFIG_KEYS
+            );
+        }
+        validateNestingDepth(key, config, 1);
+        try {
+            byte[] serialized = CONFIG_SIZE_MAPPER.writeValueAsString(config).getBytes(StandardCharsets.UTF_8);
+            if (serialized.length > MAX_CONFIG_BYTES) {
+                throw new IllegalArgumentException(
+                        "Task '" + key + "' config exceeds maximum serialized size of " + MAX_CONFIG_BYTES + " bytes"
+                );
+            }
+            return serialized.length;
+        } catch (IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Task '" + key + "' config could not be serialized");
+        }
+    }
+
+    private void validateNestingDepth(String key, Object value, int depth) {
+        if (depth > MAX_CONFIG_NESTING_DEPTH) {
+            throw new IllegalArgumentException(
+                    "Task '" + key + "' config exceeds maximum nesting depth of " + MAX_CONFIG_NESTING_DEPTH
+            );
+        }
+        if (value instanceof Map<?, ?> map) {
+            for (Object v : map.values()) {
+                validateNestingDepth(key, v, depth + 1);
+            }
+        } else if (value instanceof Collection<?> col) {
+            for (Object item : col) {
+                validateNestingDepth(key, item, depth + 1);
             }
         }
     }

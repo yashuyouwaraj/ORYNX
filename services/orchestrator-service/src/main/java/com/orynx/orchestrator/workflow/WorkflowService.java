@@ -223,6 +223,7 @@ public class WorkflowService {
                                 .eventId(executionEventId)
                                 .executionId(savedExecution.getId())
                                 .resume(false)
+                                .executionMode("INITIAL")
                                 .generation(1L)
                                 .build()
                 );
@@ -807,28 +808,59 @@ public class WorkflowService {
                                 )
                         );
 
-        Integer lastCompletedOrder =
-                execution.getLastCompletedExecutionOrder();
-
-        final Integer resumeFromOrder =
-                lastCompletedOrder == null ? 0 : lastCompletedOrder;
-
         List<WorkflowTask> workflowTasks =
                 workflowTaskRepository
                         .findByWorkflowIdOrderByExecutionOrder(workflowId);
 
-        List<TaskExecutionRequest> remainingTasks =
-                workflowTasks.stream()
-                        .filter(task ->
-                                task.getExecutionOrder() > resumeFromOrder
-                        )
-                        .map(this::toTaskExecutionRequest)
-                        .toList();
+        boolean isDagWorkflow = workflowTasks.stream()
+                .anyMatch(t -> t.getDependsOnJson() != null);
 
-        if (remainingTasks.isEmpty()) {
-            throw new IllegalStateException(
-                    "No remaining tasks to resume for workflow " + workflowId
-            );
+        List<TaskExecutionRequest> tasksToDispatch;
+        List<String> completedTaskKeys = null;
+        int remainingIncompleteCount;
+
+        if (isDagWorkflow) {
+            List<WorkflowTask> incompleteTasks = workflowTasks.stream()
+                    .filter(task -> task.getStatus() != TaskStatus.COMPLETED
+                            && task.getStatus() != TaskStatus.SKIPPED)
+                    .toList();
+
+            if (incompleteTasks.isEmpty()) {
+                throw new IllegalStateException(
+                        "No remaining tasks to resume for workflow " + workflowId
+                );
+            }
+
+            completedTaskKeys = workflowTasks.stream()
+                    .filter(task -> task.getStatus() == TaskStatus.COMPLETED)
+                    .map(task -> (task.getTaskKey() != null && !task.getTaskKey().isBlank())
+                            ? task.getTaskKey()
+                            : (task.getExecutionOrder() != null ? "task-" + task.getExecutionOrder() : null))
+                    .filter(Objects::nonNull)
+                    .toList();
+
+            // Publish the FULL DAG graph so execution-service reconstructs all dependency edges
+            // and hydrates upstream outputs from durable COMPLETED checkpoints.
+            tasksToDispatch = workflowTasks.stream()
+                    .map(this::toTaskExecutionRequest)
+                    .toList();
+            remainingIncompleteCount = incompleteTasks.size();
+        } else {
+            Integer lastCompletedOrder = execution.getLastCompletedExecutionOrder();
+            final int resumeFromOrder = lastCompletedOrder == null ? 0 : lastCompletedOrder;
+
+            tasksToDispatch = workflowTasks.stream()
+                    .filter(task -> task.getStatus() != TaskStatus.COMPLETED
+                            && (task.getExecutionOrder() == null || task.getExecutionOrder() > resumeFromOrder))
+                    .map(this::toTaskExecutionRequest)
+                    .toList();
+
+            if (tasksToDispatch.isEmpty()) {
+                throw new IllegalStateException(
+                        "No remaining tasks to resume for workflow " + workflowId
+                );
+            }
+            remainingIncompleteCount = tasksToDispatch.size();
         }
 
         long nextExecutionGeneration = (execution.getExecutionGeneration() != null
@@ -869,10 +901,12 @@ public class WorkflowService {
                         WorkflowExecutionRequestEvent.builder()
                                 .workflowId(updatedWorkflow.getId())
                                 .workflowName(updatedWorkflow.getName())
-                                .tasks(remainingTasks)
+                                .tasks(tasksToDispatch)
                                 .eventId(execRequestEventId)
                                 .executionId(execution.getId())
                                 .resume(true)
+                                .executionMode("RESUME")
+                                .completedTaskKeys(completedTaskKeys)
                                 .generation(nextExecutionGeneration)
                                 .build()
                 );
@@ -888,10 +922,10 @@ public class WorkflowService {
                 workflowEventPublisher.publishWorkflowUpdate(event);
 
                 log.info(
-                        "Workflow {} resumed from execution order {}. Remaining tasks: {}",
+                        "Workflow {} resumed (dag={}). Remaining incomplete tasks: {}",
                         updatedWorkflow.getName(),
-                        resumeFromOrder + 1,
-                        remainingTasks.size()
+                        isDagWorkflow,
+                        remainingIncompleteCount
                 );
             }
 
@@ -997,6 +1031,7 @@ public class WorkflowService {
                                 .eventId(retryEventId)
                                 .executionId(savedExecution.getId())
                                 .resume(false)
+                                .executionMode("RETRY")
                                 .generation(nextExecutionGeneration)
                                 .build()
                 );

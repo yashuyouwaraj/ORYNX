@@ -122,7 +122,10 @@ public class ExecutionEventConsumer {
             }
         }
 
-        if (task.getStatus() == TaskStatus.COMPLETED || task.getStatus() == TaskStatus.FAILED) {
+        if (task.getStatus() == TaskStatus.COMPLETED
+                || task.getStatus() == TaskStatus.FAILED
+                || task.getStatus() == TaskStatus.SKIPPED
+                || task.getStatus() == TaskStatus.CANCELLED) {
             log.info("Task {} for workflow {} is already in terminal state {}. Suppressing out-of-order task-started event.",
                     task.getName(), event.getWorkflowId(), task.getStatus());
             return;
@@ -251,14 +254,16 @@ public class ExecutionEventConsumer {
                 if (execution.getStatus() != WorkflowStatus.CANCELLED
                         && execution.getStatus() != WorkflowStatus.COMPLETED
                         && execution.getStatus() != WorkflowStatus.FAILED) {
-                    if (execution.getLastCompletedExecutionOrder() == null ||
-                            event.getExecutionOrder() > execution.getLastCompletedExecutionOrder()) {
-                        execution.setLastCompletedExecutionOrder(event.getExecutionOrder());
+                    Integer candidateWatermark = computeSafeWatermark(event.getWorkflowId(), task, event.getExecutionOrder());
+                    if (candidateWatermark != null
+                            && (execution.getLastCompletedExecutionOrder() == null
+                            || candidateWatermark > execution.getLastCompletedExecutionOrder())) {
+                        execution.setLastCompletedExecutionOrder(candidateWatermark);
                         executionModified = true;
                         log.info(
-                                "Workflow {} last completed execution order updated to {}",
+                                "Workflow {} last completed execution order watermark updated to {}",
                                 event.getWorkflowId(),
-                                event.getExecutionOrder()
+                                candidateWatermark
                         );
                     }
                 }
@@ -525,6 +530,35 @@ public class ExecutionEventConsumer {
                 execution.getId()
         );
         }
+    }
+
+    /**
+     * Computes a safe scalar watermark for presentation / legacy linear compatibility.
+     * For DAG workflows (where tasks carry explicit dependsOnJson), only advances the watermark
+     * to the highest contiguous completed executionOrder prefix so an out-of-order parallel sibling
+     * never implies lower-order tasks are complete.
+     */
+    private Integer computeSafeWatermark(Long workflowId, WorkflowTask completedTask, Integer eventOrder) {
+        if (completedTask != null && completedTask.getDependsOnJson() != null) {
+            java.util.List<WorkflowTask> allTasks =
+                    workflowTaskRepository.findByWorkflowIdOrderByExecutionOrder(workflowId);
+            if (allTasks != null && !allTasks.isEmpty()) {
+                Integer contiguous = null;
+                for (WorkflowTask t : allTasks) {
+                    boolean isCompleted = t.getStatus() == TaskStatus.COMPLETED
+                            || (completedTask.getId() != null && completedTask.getId().equals(t.getId()))
+                            || (completedTask.getTaskKey() != null && completedTask.getTaskKey().equals(t.getTaskKey()));
+                    if (!isCompleted) {
+                        break;
+                    }
+                    if (t.getExecutionOrder() != null) {
+                        contiguous = t.getExecutionOrder();
+                    }
+                }
+                return contiguous;
+            }
+        }
+        return eventOrder;
     }
 
     private Optional<WorkflowTask> findTask(Long workflowId, String taskKey, Integer executionOrder) {

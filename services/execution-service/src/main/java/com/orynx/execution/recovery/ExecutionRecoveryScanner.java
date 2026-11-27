@@ -85,6 +85,7 @@ public class ExecutionRecoveryScanner {
                             reclaimed.getPayloadJson(),
                             WorkflowExecutionRequestEvent.class
                     );
+                    event.setExecutionMode("RECOVERY");
                     log.info("Redispatching recovered workflow {} (id={}, gen={}) to worker pool",
                             workflowName, workflowId, reclaimed.getGeneration());
                     dispatcher.dispatch(event, reclaimed.getGeneration());

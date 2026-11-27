@@ -15,6 +15,10 @@ import java.util.Map;
 @Component
 public class TransformTaskHandler implements TaskHandler {
 
+    public static final int DEFAULT_MAX_PARTS = 256;
+    public static final int DEFAULT_MAX_STRING_CHARS = 16_384;
+    public static final int DEFAULT_MAX_MERGED_KEYS = 256;
+
     @Override
     public String getTaskType() {
         return "TRANSFORM";
@@ -31,18 +35,39 @@ public class TransformTaskHandler implements TaskHandler {
         switch (op) {
             case "UPPERCASE" -> {
                 String value = String.valueOf(cfg.getOrDefault("value", ""));
+                if (value.length() > DEFAULT_MAX_STRING_CHARS) {
+                    return TaskHandlerResult.failed("TRANSFORM UPPERCASE input exceeds maximum length of " + DEFAULT_MAX_STRING_CHARS);
+                }
                 out.put("result", value.toUpperCase(Locale.ROOT));
             }
             case "LOWERCASE" -> {
                 String value = String.valueOf(cfg.getOrDefault("value", ""));
+                if (value.length() > DEFAULT_MAX_STRING_CHARS) {
+                    return TaskHandlerResult.failed("TRANSFORM LOWERCASE input exceeds maximum length of " + DEFAULT_MAX_STRING_CHARS);
+                }
                 out.put("result", value.toLowerCase(Locale.ROOT));
             }
             case "CONCAT" -> {
                 String delimiter = String.valueOf(cfg.getOrDefault("delimiter", ","));
+                if (delimiter.length() > 64) {
+                    return TaskHandlerResult.failed("TRANSFORM CONCAT delimiter exceeds maximum length of 64");
+                }
                 Object rawParts = cfg.get("parts");
                 if (rawParts instanceof List<?> parts) {
-                    String joined = parts.stream().map(String::valueOf).reduce((a, b) -> a + delimiter + b).orElse("");
-                    out.put("result", joined);
+                    if (parts.size() > DEFAULT_MAX_PARTS) {
+                        return TaskHandlerResult.failed("TRANSFORM CONCAT exceeds maximum parts limit of " + DEFAULT_MAX_PARTS);
+                    }
+                    StringBuilder sb = new StringBuilder();
+                    for (int i = 0; i < parts.size(); i++) {
+                        if (i > 0) {
+                            sb.append(delimiter);
+                        }
+                        sb.append(parts.get(i));
+                        if (sb.length() > DEFAULT_MAX_STRING_CHARS) {
+                            return TaskHandlerResult.failed("TRANSFORM CONCAT output exceeds maximum length of " + DEFAULT_MAX_STRING_CHARS);
+                        }
+                    }
+                    out.put("result", sb.toString());
                 } else {
                     out.put("result", "");
                 }
@@ -51,6 +76,9 @@ public class TransformTaskHandler implements TaskHandler {
                 Object rawKeys = cfg.get("keys");
                 Map<String, Object> merged = mergeUpstream(context.getUpstreamOutputs());
                 if (rawKeys instanceof List<?> keys) {
+                    if (keys.size() > DEFAULT_MAX_MERGED_KEYS) {
+                        return TaskHandlerResult.failed("TRANSFORM PICK_KEYS exceeds maximum key limit of " + DEFAULT_MAX_MERGED_KEYS);
+                    }
                     for (Object k : keys) {
                         String key = String.valueOf(k);
                         if (merged.containsKey(key)) {
@@ -59,7 +87,13 @@ public class TransformTaskHandler implements TaskHandler {
                     }
                 }
             }
-            case "MERGE_UPSTREAM" -> out.putAll(mergeUpstream(context.getUpstreamOutputs()));
+            case "MERGE_UPSTREAM" -> {
+                Map<String, Object> merged = mergeUpstream(context.getUpstreamOutputs());
+                if (merged.size() > DEFAULT_MAX_MERGED_KEYS) {
+                    return TaskHandlerResult.failed("TRANSFORM MERGE_UPSTREAM exceeds maximum key limit of " + DEFAULT_MAX_MERGED_KEYS);
+                }
+                out.putAll(merged);
+            }
             default -> {
                 return TaskHandlerResult.failed("Unsupported TRANSFORM operation: " + op);
             }

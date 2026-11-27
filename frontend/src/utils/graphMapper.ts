@@ -144,3 +144,45 @@ export const mapWorkflowTasksToDagGraph = (
 
   return { nodes, connections };
 };
+
+export type GraphViewMode = "overview" | "dag";
+
+export interface ResolvedGraphView {
+  mode: GraphViewMode;
+  nodes: GraphNode[];
+  connections: GraphConnection[];
+  isDagStructure: boolean;
+}
+
+/**
+ * Resolves the graph view between workflow overview and per-workflow task DAG.
+ * Safely merges live taskStatuses overrides and degrades gracefully if dependency
+ * metadata is missing or malformed.
+ */
+export const resolveWorkflowGraphView = (
+  mode: GraphViewMode,
+  workflows: Workflow[] | null | undefined,
+  workflowTasks: WorkflowTaskNode[] | null | undefined,
+  taskStatuses: TaskStatuses,
+): ResolvedGraphView => {
+  if (mode === "dag" && Array.isArray(workflowTasks) && workflowTasks.length > 0) {
+    const normalizedTasks: WorkflowTaskNode[] = workflowTasks.map((task) => {
+      const safeDeps = Array.isArray(task.dependsOn)
+        ? task.dependsOn.filter((d): d is string => typeof d === "string" && d.trim().length > 0)
+        : undefined;
+      return {
+        ...task,
+        dependsOn: safeDeps,
+        status: taskStatuses[task.id] ?? task.status ?? "PENDING",
+      };
+    });
+    const isDagStructure = normalizedTasks.some(
+      (t) => Array.isArray(t.dependsOn) && t.dependsOn.length > 0,
+    );
+    const { nodes, connections } = mapWorkflowTasksToDagGraph(normalizedTasks);
+    return { mode: "dag", nodes, connections, isDagStructure };
+  }
+
+  const { nodes, connections } = mapWorkflowsToGraph(workflows, taskStatuses);
+  return { mode: "overview", nodes, connections, isDagStructure: false };
+};

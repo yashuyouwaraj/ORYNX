@@ -1,4 +1,5 @@
 import type { Workflow } from "@/types/workflow";
+import type { WorkflowTaskNode } from "@/types/graph";
 import {
   createSafeApiErrorContext,
   generateTraceContext,
@@ -107,6 +108,34 @@ export const getWorkflows = async (
   size = DEFAULT_PAGE_SIZE
 ): Promise<Workflow[]> => {
   const pageData = await getWorkflowsPage(token, page, size);
+  return pageData.content;
+};
+
+export const getWorkflowTasksPage = async (
+  workflowId: number,
+  token?: string,
+  page = 0,
+  size = 100
+): Promise<PageEnvelope<WorkflowTaskNode>> => {
+  const response = await fetchWithCorrelation(
+    `${API_BASE_URL}/api/v1/workflows/${workflowId}/tasks?page=${page}&size=${size}`,
+    token,
+    "Failed to fetch workflow tasks",
+  );
+
+  const data = (await response.json()) as
+    | WorkflowTaskNode[]
+    | PageEnvelope<WorkflowTaskNode>;
+  return unwrapPageEnvelope(data, page, size);
+};
+
+export const getWorkflowTasks = async (
+  workflowId: number,
+  token?: string,
+  page = 0,
+  size = 100
+): Promise<WorkflowTaskNode[]> => {
+  const pageData = await getWorkflowTasksPage(workflowId, token, page, size);
   return pageData.content;
 };
 

@@ -8,6 +8,7 @@ import {
   getPerformance,
   getTimeline,
   getWorkflows,
+  getWorkflowTasks,
   getPerformanceSummary,
   getWorkflowHealth,
 } from "@/services/api";
@@ -16,7 +17,11 @@ import { useTaskStore } from "@/store/task-store";
 import type { Analytics } from "@/types/analytics";
 import type { TimelineEvent } from "@/types/timeline";
 import type { Workflow, WorkflowEvent } from "@/types/workflow";
-import { mapWorkflowsToGraph } from "@/utils/graphMapper";
+import type { WorkflowTaskNode } from "@/types/graph";
+import {
+  resolveWorkflowGraphView,
+  type GraphViewMode,
+} from "@/utils/graphMapper";
 import { WorkflowPerformance } from "@/types/performance";
 import type { PerformanceSummary } from "@/types/performance-summary";
 import type { WorkflowHealth } from "@/types/workflow-health";
@@ -95,6 +100,11 @@ export default function Home() {
   const [performanceSummary, setPerformanceSummary] =
     useState<PerformanceSummary | null>(null);
   const [workflowHealth, setWorkflowHealth] = useState<WorkflowHealth[]>([]);
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState<number | null>(
+    null,
+  );
+  const [workflowTasks, setWorkflowTasks] = useState<WorkflowTaskNode[]>([]);
+  const [graphViewMode, setGraphViewMode] = useState<GraphViewMode>("overview");
 
   const updateTaskStatus = useTaskStore((state) => state.updateTaskStatus);
   const taskStatuses = useTaskStore((state) => state.taskStatuses);
@@ -123,9 +133,21 @@ export default function Home() {
 
         if (workflowData.length > 0) {
           const latestWorkflow = workflowData[0];
-          const timelineData = await getTimeline(latestWorkflow.id, token);
+          const [timelineData, tasksData] = await Promise.all([
+            getTimeline(latestWorkflow.id, token),
+            getWorkflowTasks(latestWorkflow.id, token).catch(() => []),
+          ]);
 
           setTimeline(timelineData);
+          setSelectedWorkflowId((prev) => prev ?? latestWorkflow.id);
+          setWorkflowTasks(tasksData);
+          if (
+            tasksData.some(
+              (t) => Array.isArray(t.dependsOn) && t.dependsOn.length > 0,
+            )
+          ) {
+            setGraphViewMode("dag");
+          }
         }
       } catch (error) {
         console.error(error);
@@ -178,11 +200,18 @@ export default function Home() {
           const timelineData = await getTimeline(event.workflowId, token);
           const performanceData = await getPerformance(token);
           const healthData = await getWorkflowHealth(token);
+          const tasksData = await getWorkflowTasks(
+            event.workflowId,
+            token,
+          ).catch(() => null);
 
           setWorkflowHealth(healthData);
           setAnalytics(analyticsData);
           setTimeline(timelineData);
           setPerformance(performanceData);
+          if (tasksData) {
+            setWorkflowTasks(tasksData);
+          }
         } catch (error) {
           console.error(error);
         }
@@ -201,7 +230,34 @@ export default function Home() {
     return disconnect;
   }, [updateTaskStatus]);
 
-  const { nodes, connections } = mapWorkflowsToGraph(workflows, taskStatuses);
+  const handleSelectWorkflow = async (workflowId: number) => {
+    setSelectedWorkflowId(workflowId);
+    const token =
+      typeof window !== "undefined"
+        ? (localStorage.getItem("orynx_token") ??
+          localStorage.getItem("token") ??
+          undefined)
+        : undefined;
+    try {
+      const [tasksData, timelineData] = await Promise.all([
+        getWorkflowTasks(workflowId, token),
+        getTimeline(workflowId, token),
+      ]);
+      setWorkflowTasks(tasksData);
+      setTimeline(timelineData);
+      setGraphViewMode("dag");
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  const resolvedGraph = resolveWorkflowGraphView(
+    graphViewMode,
+    workflows,
+    workflowTasks,
+    taskStatuses,
+  );
+  const { nodes, connections } = resolvedGraph;
 
   return (
     <main className="min-h-screen bg-[#080808] text-zinc-100">
@@ -382,17 +438,69 @@ export default function Home() {
             <div className="mb-4 flex items-center justify-between gap-4">
               <div>
                 <h2 className="text-lg font-semibold text-white">
-                  Orchestration Graph
+                  {resolvedGraph.mode === "dag"
+                    ? "Task DAG Graph"
+                    : "Orchestration Graph"}
                 </h2>
 
                 <p className="mt-1 text-sm text-zinc-500">
-                  {nodes.length} workflows - {connections.length} dependencies
+                  {resolvedGraph.mode === "dag"
+                    ? `${nodes.length} tasks - ${connections.length} dependencies${resolvedGraph.isDagStructure ? " (DAG)" : " (Linear)"}`
+                    : `${nodes.length} workflows - ${connections.length} dependencies`}
                 </p>
               </div>
 
-              <div className="hidden items-center gap-2 rounded-lg border border-zinc-800 bg-[#111111] px-3 py-2 text-xs text-zinc-400 sm:flex">
-                <span className="h-2 w-2 rounded-full bg-cyan-300" />
-                Streaming updates
+              <div className="flex flex-wrap items-center gap-2">
+                {workflows.length > 0 && (
+                  <select
+                    aria-label="Select workflow for DAG view"
+                    className="rounded-lg border border-zinc-800 bg-[#111111] px-2.5 py-1.5 text-xs text-zinc-200"
+                    value={selectedWorkflowId ?? ""}
+                    onChange={(e) => {
+                      const id = Number(e.target.value);
+                      if (!Number.isNaN(id)) {
+                        void handleSelectWorkflow(id);
+                      }
+                    }}
+                  >
+                    {workflows.map((wf) => (
+                      <option key={wf.id} value={wf.id}>
+                        #{wf.id} {wf.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+
+                <div className="flex overflow-hidden rounded-lg border border-zinc-800 bg-[#111111] text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setGraphViewMode("overview")}
+                    className={`px-3 py-1.5 transition ${
+                      graphViewMode === "overview"
+                        ? "bg-cyan-500/20 text-cyan-200"
+                        : "text-zinc-400 hover:text-zinc-200"
+                    }`}
+                  >
+                    Overview
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setGraphViewMode("dag")}
+                    disabled={workflowTasks.length === 0}
+                    className={`px-3 py-1.5 transition disabled:opacity-40 ${
+                      graphViewMode === "dag"
+                        ? "bg-cyan-500/20 text-cyan-200"
+                        : "text-zinc-400 hover:text-zinc-200"
+                    }`}
+                  >
+                    Task DAG
+                  </button>
+                </div>
+
+                <div className="hidden items-center gap-2 rounded-lg border border-zinc-800 bg-[#111111] px-3 py-2 text-xs text-zinc-400 sm:flex">
+                  <span className="h-2 w-2 rounded-full bg-cyan-300" />
+                  Streaming updates
+                </div>
               </div>
             </div>
 

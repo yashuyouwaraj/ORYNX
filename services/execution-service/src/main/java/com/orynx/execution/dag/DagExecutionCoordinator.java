@@ -38,6 +38,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -56,6 +57,22 @@ import java.util.concurrent.atomic.AtomicReference;
 public class DagExecutionCoordinator {
 
     private static final long DEFAULT_TIMEOUT_MS = 30_000L;
+    private static final int DEFAULT_MAX_CONFIG_BYTES = 16_384;
+    private static final int DEFAULT_MAX_OUTPUT_BYTES = 32_768;
+    private static final int DEFAULT_MAX_NESTING_DEPTH = 8;
+
+    public enum ExecutionMode {
+        INITIAL,
+        RETRY,
+        RECOVERY,
+        RESUME
+    }
+
+    private enum AttemptOutcome {
+        RUNNING,
+        COMPLETED,
+        TIMED_OUT
+    }
 
     private final ThreadPoolTaskExecutor dagTaskExecutor;
     private final DagExecutionProperties properties;
@@ -123,33 +140,44 @@ public class DagExecutionCoordinator {
         // 1. Build DAG node graph (preserving backward compatibility for legacy linear lists)
         DagGraph graph = buildGraph(tasks);
 
-        // 2. Load or reset durable checkpoints
+        // 2. Resolve explicit execution mode (NEVER infer crash recovery from generation > 1)
+        ExecutionMode mode = resolveExecutionMode(event);
         Map<String, WorkflowTaskCheckpoint> existingCheckpoints = Collections.emptyMap();
-        boolean isRecoveryOrResume = Boolean.TRUE.equals(event.getResume()) || effectiveGen > 1L;
+        boolean preserveCheckpoints = (mode == ExecutionMode.RECOVERY || mode == ExecutionMode.RESUME);
         if (checkpointService != null) {
-            if (isRecoveryOrResume) {
+            if (preserveCheckpoints) {
                 existingCheckpoints = checkpointService.loadCheckpointsByTaskKey(workflowId);
             } else {
+                // INITIAL or RETRY: clear prior run checkpoints so user retries never silently
+                // skip tasks that orchestrator-service reset to PENDING.
                 checkpointService.resetCheckpointsForFreshRun(workflowId, effectiveGen);
             }
         }
 
         // 3. Reconstruct durable state from COMPLETED checkpoints (crash recovery / resume)
+        Set<String> orchestratorCompletedKeys = (mode == ExecutionMode.RESUME && event.getCompletedTaskKeys() != null)
+                ? new HashSet<>(event.getCompletedTaskKeys())
+                : Collections.emptySet();
         Map<String, Map<String, Object>> outputsByTaskKey = new ConcurrentHashMap<>();
         int preCompletedCount = 0;
         AtomicInteger maxCompletedOrder = new AtomicInteger(0);
 
         for (DagNode node : graph.nodes.values()) {
             WorkflowTaskCheckpoint cp = existingCheckpoints.get(node.taskKey);
-            if (cp != null && cp.getStatus() == TaskCheckpointStatus.COMPLETED) {
+            boolean completedInCheckpoint = cp != null && cp.getStatus() == TaskCheckpointStatus.COMPLETED;
+            boolean completedInResumeHint = preserveCheckpoints && orchestratorCompletedKeys.contains(node.taskKey);
+            if (completedInCheckpoint || completedInResumeHint) {
                 node.terminal.set(true);
+                node.completedSuccess.set(true);
                 node.dispatched.set(true);
                 preCompletedCount++;
                 if (node.executionOrder > maxCompletedOrder.get()) {
                     maxCompletedOrder.set(node.executionOrder);
                 }
-                Map<String, Object> parsedOut = parseOutputJson(cp.getOutputJson());
-                outputsByTaskKey.put(node.taskKey, parsedOut);
+                if (completedInCheckpoint) {
+                    Map<String, Object> parsedOut = parseOutputJson(cp.getOutputJson());
+                    outputsByTaskKey.put(node.taskKey, parsedOut);
+                }
                 for (DagNode dep : node.dependents) {
                     dep.remainingDeps.decrementAndGet();
                 }
@@ -157,8 +185,8 @@ public class DagExecutionCoordinator {
         }
 
         if (preCompletedCount > 0) {
-            log.info("DAG recovery/resume for workflow {} (gen={}): skipping {} already-COMPLETED task checkpoint(s)",
-                    workflowId, effectiveGen, preCompletedCount);
+            log.info("DAG {} for workflow {} (gen={}): skipping {} already-COMPLETED task(s)",
+                    mode, workflowId, effectiveGen, preCompletedCount);
             if (executionMetrics != null) {
                 executionMetrics.recordDagRecovery();
             }
@@ -224,8 +252,8 @@ public class DagExecutionCoordinator {
         }
 
         if (runState.paused.get() || isPaused(workflowId)) {
-            handleWorkflowPaused(workflowId, workflowName, effectiveGen, instanceId,
-                    runState.maxCompletedOrder.get() > 0 ? runState.maxCompletedOrder.get() : null);
+            Integer contiguousWatermark = computeContiguousCompletedOrder(runState);
+            handleWorkflowPaused(workflowId, workflowName, effectiveGen, instanceId, contiguousWatermark);
             return;
         }
 
@@ -265,19 +293,43 @@ public class DagExecutionCoordinator {
                 dagTaskExecutor.submit(() -> runDagNode(state, next));
             } catch (RejectedExecutionException rex) {
                 state.inFlight.decrementAndGet();
-                log.warn("DAG task executor saturated for workflow {} task {}: {}",
-                        state.workflowId, next.taskKey, rex.getMessage());
+                boolean executorShutdown = isExecutorShutDown();
+                String reason = executorShutdown
+                        ? "DAG task executor is shutting down"
+                        : "DAG task executor queue saturated";
+                log.warn("{} for workflow {} task {}: {}",
+                        reason, state.workflowId, next.taskKey, rex.getMessage());
                 if (executionMetrics != null) {
                     executionMetrics.recordWorkerRejected();
                 }
-                handleTaskFailure(state, next, 0, "DAG task executor queue saturated", 0L);
-                return;
+                handleTaskFailure(state, next, 0, reason, 0L);
+
+                if (executorShutdown) {
+                    // Fail all remaining queued tasks explicitly so none are silently lost
+                    DagNode queued;
+                    while ((queued = state.readyQueue.poll()) != null) {
+                        handleTaskFailure(state, queued, 0, reason, 0L);
+                    }
+                    checkAllSettled(state);
+                    return;
+                }
+
+                // If active tasks remain in flight, their completion will re-invoke drainReadyQueue.
+                // If no tasks are in flight, continue draining (bounded by <= graph.nodes.size()
+                // because each rejected node becomes terminal) so no ready task is stranded and
+                // completionFuture is guaranteed to settle.
+                if (state.inFlight.get() > 0) {
+                    checkAllSettled(state);
+                    return;
+                }
+                // inFlight == 0: loop continues to either dispatch/fail remaining ready nodes or settle
             }
         }
     }
 
     private void runDagNode(DagRunState state, DagNode node) {
         Thread workerThread = Thread.currentThread();
+        AtomicBoolean slotReleased = new AtomicBoolean(false);
         state.activeThreads.add(workerThread);
         if (executionMetrics != null) {
             executionMetrics.incrementActiveDagTasks();
@@ -319,6 +371,14 @@ public class DagExecutionCoordinator {
             }
             if (isPaused(state.workflowId)) {
                 state.paused.set(true);
+                return;
+            }
+
+            // Validate task config payload bounds before running handler
+            String configError = validateConfigBounds(node.config);
+            if (configError != null) {
+                taskSpan.setStatus(StatusCode.ERROR, configError);
+                handleTaskFailure(state, node, 0, configError, System.currentTimeMillis() - taskStartMs);
                 return;
             }
 
@@ -366,6 +426,9 @@ public class DagExecutionCoordinator {
                 MDC.put("attemptNumber", String.valueOf(attempt));
                 taskSpan.setAttribute("orynx.task.attempt", attempt);
 
+                if (node.terminal.get()) {
+                    return;
+                }
                 if (isFenced(state.workflowId, state.generation, state.instanceId)) {
                     state.fenced.set(true);
                     return;
@@ -387,10 +450,21 @@ public class DagExecutionCoordinator {
                         .timeoutMs(node.timeoutMs)
                         .config(node.config)
                         .upstreamOutputs(upstreamOutputs)
-                        .cancellationCheck(() -> isCancelled(state.workflowId) || isFenced(state.workflowId, state.generation, state.instanceId))
+                        .cancellationCheck(() -> node.terminal.get()
+                                || isCancelled(state.workflowId)
+                                || isFenced(state.workflowId, state.generation, state.instanceId))
                         .build();
 
-                finalResult = executeWithTimeout(handler, ctx, workerThread, node.timeoutMs);
+                boolean isFinalAttempt = (attempt == maxAttempts);
+                finalResult = executeWithTimeout(
+                        handler, ctx, workerThread, node.timeoutMs,
+                        state, node, attempt, isFinalAttempt, taskStartMs, slotReleased
+                );
+
+                // If final-attempt timeout watcher already settled the node terminally, discard late result
+                if (node.terminal.get()) {
+                    return;
+                }
 
                 if (finalResult.isSuccess()) {
                     break;
@@ -405,6 +479,10 @@ public class DagExecutionCoordinator {
                     log.warn("DAG task {}/{} failed on attempt {}/{}: {}. Retrying...",
                             state.workflowId, node.taskKey, attempt, maxAttempts, finalResult.getErrorMessage());
                 }
+            }
+
+            if (node.terminal.get()) {
+                return;
             }
 
             long durationMs = System.currentTimeMillis() - taskStartMs;
@@ -434,10 +512,12 @@ public class DagExecutionCoordinator {
             }
             log.warn("Fenced during DAG task {}/{}: {}", state.workflowId, node.taskKey, stale.getMessage());
         } catch (Throwable t) {
-            long durationMs = System.currentTimeMillis() - taskStartMs;
-            taskSpan.recordException(t);
-            taskSpan.setStatus(StatusCode.ERROR, ExecutionObservabilitySanitizer.safeErrorMessage(t));
-            handleTaskFailure(state, node, 1, ExecutionObservabilitySanitizer.safeErrorMessage(t), durationMs);
+            if (!node.terminal.get()) {
+                long durationMs = System.currentTimeMillis() - taskStartMs;
+                taskSpan.recordException(t);
+                taskSpan.setStatus(StatusCode.ERROR, ExecutionObservabilitySanitizer.safeErrorMessage(t));
+                handleTaskFailure(state, node, 1, ExecutionObservabilitySanitizer.safeErrorMessage(t), durationMs);
+            }
         } finally {
             taskSpan.end();
             state.activeThreads.remove(workerThread);
@@ -449,8 +529,10 @@ public class DagExecutionCoordinator {
             } else {
                 MDC.clear();
             }
-            state.inFlight.decrementAndGet();
-            drainReadyQueue(state);
+            if (slotReleased.compareAndSet(false, true)) {
+                state.inFlight.decrementAndGet();
+                drainReadyQueue(state);
+            }
         }
     }
 
@@ -458,39 +540,58 @@ public class DagExecutionCoordinator {
             TaskHandler handler,
             TaskHandlerContext ctx,
             Thread workerThread,
-            long timeoutMs
+            long timeoutMs,
+            DagRunState state,
+            DagNode node,
+            int attempt,
+            boolean isFinalAttempt,
+            long taskStartMs,
+            AtomicBoolean slotReleased
     ) {
-        AtomicBoolean timedOut = new AtomicBoolean(false);
+        AtomicReference<AttemptOutcome> outcome = new AtomicReference<>(AttemptOutcome.RUNNING);
         ScheduledFuture<?> watcher = timeoutScheduler.schedule(() -> {
-            timedOut.set(true);
-            workerThread.interrupt();
+            if (outcome.compareAndSet(AttemptOutcome.RUNNING, AttemptOutcome.TIMED_OUT)) {
+                workerThread.interrupt();
+                if (executionMetrics != null) {
+                    executionMetrics.recordDagTaskTimeout();
+                }
+                if (isFinalAttempt && !isFenced(state.workflowId, state.generation, state.instanceId)) {
+                    // Fail and settle DAG state promptly even if a non-interruptible handler
+                    // ignores Thread.interrupt(), preventing coordinator hang and late-commit races.
+                    long elapsedMs = System.currentTimeMillis() - taskStartMs;
+                    handleTaskFailure(state, node, attempt, "Task timed out after " + timeoutMs + "ms", elapsedMs);
+                    if (slotReleased.compareAndSet(false, true)) {
+                        state.inFlight.decrementAndGet();
+                        drainReadyQueue(state);
+                    }
+                }
+            }
         }, Math.max(50L, timeoutMs), TimeUnit.MILLISECONDS);
 
         try {
             TaskHandlerResult res = handler.execute(ctx);
-            if (timedOut.get()) {
-                if (executionMetrics != null) {
-                    executionMetrics.recordDagTaskTimeout();
-                }
+            if (!outcome.compareAndSet(AttemptOutcome.RUNNING, AttemptOutcome.COMPLETED)) {
+                // Timed out while executing — discard late result
                 return TaskHandlerResult.failed("Task timed out after " + timeoutMs + "ms");
             }
             return res != null ? res : TaskHandlerResult.failed("TaskHandler returned null result");
         } catch (InterruptedException ie) {
-            if (timedOut.get()) {
-                // Clear interrupt flag caused by timeout so worker thread remains healthy for reuse
+            if (outcome.get() == AttemptOutcome.TIMED_OUT) {
                 Thread.interrupted();
-                if (executionMetrics != null) {
-                    executionMetrics.recordDagTaskTimeout();
-                }
                 return TaskHandlerResult.failed("Task timed out after " + timeoutMs + "ms");
             }
+            outcome.compareAndSet(AttemptOutcome.RUNNING, AttemptOutcome.COMPLETED);
             Thread.currentThread().interrupt();
             return TaskHandlerResult.failed("Task interrupted");
         } catch (Exception ex) {
+            if (outcome.get() == AttemptOutcome.TIMED_OUT) {
+                return TaskHandlerResult.failed("Task timed out after " + timeoutMs + "ms");
+            }
+            outcome.compareAndSet(AttemptOutcome.RUNNING, AttemptOutcome.COMPLETED);
             return TaskHandlerResult.failed(ExecutionObservabilitySanitizer.safeErrorMessage(ex));
         } finally {
             watcher.cancel(false);
-            if (timedOut.get()) {
+            if (outcome.get() == AttemptOutcome.TIMED_OUT) {
                 Thread.interrupted();
             }
         }
@@ -503,10 +604,24 @@ public class DagExecutionCoordinator {
             Map<String, Object> output,
             long durationMs
     ) {
+        String outputJson = toJsonSafe(output);
+        int maxOutputBytes = properties != null && properties.getMaxTaskOutputBytes() > 0
+                ? properties.getMaxTaskOutputBytes()
+                : DEFAULT_MAX_OUTPUT_BYTES;
+        if (outputJson != null && outputJson.getBytes(StandardCharsets.UTF_8).length > maxOutputBytes) {
+            handleTaskFailure(
+                    state,
+                    node,
+                    attempts,
+                    "Task output exceeds maximum serialized size of " + maxOutputBytes + " bytes",
+                    durationMs
+            );
+            return;
+        }
         if (!node.terminal.compareAndSet(false, true)) {
             return;
         }
-        String outputJson = toJsonSafe(output);
+        node.completedSuccess.set(true);
         if (output != null) {
             state.outputsByTaskKey.put(node.taskKey, output);
         }
@@ -836,6 +951,82 @@ public class DagExecutionCoordinator {
         return new DagGraph(nodes);
     }
 
+    ExecutionMode resolveExecutionMode(WorkflowExecutionRequestEvent event) {
+        if (event != null && event.getExecutionMode() != null && !event.getExecutionMode().isBlank()) {
+            try {
+                return ExecutionMode.valueOf(event.getExecutionMode().trim().toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException ignored) {
+                log.warn("Unknown executionMode '{}' on workflow {}; falling back to resume flag",
+                        event.getExecutionMode(), event.getWorkflowId());
+            }
+        }
+        if (event != null && Boolean.TRUE.equals(event.getResume())) {
+            return ExecutionMode.RESUME;
+        }
+        return ExecutionMode.INITIAL;
+    }
+
+    private boolean isExecutorShutDown() {
+        try {
+            return dagTaskExecutor.getThreadPoolExecutor().isShutdown();
+        } catch (IllegalStateException ignored) {
+            return false;
+        }
+    }
+
+    private Integer computeContiguousCompletedOrder(DagRunState state) {
+        List<DagNode> ordered = new ArrayList<>(state.graph.nodes.values());
+        ordered.sort(Comparator.comparingInt(n -> n.executionOrder));
+        Integer contiguous = null;
+        for (DagNode n : ordered) {
+            if (!n.completedSuccess.get()) {
+                break;
+            }
+            contiguous = n.executionOrder;
+        }
+        return contiguous;
+    }
+
+    private String validateConfigBounds(Map<String, Object> config) {
+        if (config == null || config.isEmpty()) {
+            return null;
+        }
+        int maxDepth = properties != null && properties.getMaxPayloadNestingDepth() > 0
+                ? properties.getMaxPayloadNestingDepth()
+                : DEFAULT_MAX_NESTING_DEPTH;
+        if (!isWithinNestingDepth(config, 1, maxDepth)) {
+            return "Task config exceeds maximum nesting depth of " + maxDepth;
+        }
+        String serialized = toJsonSafe(config);
+        int maxBytes = properties != null && properties.getMaxTaskConfigBytes() > 0
+                ? properties.getMaxTaskConfigBytes()
+                : DEFAULT_MAX_CONFIG_BYTES;
+        if (serialized != null && serialized.getBytes(StandardCharsets.UTF_8).length > maxBytes) {
+            return "Task config exceeds maximum serialized size of " + maxBytes + " bytes";
+        }
+        return null;
+    }
+
+    private boolean isWithinNestingDepth(Object value, int depth, int maxDepth) {
+        if (depth > maxDepth) {
+            return false;
+        }
+        if (value instanceof Map<?, ?> map) {
+            for (Object v : map.values()) {
+                if (!isWithinNestingDepth(v, depth + 1, maxDepth)) {
+                    return false;
+                }
+            }
+        } else if (value instanceof Collection<?> col) {
+            for (Object item : col) {
+                if (!isWithinNestingDepth(item, depth + 1, maxDepth)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     private boolean isFenced(Long workflowId, long generation, String instanceId) {
         if (activeExecutionTracker != null && activeExecutionTracker.isFenced(workflowId, generation)) {
             return true;
@@ -901,6 +1092,7 @@ public class DagExecutionCoordinator {
         final AtomicInteger remainingDeps = new AtomicInteger(0);
         final AtomicBoolean dispatched = new AtomicBoolean(false);
         final AtomicBoolean terminal = new AtomicBoolean(false);
+        final AtomicBoolean completedSuccess = new AtomicBoolean(false);
         String dependsOnJson;
 
         DagNode(String taskKey, String name, String taskType, int executionOrder,
